@@ -1,0 +1,155 @@
+---
+# longhorn — deploys Longhorn 1.7.2 via Helm on the control plane.
+# All tasks run as the Ansible user (kubectl/helm use ~/.kube/config).
+# Idempotent: every step checks current state before acting.
+
+# ── Artifact directory ────────────────────────────────────────────────────────
+
+- name: longhorn | Create artifact directory
+  file:
+    path: "{{ longhorn_artifacts_dir }}"
+    state: directory
+    mode: "0755"
+
+# ── Helm repository ───────────────────────────────────────────────────────────
+
+- name: longhorn | Add Longhorn Helm repository
+  command: helm repo add longhorn https://charts.longhorn.io
+  register: helm_repo_add
+  changed_when: "'already exists' not in helm_repo_add.stderr"
+  failed_when:
+    - helm_repo_add.rc != 0
+    - "'already exists' not in helm_repo_add.stderr"
+
+- name: longhorn | Update Helm repository index
+  command: helm repo update
+  changed_when: false
+
+- name: longhorn | Confirm version {{ longhorn_version }} is available
+  command: helm search repo longhorn/longhorn --version {{ longhorn_version }}
+  register: helm_search
+  changed_when: false
+  failed_when: longhorn_version not in helm_search.stdout
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+
+- name: longhorn | Create longhorn-system namespace (idempotent)
+  shell: >
+    kubectl create namespace {{ longhorn_namespace }} --dry-run=client -o yaml
+    | kubectl apply -f -
+  changed_when: false
+
+# ── Helm values file ──────────────────────────────────────────────────────────
+
+- name: longhorn | Render Helm values file
+  template:
+    src: longhorn-values.yaml.j2
+    dest: "{{ longhorn_artifacts_dir }}/values.yaml"
+    mode: "0644"
+
+# ── Helm install ──────────────────────────────────────────────────────────────
+
+- name: longhorn | Check if Longhorn release is already deployed
+  command: helm status longhorn -n {{ longhorn_namespace }}
+  register: helm_status
+  changed_when: false
+  failed_when: false
+
+- name: longhorn | Install Longhorn via Helm
+  command: >
+    helm install longhorn longhorn/longhorn
+    --namespace {{ longhorn_namespace }}
+    --version {{ longhorn_version }}
+    --values {{ longhorn_artifacts_dir }}/values.yaml
+    --timeout 10m
+    --wait
+  when: helm_status.rc != 0
+
+# ── Wait for all pods to be healthy ──────────────────────────────────────────
+
+- name: longhorn | Wait for all Longhorn pods to be Running or Completed
+  shell: >
+    kubectl get pods -n {{ longhorn_namespace }}
+    --no-headers
+    | grep -Ev '(Running|Completed)'
+    | wc -l
+  register: unhealthy_pods
+  until: unhealthy_pods.stdout | trim == "0"
+  retries: 30
+  delay: 20
+  changed_when: false
+
+# ── Label worker nodes for disk auto-registration ─────────────────────────────
+
+- name: longhorn | Label worker nodes for default disk creation
+  command: >
+    kubectl label node {{ item | lower }} node.longhorn.io/create-default-disk=true
+    --overwrite
+  loop: "{{ groups['workers'] }}"
+  changed_when: false
+
+# ── StorageClass ──────────────────────────────────────────────────────────────
+
+- name: longhorn | Render StorageClass manifest
+  template:
+    src: storageclass-jupyterhomes.yaml.j2
+    dest: "{{ longhorn_artifacts_dir }}/storageclass-jupyterhomes.yaml"
+    mode: "0644"
+
+- name: longhorn | Apply StorageClass (idempotent)
+  command: kubectl apply -f {{ longhorn_artifacts_dir }}/storageclass-jupyterhomes.yaml
+  changed_when: false
+
+- name: longhorn | Remove default annotation from built-in longhorn StorageClass
+  command: >
+    kubectl patch storageclass longhorn
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+  changed_when: false
+
+- name: longhorn | Verify exactly one default StorageClass exists
+  shell: kubectl get storageclass | grep -c '(default)'
+  register: default_sc_count
+  changed_when: false
+  failed_when: default_sc_count.stdout | trim != "1"
+
+# ── End-to-end storage validation ────────────────────────────────────────────
+
+- name: longhorn | Write validation PVC manifest
+  template:
+    src: test-pvc.yaml.j2
+    dest: "{{ longhorn_artifacts_dir }}/test-pvc.yaml"
+    mode: "0644"
+
+- name: longhorn | Create validation PVC
+  command: kubectl apply -f {{ longhorn_artifacts_dir }}/test-pvc.yaml
+  changed_when: false
+
+- name: longhorn | Wait for validation PVC to become Bound
+  command: kubectl get pvc longhorn-ansible-test-pvc -n default -o jsonpath='{.status.phase}'
+  register: pvc_status
+  until: pvc_status.stdout == "Bound"
+  retries: 18
+  delay: 10
+  changed_when: false
+
+- name: longhorn | Delete validation PVC
+  command: kubectl delete pvc longhorn-ansible-test-pvc -n default --ignore-not-found
+  changed_when: false
+
+- name: longhorn | Find and delete Released validation PV
+  shell: |
+    PV=$(kubectl get pv --no-headers | grep 'Released' | awk '{print $1}')
+    if [ -n "$PV" ]; then
+      kubectl delete pv $PV
+    fi
+  changed_when: false
+
+- name: longhorn | Print installation summary
+  debug:
+    msg:
+      - "Longhorn {{ longhorn_version }} deployed successfully"
+      - "Namespace:     {{ longhorn_namespace }}"
+      - "StorageClass:  {{ longhorn_storageclass_name }} (default)"
+      - "Replicas:      {{ longhorn_replica_count }}"
+      - "Data path:     {{ longhorn_data_path }}"
+      - "Validation:    PVC created, Bound, and cleaned up ✓"

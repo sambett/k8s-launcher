@@ -1,0 +1,49 @@
+# ── Longhorn Version ──────────────────────────────────────────────────────────
+longhorn_version:     "1.7.2"
+longhorn_namespace:   "longhorn-system"
+
+# ── Replica count ─────────────────────────────────────────────────────────────
+# TEST CLUSTER: 1 schedulable worker → replica count must be 1.
+# Setting this to 2 on a 1-worker cluster causes volumes to go Degraded.
+# Change to 2 when deploying on the real 2-worker cluster.
+longhorn_replica_count: 2
+
+# ── Replica soft anti-affinity ────────────────────────────────────────────────
+# TEST CLUSTER: must be true when replica_count == number of workers (1).
+# With false + 1 replica + 1 worker, Longhorn strict mode has nowhere to
+# place a second replica and marks volumes Degraded.
+# Change to false for the real 2-worker cluster (best-practice default).
+longhorn_replica_soft_anti_affinity: "false"
+
+# ── StorageClass ──────────────────────────────────────────────────────────────
+longhorn_storageclass_name:    "longhorn-jupyterhomes"
+longhorn_storageclass_default: "true"
+longhorn_reclaim_policy:       "Retain"
+
+# ── Storage thresholds ────────────────────────────────────────────────────────
+# 150% over-provisioning is acceptable for a lab. Reduce to 100 in production.
+longhorn_over_provisioning_pct:    150
+longhorn_min_available_pct:        25
+
+# ── Node drain policy ─────────────────────────────────────────────────────────
+# block-if-contains-last-replica: safe default — drain is only blocked when
+# the node holds the last healthy replica of any volume.
+longhorn_node_drain_policy: "block-if-contains-last-replica"
+
+# ── Data path ─────────────────────────────────────────────────────────────────
+longhorn_data_path: "/var/lib/longhorn"
+
+# ── Artifact directory ────────────────────────────────────────────────────────
+# Must match the user running Ansible on the control plane node.
+longhorn_artifacts_dir: "/home/ansiblecplane/cluster-artifacts/longhorn"
+
+# ── Control Plane ──────────────────────────────────────────────────────────────
+cp_hostname: "ansiblecplane"
+cp_ip:       "10.110.188.85"
+
+# ── Hosts file entries ─────────────────────────────────────────────────────────
+cluster_hosts:
+  - { name: ansiblecplane,  ip: "10.110.188.85" }
+  - { name: ansibleworker1, ip: "10.110.188.86" }
+  - { name: ansibleworker2, ip: "10.110.188.87" }
+

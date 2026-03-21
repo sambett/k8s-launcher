@@ -1,0 +1,33 @@
+---
+# helm — install Helm v3 on the control plane node only.
+# Idempotent: skips download and install if helm is already present
+# and already at a v3.x version.
+
+- name: helm | Check if Helm is already installed
+  command: helm version --short
+  register: helm_check
+  changed_when: false
+  failed_when: false
+
+- name: helm | Download Helm install script
+  get_url:
+    url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    dest: /tmp/get-helm.sh
+    mode: "0755"
+  when: helm_check.rc != 0 or 'v3' not in helm_check.stdout
+
+- name: helm | Run Helm install script
+  command: /tmp/get-helm.sh
+  become: yes
+  when: helm_check.rc != 0 or 'v3' not in helm_check.stdout
+
+- name: helm | Verify Helm v3 is available
+  command: helm version --short
+  register: helm_version
+  changed_when: false
+
+- name: helm | Assert Helm v3 installed correctly
+  assert:
+    that: "'v3' in helm_version.stdout"
+    fail_msg: "Helm v3 installation failed — got: {{ helm_version.stdout }}"
+    success_msg: "Helm installed: {{ helm_version.stdout }}"

@@ -1,0 +1,27 @@
+---
+# ansible-longhorn/site.yml
+# Deploys Longhorn distributed block storage on an existing Kubernetes cluster.
+# Prerequisite: ansible-k8s/site.yml has already run successfully.
+#
+# Run:
+#   ansible-playbook -i inventory/hosts.yml site.yml
+
+# ── Play 1: Node prerequisites (ALL nodes) ────────────────────────────────────
+# Must run before Helm install — Longhorn pods on workers need iscsi_tcp
+# loaded and iscsid running at the moment the DaemonSet starts.
+- hosts: all
+  become: yes
+  roles:
+    - longhorn_prereqs
+
+# ── Play 2: Install Helm on control plane ────────────────────────────────────
+- hosts: control_plane
+  become: no
+  roles:
+    - helm
+
+# ── Play 3: Deploy Longhorn via Helm ─────────────────────────────────────────
+- hosts: control_plane
+  become: no
+  roles:
+    - longhorn

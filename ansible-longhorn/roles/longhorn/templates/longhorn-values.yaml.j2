@@ -1,0 +1,31 @@
+defaultSettings:
+  # Replica count — driven by longhorn_replica_count in group_vars/all.yml.
+  # Test cluster (1 worker): 1. Real cluster (2 workers): 2.
+  defaultReplicaCount: {{ longhorn_replica_count }}
+
+  # Storage path on each worker node's local disk.
+  defaultDataPath: {{ longhorn_data_path }}
+
+  # Soft anti-affinity — controls whether Longhorn may co-locate replicas
+  # on the same node when it cannot satisfy replica count otherwise.
+  # Test cluster: true (1 worker, 1 replica — no co-location occurs anyway).
+  # Real cluster: false (strict, recommended by Longhorn best practices).
+  replicaSoftAntiAffinity: {{ longhorn_replica_soft_anti_affinity }}
+
+  # Over-provisioning: allow provisioning up to 1.5x available disk.
+  # Acceptable for lab. Set to 100 in production.
+  storageOverProvisioningPercentage: {{ longhorn_over_provisioning_pct }}
+
+  # Refuse to schedule new replicas if available disk falls below this %.
+  storageMinimalAvailablePercentage: {{ longhorn_min_available_pct }}
+
+  # Drain policy: block drain only when node holds the last healthy replica.
+  # Prevents data loss during planned maintenance without being over-conservative.
+  nodeDrainPolicy: {{ longhorn_node_drain_policy }}
+
+  # StorageClass — we create a dedicated class (longhorn-jupyterhomes) below.
+  # Do NOT set persistence.defaultClass here. Longhorn best practices state:
+  # do not modify the default StorageClass; create new ones for custom configs.
+
+longhornUI:
+  replicas: 1
