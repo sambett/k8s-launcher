@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>k8s-launcher</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #1a1a1a; }
+    header {
+      background: #fff; border-bottom: 1px solid #e0e0e0;
+      padding: .75rem 1.5rem; display: flex; align-items: center; gap: 10px;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 4px;
+      font-weight: 500; background: #e3f2fd; color: #1565c0;
+    }
+    .container { max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+    .card {
+      background: #fff; border: 1px solid #e0e0e0;
+      border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem;
+    }
+    .card h2 { font-size: .875rem; font-weight: 600; margin-bottom: .5rem; }
+    .card p  { font-size: .875rem; color: #555; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>k8s-launcher</h1>
+    <span class="badge">ready</span>
+  </header>
+  <div class="container">
+    <div class="card">
+      <h2>Welcome</h2>
+      <p>Skeleton running. Tabs will appear in the next steps.</p>
+    </div>
+    <div class="card">
+      <h2>API</h2>
+      <p>Test endpoint: <a href="/api/status">/api/status</a></p>
+    </div>
+  </div>
+</body>
+</html>
