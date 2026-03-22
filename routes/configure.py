@@ -34,7 +34,7 @@ class ClusterConfig(BaseModel):
     workers: List[WorkerNode]
     kubernetes_version: str = "1.30.5"
     containerd_version: str = "1.7.22"
-    calico_version: str     = "3.28.2"
+    calico_version: str     = "v3.28.2"
     longhorn_version: str   = "1.7.2"
     pod_cidr: str           = "192.168.0.0/16"
     service_cidr: str       = "10.96.0.0/12"
