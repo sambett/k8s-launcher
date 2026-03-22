@@ -121,6 +121,12 @@ longhorn_replica_count:              {replica_count}
 longhorn_replica_soft_anti_affinity: "{soft_anti}"
 longhorn_data_path:                  "/var/lib/longhorn"
 longhorn_storageclass_name:          "longhorn-jupyterhomes"
+longhorn_storageclass_default:       "true"
+longhorn_reclaim_policy:             "Retain"
+longhorn_over_provisioning_pct:      150
+longhorn_min_available_pct:          25
+longhorn_node_drain_policy:          "block-if-contains-last-replica"
+longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/longhorn"
 """
 
 
