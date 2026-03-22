@@ -271,9 +271,12 @@ async def validate_longhorn():
         "kubectl get svc longhorn-frontend -n longhorn-system "
         "--no-headers | awk '{print $5}'"
     )
-    if ":" in out:
-        port = out.strip().split(":")[1].split("/")[0]
-        cp_ip = VARS_PATH.read_text().split('cp_ip:')[1].split('\n')[0].strip().strip('"')
+    # extract NodePort from format like "80:31981/TCP"
+    import re
+    match = re.search(r":(\d+)/TCP", out)
+    if match:
+        port = match.group(1)
+        cp_ip = VARS_PATH.read_text().split("cp_ip:")[1].split("\n")[0].strip().strip('"')
         checks["longhorn_ui"] = f"ok — http://{cp_ip}:{port}"
     else:
         checks["longhorn_ui"] = f"FAIL — could not get NodePort:\n{out}"
