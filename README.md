@@ -5,21 +5,7 @@ No Ansible or Kubernetes knowledge required.
 
 ---
 
-## What this project does
-
-You have several fresh Ubuntu virtual machines.
-You run three commands on one of them.
-You open a browser and click through a dashboard.
-You end up with a fully working Kubernetes cluster with distributed
-block storage (Longhorn), ready for workloads.
-
-Everything — SSH setup, Ansible, cluster deployment, storage — is
-handled by the dashboard. You never need to touch a terminal on the
-cluster machines.
-
----
-
-## What gets deployed
+## What it deploys
 
 | Component | Version | Purpose |
 |---|---|---|
@@ -28,336 +14,225 @@ cluster machines.
 | Calico | v3.28.2 | Pod networking (CNI) |
 | Longhorn | 1.7.2 | Distributed block storage |
 
+Default versions are validated and guaranteed to work together.
+Custom versions can be set in the dashboard — incompatible combinations
+are flagged with a warning before deployment.
+
 ---
 
-## What you need before starting
+## What you need
 
-### Machines
-
-You need at least 3 Ubuntu VMs. 4 is recommended.
-
-| Role | Count | Min RAM | Min Disk | OS |
+| Machine | Count | Min RAM | Min Disk | OS |
 |---|---|---|---|---|
-| Controller | 1 | 1 GB | 10 GB | Ubuntu 22.04 or 24.04 |
-| Control plane | 1 | 2 GB | 20 GB | Ubuntu 22.04 or 24.04 |
-| Worker | 1–N | 2 GB | 20 GB | Ubuntu 22.04 or 24.04 |
+| Controller — runs the launcher | 1 | 1 GB | 10 GB | Ubuntu 22.04+ |
+| Control plane | 1 | 2 GB | 20 GB | Ubuntu 22.04+ |
+| Worker | 1 or more | 2 GB | 20 GB | Ubuntu 22.04+ |
 
-The **controller** is where you run the launcher. It is not part of
-the Kubernetes cluster — it just manages the other machines.
+All machines must reach each other over SSH.
+You need the SSH password for each cluster machine — once, during bootstrap.
 
-All machines must be able to reach each other over the network via SSH.
-
-### What you need to know about each machine
-
-Before starting, collect these for every machine:
-
-- IP address
-- Hostname (the machine's name, e.g. `ansiblecplane`)
-- SSH username (the user you log in as)
-- SSH password
-
-You will enter these into the dashboard during setup.
-
-### Software on the controller only
-
-Python 3.8 or higher. Check with:
-
-```bash
-python3 --version
-```
-
-If not installed:
-
-```bash
-sudo apt update && sudo apt install -y python3 python3-pip
-```
+The controller is separate from the Kubernetes cluster intentionally.
+If the cluster has issues, the launcher stays available to redeploy or reset.
 
 ---
 
-## Setup — three commands
-
-SSH into the **controller VM**:
+## Start the launcher
 
 ```bash
-ssh youruser@<controller-ip>
-```
+# SSH into the controller VM
+ssh user@<controller-ip>
 
-Then run:
-
-```bash
-# 1. Get the project
+# Clone
 git clone https://github.com/sambett/k8s-launcher
 cd k8s-launcher
 
-# 2. Install launcher dependencies
+# Install
 pip3 install -r requirements.txt
-
-# 3. Make sure pip-installed tools are on PATH (required once per session)
 export PATH=$PATH:~/.local/bin
 
-# 4. Start the launcher
+# Start
 python3 launcher.py
 ```
 
-You should see:
+Open `http://<controller-ip>:5000` in your browser.
 
-```
-INFO:     Uvicorn running on http://0.0.0.0:5000
-INFO:     Application startup complete.
-```
-
-Leave this terminal open and running.
-
-Open your browser and go to:
-
-```
-http://<controller-ip>:5000
-```
-
-> Your browser must be able to reach the controller IP.
-> If you are on the same network as the VMs, this will work directly.
-> If not, you may need to use an SSH tunnel:
-> `ssh -L 5000:localhost:5000 youruser@<controller-ip>`
+> If your browser cannot reach the controller directly, use an SSH tunnel:
+> `ssh -L 5000:localhost:5000 user@<controller-ip>`
 > then open `http://localhost:5000`
 
 ---
 
-## Dashboard walkthrough
+## One-time GitHub SSH setup (for contributors)
 
-### Tab 1 — Bootstrap
+After a fresh clone, register the new SSH key on GitHub before pushing:
 
-This tab sets up everything needed before deployment can run.
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
 
-**Step 1 — Install Ansible**
+Go to https://github.com/settings/keys → New SSH key → paste → Save
 
-Click **Install / verify Ansible**.
+Switch the remote to SSH:
 
-The launcher checks if Ansible is installed on the controller.
-If not, it installs it automatically. You will see a green badge
-with the installed version when done.
+```bash
+git remote set-url origin git@github.com:sambett/k8s-launcher.git
+```
 
-**Step 2 — SSH key bootstrap**
+---
 
-The dashboard shows three node rows pre-filled with example IPs.
-Replace them with your actual node details:
+## Dashboard tabs
 
-- IP address of the node
-- Hostname of the node
-- SSH username
-- SSH password
+### Bootstrap
 
-Click **+ Add node** to add more rows. Click ✕ to remove one.
+| Step | Action | What happens |
+|---|---|---|
+| 1 | Install Ansible | Installs Ansible on the controller if absent |
+| 2 | Bootstrap SSH | Connects to each node once with password, pushes SSH key permanently |
+| 3 | Run preflight | Checks OS, RAM, disk, swap, Python 3 on every node |
 
-Click **Bootstrap SSH**.
+Passwords are used once and never stored anywhere.
 
-The launcher connects to each node once using the password you entered,
-pushes an SSH key, and from that point forward connects without a
-password. Passwords are never stored — they are used once and discarded.
+### Configure
 
-You will see a green badge for each node when done.
+- Fill in node IPs and hostnames
+- Versions are pre-filled with the validated stack
+- Incompatible version combinations show a warning instantly
+- Click **Generate configuration** — creates Ansible inventory and variables
+- Preview panels show exactly what will be used
 
-**Step 3 — Preflight checks**
+Longhorn replicas are set automatically:
 
-Click **Run preflight**.
-
-The launcher checks every node for:
-- SSH connectivity
-- OS version (must be Ubuntu 22.04 or 24.04)
-- Available RAM (minimum 1.8 GB)
-- Free disk space (minimum 20 GB)
-- Swap disabled (required by Kubernetes)
-- Python 3 installed
-- No previous cluster state
-
-All checks must show ✓ before proceeding.
-
-**If a check fails:**
-
-| Check | Fix |
+| Workers | Replicas |
 |---|---|
-| swap FAIL | `sudo swapoff -a` on that node |
-| python3 FAIL | `sudo apt install -y python3` on that node |
-| kubeadm_state FAIL | A cluster already exists on this node — reset it first |
-| disk FAIL | Free up space or use a larger disk |
+| 1 | 1 |
+| 2 | 2 |
+| 3+ | 3 (max) |
 
-After fixing, click Run preflight again.
+### Deploy
 
----
+Run phases in order. Each streams live Ansible output to the browser.
 
-### Tab 2 — Configure
+| Phase | Button | Duration |
+|---|---|---|
+| 4 | Deploy Kubernetes | 10–15 min |
+| 5 | Validate Kubernetes | instant |
+| 6 | Deploy Longhorn | 5–8 min |
+| 7 | Validate Longhorn | instant |
 
-Fill in your cluster topology.
+Wait for each phase to show `__DONE__` before moving to the next.
 
-**Control plane** — enter the IP, hostname, and SSH user of the
-control plane machine.
+### Status
 
-**Worker nodes** — the rows are pre-filled with examples. Replace
-with your actual worker IPs and hostnames. Use **+ Add worker** to
-add more workers. The launcher supports any number.
+- Full validation results for Kubernetes and Longhorn
+- **Add worker node** — scale the cluster up without a terminal
+- Join token display and copy
+- Longhorn UI link
+- kubeconfig download
 
-**Versions** — pre-filled with the validated stack. Change only if
-you know what you are doing. Incompatible combinations show a warning
-instantly.
+### Reset
 
-**Components** — check or uncheck Longhorn storage.
+Two reset levels — both require typing `RESET` in the confirmation
+field before anything runs.
 
-Click **Generate configuration**.
+**Reset cluster:**
+Removes Kubernetes and Longhorn from all nodes. Packages uninstalled,
+all Kubernetes directories removed, apt sources cleaned.
+Nodes are left as clean Ubuntu — ready to redeploy immediately from
+the Configure tab.
 
-The launcher creates two files:
-- `inventory.ini` — list of all your nodes
-- `group_vars/all.yml` — all cluster settings
+**Full wipe:**
+Same as Reset cluster, plus removes the SSH authorized keys from all
+cluster nodes and deletes the generated inventory and variables.
+After a full wipe, you must re-run Bootstrap SSH to re-establish
+passwordless access before redeploying.
 
-Both files are shown in preview panels below the button.
-Review them before deploying.
-
-> **Longhorn replicas are set automatically:**
-> 1 worker → 1 replica, 2 workers → 2 replicas, 3+ → 3 replicas.
-> You never need to configure this.
-
----
-
-### Tab 3 — Deploy
-
-Run the deployment phases in order. Do not skip steps.
-
-**Phase 4 — Deploy Kubernetes**
-
-Click **Deploy Kubernetes**.
-
-Live Ansible output streams into the log panel line by line.
-You can watch every task as it runs.
-
-Expected duration: **10–15 minutes** depending on network speed.
-
-Wait for `__DONE__` to appear at the bottom of the log.
-If `__ERROR__` appears, read the lines above it to find the
-failing task. Fix the issue and click Deploy again — it is safe
-to rerun.
-
-**Phase 5 — Validate Kubernetes**
-
-Click **Validate Kubernetes**.
-
-Checks: all nodes Ready, CoreDNS running, node count correct,
-kubeconfig saved. All must show ✓.
-
-**Phase 6 — Deploy Longhorn**
-
-Click **Deploy Longhorn**.
-
-Expected duration: **5–8 minutes**.
-
-Wait for `__DONE__`.
-
-**Phase 7 — Validate Longhorn**
-
-Click **Validate Longhorn**.
-
-Checks: all pods Running, StorageClass exists, both workers
-schedulable, UI accessible. All must show ✓.
+Neither reset level touches Ansible on the controller, the SSH key on
+the controller, or the launcher project files.
 
 ---
 
-### Tab 4 — Status
+## After deployment
 
-Your cluster is running. This tab gives you everything you need.
+**Use kubectl locally:**
+```bash
+# download kubeconfig from Status tab, then:
+mkdir -p ~/.kube
+cp kubeconfig.yaml ~/.kube/config
+kubectl get nodes
+```
 
-**Validation results** — full detail from the last validate run.
-
-**Add worker node** — scale your cluster up without a terminal.
-Enter the new node's details and click **Add worker**.
-The launcher pushes SSH keys, runs the join command, and labels
-the node automatically. The new node appears in the cluster within
-about a minute.
-
-**Join token** — click **Show join token** to see the kubeadm join
-command. The token expires after 24 hours.
-
-To regenerate a token manually (on the control plane):
+**Join token** — saved on the control plane at:
+```
+~/cluster-artifacts/join-command.txt
+```
+Expires after 24 hours. To regenerate:
 ```bash
 kubeadm token create --print-join-command
 ```
 
-**Longhorn UI** — click the link to open the Longhorn storage
-dashboard in a new tab.
-
-**kubeconfig** — click **Download kubeconfig.yaml** and copy it
-to your local machine:
-
-```bash
-mkdir -p ~/.kube
-cp ~/Downloads/kubeconfig.yaml ~/.kube/config
-kubectl get nodes
-```
-
-Expected output:
-```
-NAME             STATUS   ROLES           AGE   VERSION
-ansiblecplane    Ready    control-plane   Xm    v1.30.5
-ansibleworker1   Ready    worker          Xm    v1.30.5
-ansibleworker2   Ready    worker          Xm    v1.30.5
-```
+**Longhorn UI** — URL shown in the Status tab after validation.
 
 ---
 
-## If something goes wrong
+## Manual operation (advanced)
 
-**Launcher does not start — port in use:**
-```bash
-pkill -f "python3 launcher.py"
-python3 launcher.py
+The launcher is a convenience layer. The Ansible projects are fully
+self-contained and can be used directly without the dashboard.
+
+Each project has its own inventory and variables:
+
+```
+ansible-k8s/
+├── inventory/hosts.yml      ← node IPs, hostnames, SSH users
+├── group_vars/all.yml       ← all cluster variables (versions, CIDRs, etc.)
+└── site.yml                 ← run this to deploy
+
+ansible-longhorn/
+├── inventory/hosts.yml      ← same structure
+├── group_vars/all.yml       ← Longhorn-specific variables
+└── site.yml                 ← run this to deploy Longhorn
 ```
 
-**Browser cannot reach the dashboard:**
-Check the controller IP is correct. If the controller is on a
-remote network, use an SSH tunnel:
-```bash
-ssh -L 5000:localhost:5000 youruser@<controller-ip>
-```
-Then open `http://localhost:5000`.
+To deploy manually, edit these two files directly for each project
+and run:
 
-**Deployment fails mid-run:**
-Read the log — the failing task name is always shown.
-Fix the issue, click Deploy again. The playbooks are idempotent —
-completed tasks are skipped automatically.
-
-**SSH bootstrap fails — authentication error:**
-The password you entered is wrong. Verify it by connecting manually:
 ```bash
-ssh youruser@<node-ip>
+# deploy Kubernetes
+cd ansible-k8s
+ansible-playbook -i inventory/hosts.yml site.yml
+
+# deploy Longhorn
+cd ansible-longhorn
+ansible-playbook -i inventory/hosts.yml site.yml
 ```
 
-**Preflight shows kubeadm_state FAIL on control plane:**
-A cluster already exists. This is expected if you are reusing
-machines. Reset it first:
-```bash
-ssh youruser@<control-plane-ip>
-sudo kubeadm reset -f
-sudo rm -rf /etc/kubernetes /var/lib/etcd ~/.kube
-```
+The launcher generates equivalent files at runtime in `generated/`
+and passes them as `--extra-vars`. When using the projects manually,
+edit the files inside the project folders directly — the launcher
+will not interfere.
 
 ---
 
-## Project structure
+## Project layout
 
 ```
 k8s-launcher/
-├── launcher.py          entry point — starts the web server
-├── requirements.txt     Python dependencies
-├── compat_matrix.json   version compatibility rules
+├── launcher.py              entry point
+├── requirements.txt         Python dependencies
+├── compat_matrix.json       version compatibility rules
 ├── core/
-│   ├── paths.py         all file path constants
-│   └── ssh.py           SSH connection helpers
+│   ├── paths.py             path constants
+│   └── ssh.py               SSH helpers
 ├── routes/
-│   ├── bootstrap.py     install Ansible + push SSH keys
-│   ├── preflight.py     node readiness checks
-│   ├── configure.py     generate inventory + variables
-│   ├── deploy.py        run playbooks + validate + add worker
-│   └── status.py        kubeconfig download
+│   ├── bootstrap.py         install Ansible + push SSH keys
+│   ├── preflight.py         node readiness checks
+│   ├── configure.py         generate inventory + variables
+│   ├── deploy.py            run playbooks + validate + add worker + reset
+│   └── status.py            kubeconfig download
 ├── templates/
-│   └── index.html       complete dashboard (single HTML file)
-├── ansible-k8s/         Kubernetes deployment playbooks
-└── ansible-longhorn/    Longhorn deployment playbooks
+│   └── index.html           complete dashboard (single HTML file)
+├── ansible-k8s/             Kubernetes playbooks (self-contained)
+└── ansible-longhorn/        Longhorn playbooks (self-contained)
 ```
 
 ---
@@ -365,42 +240,17 @@ k8s-launcher/
 ## Architecture
 
 ```
-Your browser
-      │
-      │ HTTP  http://<controller-ip>:5000
-      ▼
-┌─────────────────────────────────────┐
-│ Controller VM                       │
-│ launcher.py + Ansible               │
-└──────────┬──────────────────────────┘
-           │ SSH (passwordless)
-     ┌─────┼───────────┐
-     ▼     ▼           ▼
-  cp VM  worker1  worker2 ...
+Browser → http://<controller-ip>:5000
+                │
+          controller VM
+          (launcher + Ansible)
+                │ SSH (passwordless after bootstrap)
+      ┌─────────┼──────────┐
+   cp node   worker1   worker2 ...
 ```
-
-The controller is intentionally outside the cluster.
-If the cluster has issues, the launcher stays available.
 
 ---
 
 ## Validated on
 
 Ubuntu 22.04 LTS · Kubernetes 1.30.5 · Calico v3.28.2 · Longhorn 1.7.2
-
----
-
-## One-time GitHub SSH setup (for contributors)
-
-After cloning on a new machine, register the SSH key on GitHub
-before you can push changes:
-```bash
-cat ~/.ssh/id_ed25519.pub
-```
-
-Go to https://github.com/settings/keys → New SSH key → paste → Save
-
-Then switch the remote to SSH:
-```bash
-git remote set-url origin git@github.com:sambett/k8s-launcher.git
-```
