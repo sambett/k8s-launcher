@@ -387,3 +387,20 @@ If the cluster has issues, the launcher stays available.
 ## Validated on
 
 Ubuntu 22.04 LTS · Kubernetes 1.30.5 · Calico v3.28.2 · Longhorn 1.7.2
+
+---
+
+## One-time GitHub SSH setup (for contributors)
+
+After cloning on a new machine, register the SSH key on GitHub
+before you can push changes:
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+Go to https://github.com/settings/keys → New SSH key → paste → Save
+
+Then switch the remote to SSH:
+```bash
+git remote set-url origin git@github.com:sambett/k8s-launcher.git
+```
