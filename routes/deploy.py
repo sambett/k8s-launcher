@@ -350,7 +350,59 @@ async def add_worker(node: NewWorker):
                 "message": "Could not read join command from control plane."}
     join_cmd = join_lines[0]
 
-    # Step 3 — run join command on new node
+    # Step 3a — install kubeadm + kubelet on new node first
+    prereq_cmds = [
+        "sudo rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc /etc/apt/keyrings/docker.gpg 2>/dev/null; apt-get update -qq",
+        "apt-get install -y apt-transport-https ca-certificates curl gpg",
+        "mkdir -p /etc/apt/keyrings",
+        "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
+        "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' > /etc/apt/sources.list.d/kubernetes.list",
+        "sudo rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc /etc/apt/keyrings/docker.gpg 2>/dev/null; apt-get update -qq",
+        "apt-get install -y kubelet kubeadm",
+        "systemctl enable kubelet",
+    ]
+    for cmd in prereq_cmds:
+        prereq = subprocess.run(
+            [
+                "ansible", "-i", f"{node.ip},",
+                "all", "-m", "shell",
+                "-a", cmd,
+                "-u", node.ssh_user,
+                "--private-key", str(SSH_KEY_PATH),
+                "--become",
+            ],
+            capture_output=True, text=True
+        )
+        if prereq.returncode != 0:
+            return {"status": "error", "step": "prerequisites",
+                    "message": f"Failed: {cmd}\n{prereq.stdout}\n{prereq.stderr}"}
+
+    # Step 3b — install containerd
+    containerd_cmds = [
+        "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.asc && chmod a+r /etc/apt/keyrings/docker.asc",
+        "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu jammy stable' > /etc/apt/sources.list.d/docker.list",
+        "sudo rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc /etc/apt/keyrings/docker.gpg 2>/dev/null && apt-get update -qq && apt-get install -y containerd",
+        "containerd config default > /etc/containerd/config.toml",
+        "sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml",
+        "systemctl restart containerd && systemctl enable containerd",
+    ]
+    for cmd in containerd_cmds:
+        cr = subprocess.run(
+            [
+                "ansible", "-i", f"{node.ip},",
+                "all", "-m", "shell",
+                "-a", cmd,
+                "-u", node.ssh_user,
+                "--private-key", str(SSH_KEY_PATH),
+                "--become",
+            ],
+            capture_output=True, text=True
+        )
+        if cr.returncode != 0:
+            return {"status": "error", "step": "containerd",
+                    "message": f"Failed: {cmd}\n{cr.stdout}\n{cr.stderr}"}
+
+    # Step 3c — run join command on new node
     result = subprocess.run(
         [
             "ansible", "-i",

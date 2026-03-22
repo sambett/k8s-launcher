@@ -572,6 +572,44 @@ async function fetchJoinToken() {
     el.innerHTML = `<span class="badge b-warn">${d.message}</span>`;
   }
 }
+
+async function addWorkerNode() {
+  const el = document.getElementById('r-addworker');
+  const body = {
+    ip:       document.getElementById('aw-ip').value,
+    hostname: document.getElementById('aw-hostname').value,
+    ssh_user: document.getElementById('aw-user').value,
+    ssh_pass: document.getElementById('aw-pass').value,
+  };
+  if (!body.ip || !body.ssh_pass) {
+    el.innerHTML = '<span class="badge b-warn">Enter IP and password first.</span>';
+    return;
+  }
+  el.innerHTML = '<span class="badge b-run">Joining cluster... (this takes ~1 min)</span>';
+  try {
+    const resp = await fetch('/api/cluster/add-worker', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await resp.json();
+    document.getElementById('aw-pass').value = '';
+    if (d.status === 'ok') {
+      el.innerHTML =
+        '<span class="badge b-ok">' + d.message + '</span>' +
+        '<pre style="margin-top:.5rem;font-size:11px;font-family:monospace;' +
+        'background:#f5f5f5;padding:8px;border-radius:4px">' +
+        d.cluster_nodes + '</pre>';
+    } else {
+      el.innerHTML =
+        '<span class="badge b-err">Failed at step: ' + d.step + '</span>' +
+        '<div style="font-size:12px;color:#c62828;margin-top:4px">' +
+        d.message + '</div>';
+    }
+  } catch(e) {
+    el.innerHTML = '<span class="badge b-err">Request failed: ' + e + '</span>';
+  }
+}
 </script>
 </body>
 </html>
