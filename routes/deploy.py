@@ -445,3 +445,114 @@ async def add_worker(node: NewWorker):
         "message": f"Node {node.hostname} joined successfully",
         "cluster_nodes": out
     }
+
+
+# ── Reset ──────────────────────────────────────────────────────────────────────
+
+class ResetRequest(_BaseModel):
+    level: str          # "cluster" or "full"
+    confirmation: str   # must equal "RESET"
+
+
+def _reset_stream(level: str):
+    """
+    Generator that resets all cluster nodes via Ansible ad-hoc commands.
+    Streams progress lines as SSE events.
+    """
+    if not INVENTORY_PATH.exists():
+        yield "data: ERROR — no inventory found. Run configure first.\n\n"
+        yield "data: __ERROR__:no_inventory\n\n"
+        return
+
+    yield "data: Starting reset...\n\n"
+
+    # Commands to run on ALL nodes
+    cluster_cmds = [
+        ("kubeadm reset",
+         "sudo kubeadm reset -f 2>/dev/null || true"),
+        ("stop services",
+         "sudo systemctl stop kubelet containerd 2>/dev/null || true"),
+        ("remove packages",
+         "sudo apt-get remove -y --allow-change-held-packages "
+         "kubeadm kubelet kubectl containerd containerd.io 2>/dev/null || true"),
+        ("autoremove",
+         "sudo apt-get autoremove -y 2>/dev/null || true"),
+        ("remove k8s dirs",
+         "sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet "
+         "/var/lib/longhorn /etc/cni /opt/cni /var/lib/containerd"),
+        ("remove apt sources",
+         "sudo rm -f /etc/apt/sources.list.d/kubernetes.list "
+         "/etc/apt/sources.list.d/docker.list "
+         "/etc/apt/keyrings/kubernetes-apt-keyring.gpg "
+         "/etc/apt/keyrings/docker.asc "
+         "/etc/apt/keyrings/docker.gpg"),
+        ("remove artifacts",
+         "rm -rf ~/cluster-artifacts ~/.kube"),
+        ("apt update",
+         "sudo apt-get update -qq 2>/dev/null || true"),
+    ]
+
+    for label, cmd in cluster_cmds:
+        yield f"data: [{label}] running on all nodes...\n\n"
+        result = subprocess.run(
+            [
+                "ansible", "all",
+                "-i", str(INVENTORY_PATH),
+                "-m", "shell",
+                "-a", cmd,
+                "--become",
+                "--extra-vars", f"@{VARS_PATH}",
+            ],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            yield f"data: [{label}] done\n\n"
+        else:
+            yield f"data: [{label}] completed with warnings (non-fatal)\n\n"
+
+    if level == "full":
+        yield "data: [full wipe] removing SSH authorized keys from nodes...\n\n"
+        result = subprocess.run(
+            [
+                "ansible", "all",
+                "-i", str(INVENTORY_PATH),
+                "-m", "shell",
+                "-a", "rm -f ~/.ssh/authorized_keys",
+                "--extra-vars", f"@{VARS_PATH}",
+            ],
+            capture_output=True, text=True
+        )
+        yield "data: [full wipe] clearing generated inventory...\n\n"
+        INVENTORY_PATH.unlink(missing_ok=True)
+        VARS_PATH.unlink(missing_ok=True)
+        yield "data: [full wipe] done — machines are at absolute zero\n\n"
+
+    yield "data: Reset complete. Nodes are clean and ready.\n\n"
+    yield "data: __DONE__\n\n"
+
+
+@router.get("/api/reset/stream")
+async def reset_stream(level: str = "cluster", confirmation: str = ""):
+    request = ResetRequest(level=level, confirmation=confirmation)
+    """
+    Reset cluster nodes. Requires confirmation == 'RESET'.
+    Streams progress via SSE.
+    """
+    if request.confirmation != "RESET":
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Type RESET in the confirmation field to proceed."}
+        )
+    if request.level not in ("cluster", "full"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"error": "level must be 'cluster' or 'full'"}
+        )
+
+    return StreamingResponse(
+        _reset_stream(request.level),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
