@@ -1,44 +1,558 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>k8s-launcher</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #1a1a1a; }
-    header {
-      background: #fff; border-bottom: 1px solid #e0e0e0;
-      padding: .75rem 1.5rem; display: flex; align-items: center; gap: 10px;
-    }
-    header h1 { font-size: 1rem; font-weight: 600; }
-    .badge {
-      font-size: 11px; padding: 2px 8px; border-radius: 4px;
-      font-weight: 500; background: #e3f2fd; color: #1565c0;
-    }
-    .container { max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
-    .card {
-      background: #fff; border: 1px solid #e0e0e0;
-      border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem;
-    }
-    .card h2 { font-size: .875rem; font-weight: 600; margin-bottom: .5rem; }
-    .card p  { font-size: .875rem; color: #555; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>k8s-launcher</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#1a1a1a;font-size:14px}
+header{background:#fff;border-bottom:1px solid #e0e0e0;padding:.75rem 1.5rem;
+       display:flex;align-items:center;gap:10px}
+header h1{font-size:1rem;font-weight:600}
+.tabs{display:flex;background:#fff;border-bottom:1px solid #e0e0e0;padding:0 1.5rem}
+.tab{padding:.65rem 1.2rem;cursor:pointer;border:none;background:none;font-size:13px;
+     border-bottom:2px solid transparent;color:#555;transition:all .15s}
+.tab.active{border-bottom-color:#1976d2;color:#1976d2;font-weight:500}
+.tab:hover:not(.active){background:#f9f9f9}
+.panel{display:none;max-width:880px;margin:1.5rem auto;padding:0 1rem}
+.panel.active{display:block}
+.card{background:#fff;border:1px solid #e0e0e0;border-radius:8px;
+      padding:1.25rem;margin-bottom:1rem}
+.card h2{font-size:.875rem;font-weight:600;margin-bottom:.75rem;color:#333}
+.field-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.field-row label{font-size:12px;color:#666;min-width:130px;flex-shrink:0}
+input[type=text],input[type=password]{border:1px solid #ddd;border-radius:4px;
+  padding:5px 9px;font-size:13px;flex:1;min-width:0;font-family:inherit}
+input:focus{outline:none;border-color:#1976d2}
+.btn{padding:6px 14px;border-radius:4px;border:1px solid #ccc;background:#fff;
+     font-size:13px;cursor:pointer;font-weight:500;transition:background .15s}
+.btn:hover{background:#f0f0f0}
+.btn-primary{background:#1976d2;color:#fff;border-color:#1565c0}
+.btn-primary:hover{background:#1565c0}
+.btn-success{background:#2e7d32;color:#fff;border-color:#1b5e20}
+.btn-success:hover{background:#1b5e20}
+.btn-sm{padding:3px 9px;font-size:12px}
+.btn-danger{background:#c62828;color:#fff;border-color:#b71c1c}
+.badge{font-size:11px;padding:2px 8px;border-radius:4px;font-weight:500;display:inline-block}
+.b-ok{background:#e8f5e9;color:#2e7d32}
+.b-err{background:#ffebee;color:#c62828}
+.b-warn{background:#fff8e1;color:#e65100}
+.b-info{background:#e3f2fd;color:#1565c0}
+.b-run{background:#e3f2fd;color:#1565c0}
+.node-row{display:flex;gap:6px;align-items:center;margin-bottom:5px}
+.node-row input{flex:1;min-width:0}
+.log{background:#1e1e1e;color:#d4d4d4;border-radius:6px;padding:1rem;
+     font-family:monospace;font-size:12px;height:320px;overflow-y:auto;
+     white-space:pre-wrap;line-height:1.55}
+.log .l-ok{color:#4ec9b0}
+.log .l-changed{color:#ce9178}
+.log .l-err{color:#f44747}
+.log .l-play{color:#569cd6;font-weight:bold}
+.log .l-skip{color:#808080}
+.phase-list{list-style:none}
+.phase-list li{display:flex;align-items:center;gap:10px;padding:7px 0;
+               border-bottom:1px solid #f0f0f0;font-size:13px}
+.phase-list li:last-child{border-bottom:none}
+.dot{width:10px;height:10px;border-radius:50%;background:#ddd;flex-shrink:0}
+.dot.ok{background:#4caf50}
+.dot.running{background:#2196f3;animation:pulse 1s infinite}
+.dot.error{background:#f44336}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.warn-box{background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
+          padding:7px 12px;font-size:12px;color:#5d4037;margin-top:5px}
+.info-box{background:#e3f2fd;border:1px solid #90caf9;border-radius:6px;
+          padding:7px 12px;font-size:12px;color:#0d47a1;margin-top:8px}
+.mono{font-family:monospace;font-size:12px;background:#f5f5f5;
+      padding:2px 6px;border-radius:3px;word-break:break-all}
+.check-row{font-size:12px;padding:2px 0}
+.check-ok{color:#2e7d32}
+.check-fail{color:#c62828}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:6px 10px;background:#f5f5f5;
+   border-bottom:1px solid #e0e0e0;font-weight:500}
+td{padding:6px 10px;border-bottom:1px solid #f0f0f0}
+</style>
 </head>
 <body>
-  <header>
-    <h1>k8s-launcher</h1>
-    <span class="badge">ready</span>
-  </header>
-  <div class="container">
+
+<header>
+  <h1>k8s-launcher</h1>
+  <span id="hbadge" class="badge b-info">ready</span>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="showTab('bootstrap',this)">Bootstrap</button>
+  <button class="tab" onclick="showTab('configure',this)">Configure</button>
+  <button class="tab" onclick="showTab('deploy',this)">Deploy</button>
+  <button class="tab" onclick="showTab('status',this)">Status</button>
+</div>
+
+<!-- ══════════════════════ BOOTSTRAP TAB ══════════════════════════════════ -->
+<div id="tab-bootstrap" class="panel active">
+
+  <div class="card">
+    <h2>Phase 0 — Install Ansible on controller</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Checks if Ansible is installed on this machine. Installs it if not.
+    </p>
+    <button class="btn btn-primary" onclick="installAnsible()">Install / verify Ansible</button>
+    <div id="r-ansible" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Phase 1 — SSH key bootstrap</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Enter each cluster node. Password is used once to push the SSH key
+      and is never stored anywhere.
+    </p>
+    <div id="bnodes"></div>
+    <button class="btn btn-sm" style="margin-top:4px"
+      onclick="addBNode()">+ Add node</button>
+    <div style="margin-top:.75rem">
+      <button class="btn btn-primary" onclick="runBootstrapSSH()">Bootstrap SSH</button>
+    </div>
+    <div id="r-ssh" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Phase 2 — Preflight checks</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Verifies OS, RAM, disk, swap, Python 3, and clean state on every node.
+    </p>
+    <button class="btn btn-primary" onclick="runPreflight()">Run preflight</button>
+    <div id="r-preflight" style="margin-top:.5rem"></div>
+  </div>
+
+</div>
+
+<!-- ══════════════════════ CONFIGURE TAB ══════════════════════════════════ -->
+<div id="tab-configure" class="panel">
+
+  <div class="card">
+    <h2>Control plane</h2>
+    <div class="field-row"><label>IP address</label>
+      <input type="text" id="cp-ip" placeholder="10.0.0.1"></div>
+    <div class="field-row"><label>Hostname</label>
+      <input type="text" id="cp-hostname" placeholder="ansiblecplane"></div>
+    <div class="field-row"><label>SSH user</label>
+      <input type="text" id="cp-user" placeholder="ansiblecplane"></div>
+  </div>
+
+  <div class="card">
+    <h2>Worker nodes</h2>
+    <div id="workers"></div>
+    <button class="btn btn-sm" style="margin-top:4px"
+      onclick="addWorker()">+ Add worker</button>
+  </div>
+
+  <div class="card">
+    <h2>Versions
+      <span style="font-size:11px;font-weight:400;color:#888;margin-left:6px">
+        validated defaults pre-filled
+      </span>
+    </h2>
+    <div class="field-row"><label>Kubernetes</label>
+      <input type="text" id="v-k8s" value="1.30.5" oninput="checkCompat()"></div>
+    <div id="w-k8s"></div>
+    <div class="field-row"><label>containerd</label>
+      <input type="text" id="v-containerd" value="1.7.22" oninput="checkCompat()"></div>
+    <div id="w-containerd"></div>
+    <div class="field-row"><label>Calico</label>
+      <input type="text" id="v-calico" value="v3.28.2"></div>
+    <div class="field-row"><label>Longhorn</label>
+      <input type="text" id="v-longhorn" value="1.7.2" oninput="checkCompat()"></div>
+    <div id="w-longhorn"></div>
+  </div>
+
+  <div class="card">
+    <h2>Network</h2>
+    <div class="field-row"><label>Pod CIDR</label>
+      <input type="text" id="pod-cidr" value="192.168.0.0/16"></div>
+    <div class="field-row"><label>Service CIDR</label>
+      <input type="text" id="svc-cidr" value="10.96.0.0/12"></div>
+    <div class="field-row"><label>Cluster name</label>
+      <input type="text" id="cluster-name" value="k8s-cluster"></div>
+  </div>
+
+  <div class="card">
+    <h2>Components</h2>
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="cb-longhorn" checked> Deploy Longhorn storage
+    </label>
+  </div>
+
+  <button class="btn btn-primary" onclick="generateConfig()">Generate configuration</button>
+  <div id="r-config" style="margin-top:.75rem"></div>
+
+  <div id="config-preview" style="display:none;margin-top:.75rem">
     <div class="card">
-      <h2>Welcome</h2>
-      <p>Skeleton running. Tabs will appear in the next steps.</p>
+      <h2>Generated inventory.ini</h2>
+      <pre id="prev-inv" class="log" style="height:auto;max-height:180px"></pre>
     </div>
     <div class="card">
-      <h2>API</h2>
-      <p>Test endpoint: <a href="/api/status">/api/status</a></p>
+      <h2>Generated group_vars/all.yml</h2>
+      <pre id="prev-vars" class="log" style="height:auto;max-height:260px"></pre>
     </div>
   </div>
+
+</div>
+
+<!-- ══════════════════════ DEPLOY TAB ═════════════════════════════════════ -->
+<div id="tab-deploy" class="panel">
+
+  <div class="card">
+    <h2>Phases</h2>
+    <ul class="phase-list">
+      <li>
+        <span class="dot" id="dot-k8s"></span>
+        Phase 4 — Deploy Kubernetes
+        <button class="btn btn-sm btn-primary" style="margin-left:auto"
+          onclick="deployK8s()">Deploy</button>
+      </li>
+      <li>
+        <span class="dot" id="dot-vk8s"></span>
+        Phase 5 — Validate Kubernetes
+        <button class="btn btn-sm" style="margin-left:auto"
+          onclick="validateK8s()">Validate</button>
+      </li>
+      <li>
+        <span class="dot" id="dot-lh"></span>
+        Phase 6 — Deploy Longhorn
+        <button class="btn btn-sm btn-primary" style="margin-left:auto"
+          onclick="deployLonghorn()">Deploy</button>
+      </li>
+      <li>
+        <span class="dot" id="dot-vlh"></span>
+        Phase 7 — Validate Longhorn
+        <button class="btn btn-sm" style="margin-left:auto"
+          onclick="validateLonghorn()">Validate</button>
+      </li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Live log</h2>
+    <div class="log" id="log">Waiting for deployment...</div>
+  </div>
+
+</div>
+
+<!-- ══════════════════════ STATUS TAB ═════════════════════════════════════ -->
+<div id="tab-status" class="panel">
+
+  <div class="card">
+    <h2>Kubernetes — validation results</h2>
+    <div id="st-k8s"><span style="color:#888;font-size:13px">Run Validate Kubernetes first.</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Longhorn — validation results</h2>
+    <div id="st-lh"><span style="color:#888;font-size:13px">Run Validate Longhorn first.</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Join token</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.5rem">
+      Saved on control plane at
+      <span class="mono">~/cluster-artifacts/join-command.txt</span>
+    </p>
+    <button class="btn btn-sm" onclick="fetchJoinToken()">Show join token</button>
+    <div id="st-token" style="margin-top:.5rem"></div>
+    <div class="info-box">
+      Token TTL is 24 hours. To regenerate on the control plane:<br>
+      <span class="mono">kubeadm token create --print-join-command</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Longhorn UI</h2>
+    <div id="st-ui" style="font-size:13px;color:#888">
+      Run Validate Longhorn to get the URL.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>kubeconfig</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Download and copy to <span class="mono">~/.kube/config</span>
+      on your local machine to use kubectl.
+    </p>
+    <a href="/api/status/kubeconfig" download="kubeconfig.yaml">
+      <button class="btn btn-success">Download kubeconfig.yaml</button>
+    </a>
+  </div>
+
+</div>
+
+<script>
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function showTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ── Bootstrap tab ──────────────────────────────────────────────────────────────
+let bnc = 0;
+function addBNode(ip='', hn='', user='') {
+  bnc++;
+  const d = document.createElement('div');
+  d.className = 'node-row';
+  d.innerHTML = `
+    <input type="text" placeholder="IP" value="${ip}" class="bi">
+    <input type="text" placeholder="Hostname" value="${hn}" class="bh">
+    <input type="text" placeholder="SSH user" value="${user}" class="bu">
+    <input type="password" placeholder="Password" class="bp">
+    <button class="btn btn-sm btn-danger"
+      onclick="this.parentElement.remove()">✕</button>`;
+  document.getElementById('bnodes').appendChild(d);
+}
+addBNode('10.110.188.85','ansiblecplane','ansiblecplane');
+addBNode('10.110.188.86','ansibleworker1','ansibleworker1');
+addBNode('10.110.188.87','ansibleworker2','ansibleworker2');
+
+async function installAnsible() {
+  const el = document.getElementById('r-ansible');
+  el.innerHTML = '<span class="badge b-run">Installing...</span>';
+  const r = await fetch('/api/bootstrap/ansible', {method:'POST'});
+  const d = await r.json();
+  el.innerHTML = d.status === 'ok'
+    ? `<span class="badge b-ok">${d.message}</span>`
+    : `<span class="badge b-err">${d.detail}</span>`;
+}
+
+async function runBootstrapSSH() {
+  const rows = document.querySelectorAll('#bnodes .node-row');
+  const nodes = Array.from(rows).map(r => ({
+    ip: r.querySelector('.bi').value,
+    hostname: r.querySelector('.bh').value,
+    ssh_user: r.querySelector('.bu').value,
+    ssh_pass: r.querySelector('.bp').value,
+  })).filter(n => n.ip && n.ssh_pass);
+
+  const el = document.getElementById('r-ssh');
+  el.innerHTML = '<span class="badge b-run">Pushing keys...</span>';
+  const resp = await fetch('/api/bootstrap/ssh', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({nodes})
+  });
+  const d = await resp.json();
+  // clear passwords from DOM
+  rows.forEach(r => r.querySelector('.bp').value = '');
+  el.innerHTML = d.results.map(res =>
+    `<div style="margin:3px 0">
+      <span class="badge ${res.status==='ok'?'b-ok':'b-err'}">${res.ip}</span>
+      ${res.message}</div>`
+  ).join('');
+}
+
+async function runPreflight() {
+  const rows = document.querySelectorAll('#bnodes .node-row');
+  const nodes = Array.from(rows).map(r => ({
+    ip: r.querySelector('.bi').value,
+    hostname: r.querySelector('.bh').value,
+    ssh_user: r.querySelector('.bu').value,
+  })).filter(n => n.ip);
+
+  const el = document.getElementById('r-preflight');
+  el.innerHTML = '<span class="badge b-run">Checking nodes...</span>';
+  const resp = await fetch('/api/preflight', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({nodes})
+  });
+  const d = await resp.json();
+  el.innerHTML = d.results.map(node => {
+    const cls = node.status==='ok'?'b-ok':'b-err';
+    const checks = Object.entries(node.checks).map(([k,v]) =>
+      `<div class="check-row ${v.startsWith('FAIL')?'check-fail':'check-ok'}">
+        ${v.startsWith('FAIL')?'✗':'✓'} ${k}: ${v}</div>`
+    ).join('');
+    return `<div style="margin:6px 0">
+      <strong>${node.hostname}</strong>
+      <span class="badge ${cls}" style="margin-left:6px">${node.status}</span>
+      <div style="margin-left:1rem;margin-top:3px">${checks}</div></div>`;
+  }).join('');
+}
+
+// ── Configure tab ──────────────────────────────────────────────────────────────
+let wc = 0;
+function addWorker(ip='', hn='', user='') {
+  wc++;
+  const d = document.createElement('div');
+  d.className = 'node-row';
+  d.innerHTML = `
+    <input type="text" placeholder="IP" value="${ip}" class="wi">
+    <input type="text" placeholder="Hostname" value="${hn}" class="wh">
+    <input type="text" placeholder="SSH user" value="${user}" class="wu">
+    <button class="btn btn-sm btn-danger"
+      onclick="this.parentElement.remove()">✕</button>`;
+  document.getElementById('workers').appendChild(d);
+}
+addWorker('10.110.188.86','ansibleworker1','ansibleworker1');
+addWorker('10.110.188.87','ansibleworker2','ansibleworker2');
+
+const COMPAT = [
+  {field:'v-k8s', warn:'w-k8s',
+   check: v => parseFloat(v.replace('v','')) >= 1.32,
+   msg: 'Calico 3.28 does not support Kubernetes 1.32+. Upgrade Calico to 3.30+.'},
+  {field:'v-k8s', warn:'w-k8s',
+   check: v => parseFloat(v.replace('v','')) < 1.28,
+   msg: 'Longhorn 1.7 requires Kubernetes 1.28 or higher.'},
+  {field:'v-containerd', warn:'w-containerd',
+   check: v => v.startsWith('2.'),
+   msg: 'containerd 2.x changes the CRI socket path. Verify kubeadm config.'},
+];
+function checkCompat() {
+  ['w-k8s','w-containerd','w-longhorn'].forEach(id =>
+    document.getElementById(id).innerHTML = '');
+  COMPAT.forEach(rule => {
+    const val = document.getElementById(rule.field).value;
+    if (rule.check(val))
+      document.getElementById(rule.warn).innerHTML =
+        `<div class="warn-box">Warning: ${rule.msg}</div>`;
+  });
+}
+
+async function generateConfig() {
+  const workers = Array.from(
+    document.querySelectorAll('#workers .node-row')
+  ).map(r => ({
+    ip: r.querySelector('.wi').value,
+    hostname: r.querySelector('.wh').value,
+    ssh_user: r.querySelector('.wu').value,
+  })).filter(w => w.ip);
+
+  const body = {
+    control_plane: {
+      ip: document.getElementById('cp-ip').value,
+      hostname: document.getElementById('cp-hostname').value,
+      ssh_user: document.getElementById('cp-user').value,
+    },
+    workers,
+    kubernetes_version: document.getElementById('v-k8s').value,
+    containerd_version: document.getElementById('v-containerd').value,
+    calico_version:     document.getElementById('v-calico').value,
+    longhorn_version:   document.getElementById('v-longhorn').value,
+    pod_cidr:     document.getElementById('pod-cidr').value,
+    service_cidr: document.getElementById('svc-cidr').value,
+    cluster_name: document.getElementById('cluster-name').value,
+    deploy_longhorn: document.getElementById('cb-longhorn').checked,
+  };
+
+  const el = document.getElementById('r-config');
+  el.innerHTML = '<span class="badge b-run">Generating...</span>';
+  const resp = await fetch('/api/configure', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await resp.json();
+  if (d.status === 'ok') {
+    el.innerHTML =
+      `<span class="badge b-ok">Generated — workers: ${d.derived.worker_count},
+       replicas: ${d.derived.longhorn_replica_count}</span>`;
+    loadPreview();
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.detail}</span>`;
+  }
+}
+
+async function loadPreview() {
+  const r = await fetch('/api/configure/preview');
+  const d = await r.json();
+  document.getElementById('config-preview').style.display = 'block';
+  document.getElementById('prev-inv').textContent = d.inventory || '';
+  document.getElementById('prev-vars').textContent = d.group_vars || '';
+}
+
+// ── Deploy tab ─────────────────────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+
+function appendLog(text) {
+  const s = document.createElement('span');
+  if (text.startsWith('PLAY')) s.className = 'l-play';
+  else if (/ok:/.test(text)) s.className = 'l-ok';
+  else if (/changed:/.test(text)) s.className = 'l-changed';
+  else if (/FAILED|ERROR|fatal/.test(text)) s.className = 'l-err';
+  else if (/skipping/.test(text)) s.className = 'l-skip';
+  s.textContent = text + '\n';
+  logEl.appendChild(s);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setDot(id, state) {
+  document.getElementById(id).className = 'dot ' + state;
+}
+
+function streamDeploy(url, dotId) {
+  logEl.innerHTML = '';
+  setDot(dotId, 'running');
+  const es = new EventSource(url);
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot(dotId, 'ok'); es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot(dotId, 'error');
+      appendLog('FAILED — exit code: ' + e.data.split(':')[1]);
+      es.close();
+    } else {
+      appendLog(e.data);
+    }
+  };
+  es.onerror = () => { setDot(dotId, 'error'); es.close(); };
+}
+
+function deployK8s()      { streamDeploy('/api/deploy/k8s/stream',      'dot-k8s'); }
+function deployLonghorn() { streamDeploy('/api/deploy/longhorn/stream',  'dot-lh');  }
+
+async function validateK8s() {
+  setDot('dot-vk8s', 'running');
+  const r = await fetch('/api/validate/k8s', {method:'POST'});
+  const d = await r.json();
+  setDot('dot-vk8s', d.status === 'ok' ? 'ok' : 'error');
+  renderChecks('st-k8s', d.checks);
+}
+
+async function validateLonghorn() {
+  setDot('dot-vlh', 'running');
+  const r = await fetch('/api/validate/longhorn', {method:'POST'});
+  const d = await r.json();
+  setDot('dot-vlh', d.status === 'ok' ? 'ok' : 'error');
+  renderChecks('st-lh', d.checks);
+  // extract Longhorn UI URL
+  const ui = d.checks && d.checks.longhorn_ui;
+  if (ui && ui.startsWith('ok')) {
+    const url = ui.replace(/^ok — /, '');
+    document.getElementById('st-ui').innerHTML =
+      `<a href="${url}" target="_blank" style="color:#1976d2;font-size:13px">${url}</a>`;
+  }
+}
+
+// ── Status tab ─────────────────────────────────────────────────────────────────
+function renderChecks(elId, checks) {
+  if (!checks) return;
+  document.getElementById(elId).innerHTML = Object.entries(checks).map(([k,v]) => {
+    const ok = !v.startsWith('FAIL');
+    return `<div class="check-row ${ok?'check-ok':'check-fail'}" style="margin:3px 0">
+      ${ok?'✓':'✗'} <strong>${k}</strong>: ${v}</div>`;
+  }).join('');
+}
+
+async function fetchJoinToken() {
+  const r = await fetch('/api/deploy/k8s/jointoken');
+  const d = await r.json();
+  const el = document.getElementById('st-token');
+  if (d.status === 'ok') {
+    el.innerHTML =
+      `<div class="mono" style="margin:.5rem 0;padding:8px">${d.join_command}</div>
+       <button class="btn btn-sm"
+         onclick="navigator.clipboard.writeText('${d.join_command}')">
+         Copy command</button>`;
+  } else {
+    el.innerHTML = `<span class="badge b-warn">${d.message}</span>`;
+  }
+}
+</script>
 </body>
 </html>
