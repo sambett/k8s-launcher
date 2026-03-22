@@ -286,3 +286,110 @@ async def validate_longhorn():
         "status": "error" if failed else "ok",
         "checks": checks
     }
+
+
+# ── Add worker node ────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel as _BaseModel
+
+class NewWorker(_BaseModel):
+    ip: str
+    hostname: str
+    ssh_user: str
+    ssh_pass: str
+
+
+@router.post("/api/cluster/add-worker")
+async def add_worker(node: NewWorker):
+    """
+    Add a new worker node to the running cluster.
+    1. Push SSH key to new node (paramiko, password once)
+    2. Fetch join command from control plane
+    3. Run join command on new node
+    4. Label node as worker
+    5. Append node to inventory
+    """
+    from core.ssh import get_client_with_password, get_client_with_key, run_command
+    from core.paths import SSH_PUB_KEY_PATH
+    import socket
+    import paramiko
+
+    # Step 1 — push SSH key to new node
+    pub_key = SSH_PUB_KEY_PATH.read_text().strip()
+    client = None
+    try:
+        client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
+        cmds = [
+            "mkdir -p ~/.ssh",
+            "chmod 700 ~/.ssh",
+            f"echo '{pub_key}' >> ~/.ssh/authorized_keys",
+            "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
+            "chmod 600 ~/.ssh/authorized_keys",
+        ]
+        for cmd in cmds:
+            _, stderr, rc = run_command(client, cmd)
+            if rc != 0:
+                return {"status": "error", "step": "ssh_key",
+                        "message": f"Command failed: {cmd} — {stderr}"}
+    except paramiko.AuthenticationException:
+        return {"status": "error", "step": "ssh_key",
+                "message": "Authentication failed — wrong password?"}
+    except (socket.timeout, paramiko.SSHException) as exc:
+        return {"status": "error", "step": "ssh_key",
+                "message": f"Connection failed: {exc}"}
+    finally:
+        if client:
+            client.close()
+
+    # Step 2 — fetch join command from control plane
+    out, rc = _run_on_cp("cat ~/cluster-artifacts/join-command.txt")
+    join_lines = [l.strip() for l in out.splitlines()
+                  if l.strip().startswith("kubeadm")]
+    if not join_lines:
+        return {"status": "error", "step": "join_command",
+                "message": "Could not read join command from control plane."}
+    join_cmd = join_lines[0]
+
+    # Step 3 — run join command on new node
+    result = subprocess.run(
+        [
+            "ansible", "-i",
+            f"{node.ip},",
+            "all",
+            "-m", "shell",
+            "-a", f"sudo {join_cmd}",
+            "-u", node.ssh_user,
+            "--private-key", str(SSH_KEY_PATH),
+            "--become",
+        ],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return {"status": "error", "step": "join",
+                "message": f"Join failed:\n{result.stdout}\n{result.stderr}"}
+
+    # Step 4 — label node as worker
+    _run_on_cp(
+        f"kubectl label node {node.hostname} node-role.kubernetes.io/worker=worker --overwrite"
+    )
+
+    # Step 5 — append to inventory
+    inv = INVENTORY_PATH.read_text()
+    new_line = (
+        f"{node.hostname} ansible_host={node.ip} "
+        f"ansible_user={node.ssh_user}"
+    )
+    if new_line not in inv:
+        inv = inv.replace(
+            "[all:vars]",
+            f"{new_line}\n\n[all:vars]"
+        )
+        INVENTORY_PATH.write_text(inv)
+
+    # Step 6 — verify node joined
+    out, _ = _run_on_cp("kubectl get nodes --no-headers")
+    return {
+        "status": "ok",
+        "message": f"Node {node.hostname} joined successfully",
+        "cluster_nodes": out
+    }

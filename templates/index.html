@@ -273,6 +273,25 @@ td{padding:6px 10px;border-bottom:1px solid #f0f0f0}
   </div>
 
   <div class="card">
+    <h2>Add worker node</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Add a new worker to the running cluster. The join token is fetched
+      automatically from the control plane.
+    </p>
+    <div class="field-row"><label>IP address</label>
+      <input type="text" id="aw-ip" placeholder="10.0.0.10"></div>
+    <div class="field-row"><label>Hostname</label>
+      <input type="text" id="aw-hostname" placeholder="worker03"></div>
+    <div class="field-row"><label>SSH user</label>
+      <input type="text" id="aw-user" placeholder="ubuntu"></div>
+    <div class="field-row"><label>Password</label>
+      <input type="password" id="aw-pass" placeholder="one-time, never stored"></div>
+    <button class="btn btn-primary" style="margin-top:.5rem"
+      onclick="addWorkerNode()">Add worker</button>
+    <div id="r-addworker" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
     <h2>kubeconfig</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
       Download and copy to <span class="mono">~/.kube/config</span>
