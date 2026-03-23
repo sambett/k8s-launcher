@@ -96,7 +96,7 @@ def _make_group_vars(config: ClusterConfig) -> str:
 # ── Kubernetes ─────────────────────────────────────────────────────────────────
 kubernetes_version: "{config.kubernetes_version}"
 containerd_version: "{config.containerd_version}"
-calico_version:     "{config.calico_version}"
+calico_version:     "{ ("v" + config.calico_version) if not config.calico_version.startswith("v") else config.calico_version }"
 
 # ── Control plane ──────────────────────────────────────────────────────────────
 cp_hostname: "{cp.hostname}"
