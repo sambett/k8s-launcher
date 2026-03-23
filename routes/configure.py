@@ -172,3 +172,25 @@ async def preview_files():
         "inventory":  INVENTORY_PATH.read_text(),
         "group_vars": VARS_PATH.read_text()
     }
+
+
+@router.get("/api/compat-matrix")
+async def get_compat_matrix():
+    """
+    Return the full compat_matrix.json content.
+    Used by the dashboard to load compatibility rules dynamically.
+    """
+    import json
+    from core.paths import COMPAT_MATRIX_PATH
+    if not COMPAT_MATRIX_PATH.exists():
+        raise HTTPException(status_code=404, detail="compat_matrix.json not found")
+    return json.loads(COMPAT_MATRIX_PATH.read_text())
+
+
+@router.get("/api/compat-matrix")
+async def get_compat_matrix():
+    import json
+    from core.paths import COMPAT_MATRIX_PATH
+    if not COMPAT_MATRIX_PATH.exists():
+        raise HTTPException(status_code=404, detail="compat_matrix.json not found")
+    return json.loads(COMPAT_MATRIX_PATH.read_text())

@@ -556,3 +556,42 @@ async def reset_stream(level: str = "cluster", confirmation: str = ""):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
+
+
+# ── Reset preview ──────────────────────────────────────────────────────────────
+
+@router.get("/api/reset/preview")
+async def reset_preview():
+    """
+    Return the list of nodes that would be reset.
+    Reads from the current generated/inventory.ini.
+    """
+    if not INVENTORY_PATH.exists():
+        return {"status": "no_inventory",
+                "message": "No inventory found. Run Configure first.",
+                "nodes": []}
+
+    nodes = []
+    current_section = None
+
+    for line in INVENTORY_PATH.read_text().splitlines():
+        line = line.strip()
+        if line.startswith('[') and line.endswith(']'):
+            current_section = line[1:-1]
+        elif line and not line.startswith('#') \
+                and not line.startswith('[') \
+                and current_section in ('control_plane', 'workers'):
+            parts = line.split()
+            hostname = parts[0]
+            ip = ''
+            for part in parts[1:]:
+                if part.startswith('ansible_host='):
+                    ip = part.split('=')[1]
+            nodes.append({
+                "hostname": hostname,
+                "ip": ip,
+                "role": "control-plane" if current_section == "control_plane"
+                        else "worker"
+            })
+
+    return {"status": "ok", "nodes": nodes}

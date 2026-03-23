@@ -312,6 +312,35 @@ function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'reset') loadResetPreview();
+}
+
+async function loadResetPreview() {
+  const el = document.getElementById('reset-node-list');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/reset/preview');
+    const d = await r.json();
+    if (d.status === 'no_inventory') {
+      el.innerHTML = '<span style="color:#e65100">No inventory found. Run Configure first.</span>';
+      return;
+    }
+    if (!d.nodes || d.nodes.length === 0) {
+      el.innerHTML = '<span style="color:#e65100">No nodes found in inventory.</span>';
+      return;
+    }
+    el.innerHTML = d.nodes.map(n =>
+      '<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid #ffcdd2">' +
+      '<span style="min-width:160px;font-weight:500">' + n.hostname + '</span>' +
+      '<span style="color:#888;min-width:120px">' + n.ip + '</span>' +
+      '<span class="badge ' + (n.role === 'control-plane' ? 'b-info' : 'b-warn') + '">' +
+      n.role + '</span></div>'
+    ).join('') +
+    '<div style="margin-top:.5rem;font-size:12px;color:#c62828">' +
+    d.nodes.length + ' node(s) will be affected</div>';
+  } catch(e) {
+    el.innerHTML = '<span style="color:#c62828">Could not load preview: ' + e + '</span>';
+  }
 }
 
 // ── Bootstrap tab ──────────────────────────────────────────────────────────────
@@ -413,27 +442,61 @@ function addWorker(ip='', hn='', user='') {
 addWorker('10.110.188.86','ansibleworker1','ansibleworker1');
 addWorker('10.110.188.87','ansibleworker2','ansibleworker2');
 
-const COMPAT = [
-  {field:'v-k8s', warn:'w-k8s',
-   check: v => parseFloat(v.replace('v','')) >= 1.32,
-   msg: 'Calico 3.28 does not support Kubernetes 1.32+. Upgrade Calico to 3.30+.'},
-  {field:'v-k8s', warn:'w-k8s',
-   check: v => parseFloat(v.replace('v','')) < 1.28,
-   msg: 'Longhorn 1.7 requires Kubernetes 1.28 or higher.'},
-  {field:'v-containerd', warn:'w-containerd',
-   check: v => v.startsWith('2.'),
-   msg: 'containerd 2.x changes the CRI socket path. Verify kubeadm config.'},
-];
+let COMPAT_RULES = [];
+
+async function loadCompatMatrix() {
+  try {
+    const r = await fetch('/api/compat-matrix');
+    const d = await r.json();
+    COMPAT_RULES = d.rules || [];
+    loadDefaultVersions(d.presets);
+  } catch(e) {
+    console.warn('Could not load compat matrix:', e);
+  }
+}
+
+function loadDefaultVersions(presets) {
+  if (!presets) return;
+  const preset = presets['stable-sprint2'];
+  if (!preset) return;
+  document.getElementById('v-k8s').value       = preset.kubernetes  || '1.30.5';
+  document.getElementById('v-containerd').value = preset.containerd || '1.7.22';
+  document.getElementById('v-calico').value     = preset.calico     || 'v3.28.2';
+  document.getElementById('v-longhorn').value   = preset.longhorn   || '1.7.2';
+}
+
 function checkCompat() {
   ['w-k8s','w-containerd','w-longhorn'].forEach(id =>
     document.getElementById(id).innerHTML = '');
-  COMPAT.forEach(rule => {
-    const val = document.getElementById(rule.field).value;
-    if (rule.check(val))
-      document.getElementById(rule.warn).innerHTML =
-        `<div class="warn-box">Warning: ${rule.msg}</div>`;
+
+  const k8s        = parseFloat(document.getElementById('v-k8s').value.replace('v',''));
+  const containerd = document.getElementById('v-containerd').value;
+  const longhorn   = document.getElementById('v-longhorn').value;
+
+  COMPAT_RULES.forEach(rule => {
+    const cond = rule.if;
+    let triggered = false;
+    let warnEl = 'w-k8s';
+
+    if (cond.kubernetes_gte && k8s >= parseFloat(cond.kubernetes_gte)) {
+      triggered = true; warnEl = 'w-k8s';
+    }
+    if (cond.kubernetes_lt && k8s < parseFloat(cond.kubernetes_lt)) {
+      triggered = true; warnEl = 'w-k8s';
+    }
+    if (cond.containerd_major && containerd.startsWith(cond.containerd_major + '.')) {
+      triggered = true; warnEl = 'w-containerd';
+    }
+
+    if (triggered) {
+      const cls = rule.severity === 'breaking' ? 'warn-box' : 'warn-box';
+      document.getElementById(warnEl).innerHTML +=
+        `<div class="${cls}">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
+    }
   });
 }
+
+loadCompatMatrix();
 
 async function generateConfig() {
   const workers = Array.from(
@@ -663,6 +726,14 @@ async function runReset() {
       Nodes are left clean and ready to redeploy.
       This cannot be undone.
     </p>
+
+    <div id="reset-preview-box" style="background:#fff8f8;border:1px solid #ffcdd2;
+         border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;font-size:13px">
+      <strong style="color:#c62828">Nodes that will be reset:</strong>
+      <div id="reset-node-list" style="margin-top:.5rem;color:#555">
+        Loading...
+      </div>
+    </div>
 
     <div style="background:#fff8f8;border:1px solid #ffcdd2;border-radius:6px;
                 padding:1rem;margin-bottom:1rem">
