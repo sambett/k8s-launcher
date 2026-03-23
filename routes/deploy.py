@@ -487,7 +487,7 @@ def _reset_stream(level: str):
          "/etc/apt/keyrings/docker.asc "
          "/etc/apt/keyrings/docker.gpg"),
         ("remove artifacts",
-         "rm -rf ~/cluster-artifacts ~/.kube"),
+         "sudo rm -rf ~/cluster-artifacts ~/.kube /root/.kube"),
         ("apt update",
          "sudo apt-get update -qq 2>/dev/null || true"),
     ]
@@ -523,8 +523,12 @@ def _reset_stream(level: str):
             capture_output=True, text=True
         )
         yield "data: [full wipe] clearing generated inventory...\n\n"
-        INVENTORY_PATH.unlink(missing_ok=True)
-        VARS_PATH.unlink(missing_ok=True)
+        import shutil
+        gen_dir = INVENTORY_PATH.parent.parent
+        if gen_dir.exists():
+            shutil.rmtree(gen_dir)
+            gen_dir.mkdir(parents=True, exist_ok=True)
+            (gen_dir / "group_vars").mkdir(exist_ok=True)
         yield "data: [full wipe] done — machines are at absolute zero\n\n"
 
     yield "data: Reset complete. Nodes are clean and ready.\n\n"
