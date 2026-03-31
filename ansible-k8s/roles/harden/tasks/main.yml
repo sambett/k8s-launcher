@@ -1,0 +1,138 @@
+---
+# harden — post-deploy cluster hardening.
+# Runs on control_plane only, after Calico and validation are complete.
+# All tasks are idempotent — safe to re-run on an already-hardened cluster.
+
+# ── Calico DaemonSet deletion protection ─────────────────────────────────────
+
+- name: harden | Add deletion-protection annotation to calico-node DaemonSet
+  command: >
+    kubectl annotate ds calico-node -n calico-system
+    kubectl.kubernetes.io/deletion-protection=true --overwrite
+  changed_when: false
+
+- name: harden | Add deletion-protection annotation to Calico Installation CR
+  command: >
+    kubectl annotate installation default
+    kubectl.kubernetes.io/deletion-protection=true --overwrite
+  changed_when: false
+
+- name: harden | Verify deletion-protection on calico-node DaemonSet
+  shell: >
+    kubectl get ds calico-node -n calico-system
+    -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/deletion-protection}'
+  register: ds_protection
+  changed_when: false
+  failed_when: ds_protection.stdout != "true"
+
+# ── Typha placement — scale to 1 via Installation CR ─────────────────────────
+
+- name: harden | Scale calico-typha to 1 replica via Installation CR
+  command: >
+    kubectl patch installation default --type=merge
+    -p '{"spec":{"typhaDeployment":{"spec":{"replicas":1}}}}'
+  changed_when: false
+
+- name: harden | Find any extra typha pods beyond the first
+  shell: >
+    kubectl get pods -n calico-system -l k8s-app=calico-typha
+    --no-headers -o custom-columns=NAME:.metadata.name
+    | tail -n +2
+  register: extra_typha_pods
+  changed_when: false
+
+- name: harden | Delete extra typha pods to force scale-down
+  command: "kubectl delete pod -n calico-system {{ item }}"
+  loop: "{{ extra_typha_pods.stdout_lines }}"
+  when: extra_typha_pods.stdout_lines | length > 0
+  changed_when: true
+
+- name: harden | Wait for exactly 1 typha pod Running
+  shell: >
+    kubectl get pods -n calico-system -l k8s-app=calico-typha
+    --no-headers | grep -c "Running" || true
+  register: typha_running
+  until: typha_running.stdout | trim == "1"
+  retries: 18
+  delay: 10
+  changed_when: false
+
+# ── PKI backup ────────────────────────────────────────────────────────────────
+
+- name: harden | Create artifacts directory
+  file:
+    path: "{{ artifacts_dir }}"
+    state: directory
+    mode: "0750"
+    owner: "{{ ansible_user }}"
+  become: yes
+
+- name: harden | Backup Kubernetes PKI certificates
+  archive:
+    path: /etc/kubernetes/pki/
+    dest: "{{ artifacts_dir }}/pki-backup.tar.gz"
+    format: gz
+  become: yes
+
+- name: harden | Set PKI backup ownership
+  file:
+    path: "{{ artifacts_dir }}/pki-backup.tar.gz"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  become: yes
+
+# ── etcd snapshot ─────────────────────────────────────────────────────────────
+# kubectl cp fails on distroless etcd image (no tar).
+# Fix: write snapshot directly to /var/lib/etcd which is bind-mounted
+# from the host at /var/lib/etcd — then copy from host filesystem.
+
+- name: harden | Get etcd pod name
+  shell: >
+    kubectl get pod -n kube-system -l component=etcd
+    -o jsonpath='{.items[0].metadata.name}'
+  register: etcd_pod
+  changed_when: false
+
+- name: harden | Take etcd snapshot into host-mounted etcd data dir
+  shell: >
+    kubectl exec -n kube-system {{ etcd_pod.stdout }} --
+    etcdctl snapshot save /var/lib/etcd/etcd-snapshot-post-harden.db
+    --endpoints=https://127.0.0.1:2379
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt
+    --cert=/etc/kubernetes/pki/etcd/server.crt
+    --key=/etc/kubernetes/pki/etcd/server.key
+  changed_when: true
+  become: no
+
+- name: harden | Move snapshot from etcd data dir to artifacts dir
+  shell: >
+    cp /var/lib/etcd/etcd-snapshot-post-harden.db
+    {{ artifacts_dir }}/etcd-snapshot-post-harden-$(date +%Y%m%d).db &&
+    rm -f /var/lib/etcd/etcd-snapshot-post-harden.db
+  become: yes
+  changed_when: true
+
+- name: harden | Set snapshot ownership
+  shell: >
+    chown {{ ansible_user }}:{{ ansible_user }}
+    {{ artifacts_dir }}/etcd-snapshot-post-harden-$(date +%Y%m%d).db
+  become: yes
+  changed_when: false
+
+- name: harden | Verify snapshot is non-empty
+  shell: >
+    ls -s {{ artifacts_dir }}/etcd-snapshot-post-harden-$(date +%Y%m%d).db
+    | awk '{print $1}'
+  register: snapshot_size
+  changed_when: false
+  failed_when: snapshot_size.stdout | int < 1000
+
+- name: harden | Print hardening summary
+  debug:
+    msg:
+      - "Cluster hardening complete ✓"
+      - "calico-node DaemonSet: deletion-protected"
+      - "Calico Installation CR: deletion-protected"
+      - "calico-typha: 1 replica on control plane only"
+      - "PKI backup: {{ artifacts_dir }}/pki-backup.tar.gz"
+      - "etcd snapshot: {{ artifacts_dir }}/etcd-snapshot-post-harden-*.db"
