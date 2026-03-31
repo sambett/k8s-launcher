@@ -6,7 +6,7 @@ dashboard_http_user:    "admin"
 dashboard_http_pass:    "REPLACE_WITH_PASSWORD"
 dashboard_gitlab_token: "REPLACE_FROM_secrets.env"
 dashboard_port:         8888
-workbench_repo:         "https://github.com/sambett/k8s-launcher.git"
+workbench_repo:         "https://gitkube.deslabcloud.com/AI-workbench/k8s-launcher.git"
 jhub_gitlab_url:        "REPLACE_WITH_GITLAB_URL"
 jhub_registry_host:     "REPLACE_WITH_REGISTRY_HOST"
 jhub_registry_namespace: "registry/notebook-images"
