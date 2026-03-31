@@ -1,0 +1,12 @@
+<div id="page-groups" class="page">
+  <h2>Group Management</h2>
+  {% include "pages/groups/create_group.html" %}
+  {% include "pages/groups/group_list.html" %}
+</div>
+
+<script>
+function onGroupsPageShow() {
+  loadGroupList();
+  loadAllUsers();
+}
+</script>

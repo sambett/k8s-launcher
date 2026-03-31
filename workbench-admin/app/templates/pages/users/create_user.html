@@ -1,0 +1,78 @@
+<div class="card">
+  <div style="font-size:.85rem;font-weight:600;color:#c4b5fd;margin-bottom:1rem">
+    Create GitLab User
+  </div>
+  <p style="font-size:.78rem;color:#64748b;margin-bottom:1rem;line-height:1.6">
+    Creates a new GitLab account. The user can log into JupyterHub immediately.
+    Assign them to a group in the Groups tab to grant profile access.
+  </p>
+  <div class="grid2">
+    <div class="fg">
+      <label>Full name</label>
+      <input id="new-user-name" placeholder="e.g. Ahmed Benali"/>
+    </div>
+    <div class="fg">
+      <label>Username</label>
+      <input id="new-user-username" placeholder="e.g. ahmed.benali"/>
+    </div>
+    <div class="fg">
+      <label>Email</label>
+      <input id="new-user-email" type="email" placeholder="e.g. ahmed@university.dz"/>
+    </div>
+    <div class="fg">
+      <label>Temporary password</label>
+      <input id="new-user-password" type="password"
+        placeholder="min 8 chars, strong (e.g. Name@2026!)"/>
+    </div>
+  </div>
+  <div style="margin-top:1rem;display:flex;gap:.8rem;align-items:center">
+    <button class="btn btn-primary" onclick="createUser()">Create User</button>
+    <span id="r-create-user" style="font-size:.8rem;display:none"></span>
+  </div>
+</div>
+
+<script>
+async function createUser() {
+  const name     = document.getElementById('new-user-name').value.trim();
+  const username = document.getElementById('new-user-username').value.trim();
+  const email    = document.getElementById('new-user-email').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const el       = document.getElementById('r-create-user');
+
+  if (!name || !username || !email || !password) {
+    el.style.cssText = 'display:inline;color:#fc8181';
+    el.textContent   = '✗ Fill in all fields.';
+    return;
+  }
+  el.style.cssText = 'display:inline;color:#94a3b8';
+  el.textContent   = 'Creating user…';
+
+  const resp = await fetch('/api/users', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ name, username, email, password })
+  });
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    el.style.cssText = 'display:inline;color:#fc8181';
+    let msg = data.error || 'Error';
+    if (data.detail && data.detail.message) {
+      msg += ' — ' + Object.entries(data.detail.message)
+        .map(([k,v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v))
+        .join(' | ');
+    }
+    el.textContent = '✗ ' + msg;
+    return;
+  }
+
+  el.style.cssText = 'display:inline;color:#68d391';
+  el.textContent   = `✓ "${data.username}" created — go to Groups tab to assign access`;
+  document.getElementById('new-user-name').value     = '';
+  document.getElementById('new-user-username').value = '';
+  document.getElementById('new-user-email').value    = '';
+  document.getElementById('new-user-password').value = '';
+  loadUserList();
+  setTimeout(() => { el.style.display = 'none'; }, 7000);
+}
+</script>

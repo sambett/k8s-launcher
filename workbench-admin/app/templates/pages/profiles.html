@@ -1,0 +1,130 @@
+<div id="page-profiles" class="page active">
+  <h2>Profile Registry</h2>
+
+  <!-- Group filter bar — pills built dynamically from loaded profiles -->
+  <div class="filter-bar" id="group-filter-bar">
+    <span class="filter-label">Group:</span>
+    <!-- pills injected by buildFilterBar() -->
+    <span class="filter-count" id="filter-count"></span>
+  </div>
+
+  <div id="profile-grid" class="profile-grid">
+    <div class="empty">Loading…</div>
+  </div>
+  <div style="margin-top:.5rem">
+    <button class="btn btn-apply" onclick="applyProfiles()">Apply to Cluster</button>
+    <div id="apply-status" class="status"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let _activeGroup = '__all__';
+
+// ── Filter bar ─────────────────────────────────────────────────────────────────
+function buildFilterBar(profiles) {
+  const bar   = document.getElementById('group-filter-bar');
+  const count = document.getElementById('filter-count');
+
+  // Unique groups in insertion order, "All" always first
+  const groups = ['__all__', ...new Set(
+    profiles.map(p => p.gitlab_group).filter(Boolean)
+  )];
+
+  // Remove old pills (keep label + count)
+  bar.querySelectorAll('.filter-pill').forEach(el => el.remove());
+
+  groups.forEach(g => {
+    const pill = document.createElement('button');
+    pill.className   = 'filter-pill' + (g === _activeGroup ? ' active' : '');
+    pill.textContent = g === '__all__' ? 'All' : g;
+    pill.dataset.group = g;
+    pill.addEventListener('click', () => {
+      _activeGroup = g;
+      bar.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      applyFilter(profiles);
+    });
+    bar.insertBefore(pill, count);
+  });
+
+  applyFilter(profiles);
+}
+
+function applyFilter(profiles) {
+  const cards   = document.querySelectorAll('#profile-grid .pc');
+  const count   = document.getElementById('filter-count');
+  let   visible = 0;
+
+  cards.forEach(card => {
+    const match = _activeGroup === '__all__' || card.dataset.group === _activeGroup;
+    card.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+
+  const total = profiles.length;
+  count.textContent = _activeGroup === '__all__'
+    ? total + ' profile' + (total !== 1 ? 's' : '')
+    : visible + ' / ' + total;
+}
+
+// ── Profile load + render ──────────────────────────────────────────────────────
+async function loadProfiles() {
+  const grid = document.getElementById('profile-grid');
+  const res  = await fetch('/api/profiles');
+  const profiles = await res.json();
+
+  if (!profiles.length) {
+    grid.innerHTML = '<div class="empty">No profiles yet. Use "New Profile" to add one.</div>';
+    // Reset filter bar to empty state
+    buildFilterBar([]);
+    return;
+  }
+
+  grid.innerHTML = profiles.map(p => {
+    const tags   = p.image_options || (p.image_tag ? [p.image_tag] : []);
+    const badges = tags.map(t => `<span class="img-badge">${esc(t)}</span>`).join('');
+    // data-group drives client-side filtering — no extra API call needed
+    return `<div class="pc" data-group="${esc(p.gitlab_group || '')}">
+      <div class="name">${esc(p.display_name)}</div>
+      <div class="grp">${esc(p.gitlab_group)}</div>
+      <div class="meta">
+        CPU: ${p.cpu_guarantee}–${p.cpu_limit} &nbsp;|&nbsp;
+        RAM: ${p.mem_guarantee}–${p.mem_limit}<br>
+        GPU: ${p.gpu || 'none'}<br>
+        ${p.description ? '<em>' + esc(p.description) + '</em>' : ''}
+      </div>
+      <div class="imgs">${badges}</div>
+      <div class="repo">${esc(p.image_name)}</div>
+      <div class="actions">
+        <button class="btn btn-danger" onclick="deleteProfile('${esc(p.slug)}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Build filter bar — preserve active group across refreshes
+  buildFilterBar(profiles);
+}
+
+// ── Profile actions ────────────────────────────────────────────────────────────
+async function deleteProfile(slug) {
+  if (!confirm('Delete profile "' + slug + '"? This cannot be undone.')) return;
+  await fetch('/api/profiles/' + slug, { method: 'DELETE' });
+  loadProfiles();
+}
+
+async function applyProfiles() {
+  const btn = document.querySelector('.btn-apply');
+  const box = document.getElementById('apply-status');
+  btn.disabled  = true;
+  btn.innerHTML = '<span class="spin"></span>Applying…';
+  box.style.display = 'none';
+  const res  = await fetch('/api/apply', { method: 'POST' });
+  const data = await res.json();
+  box.style.display = 'block';
+  box.className = 'status ' + (data.success ? 'ok' : 'err');
+  box.textContent = data.message;
+  btn.disabled  = false;
+  btn.innerHTML = 'Apply to Cluster';
+}
+</script>

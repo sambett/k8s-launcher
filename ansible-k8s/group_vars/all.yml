@@ -1,0 +1,30 @@
+---
+# ── Versions ───────────────────────────────────────────────────────────────────
+k8s_version:         "1.30.5"
+k8s_pkg_version:     "1.30.5-1.1"
+k8s_repo_version:    "v1.30"
+containerd_pkg:      "containerd.io=1.7.22-1"
+pause_image:         "registry.k8s.io/pause:3.9"
+calico_version:      "v3.28.2"
+
+# ── Networking ─────────────────────────────────────────────────────────────────
+pod_cidr:            "192.168.0.0/16"
+service_cidr:        "10.96.0.0/12"
+dns_domain:          "cluster.local"
+api_port:            6443
+
+# ── Control plane ──────────────────────────────────────────────────────────────
+cp_hostname:         "ansiblecplane"
+cp_ip:               "10.110.188.85"
+cluster_name:        "ai-workbench"
+
+# ── Cluster nodes (for /etc/hosts) ────────────────────────────────────────────
+cluster_hosts:
+  - { name: ansiblecplane,     ip: "10.110.188.85" }
+  - { name: ansibleworker1,    ip: "10.110.188.86" }
+  - { name: ansibleworker2,    ip: "10.110.188.87" }
+# ── Artifact paths ─────────────────────────────────────────────────────────────
+artifacts_dir: "/home/ansiblecplane/cluster-artifacts"
+join_command_file:   "{{ artifacts_dir }}/join-command.txt"
+kubeadm_config:      "{{ artifacts_dir }}/kubeadm-config.yaml"
+kubeadm_log:         "{{ artifacts_dir }}/kubeadm-init.log"

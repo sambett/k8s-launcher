@@ -1,0 +1,24 @@
+---
+- name: Write gitlab.rb from template
+  template:
+    src: gitlab.rb.j2
+    dest: /etc/gitlab/gitlab.rb
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Run gitlab-ctl reconfigure
+  command: gitlab-ctl reconfigure
+  async: 900
+  poll: 15
+
+- name: Wait for GitLab to be healthy after reconfigure
+  uri:
+    url: "{{ gitlab_external_url }}/users/sign_in"
+    method: GET
+    status_code: 200
+    validate_certs: no
+  register: readiness
+  retries: 40
+  delay: 15
+  until: readiness.status == 200

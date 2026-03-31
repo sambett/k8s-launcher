@@ -1,0 +1,275 @@
+<div id="tab-gitlab" class="panel">
+
+  <div class="card">
+    <h2>Step 1 — SSH bootstrap to GitLab VM</h2>
+    <div class="card-hint">
+      Push the controller SSH key to the GitLab VM.
+      The password is used once and never stored.
+    </div>
+    <div class="field-row"><label>GitLab VM IP</label>
+      <input type="text" id="gl-ip" placeholder="e.g. 10.0.0.20  (GitLab VM IP)"></div>
+    <div class="field-row"><label>SSH user</label>
+      <input type="text" id="gl-user" placeholder="e.g. ubuntu"></div>
+    <div class="field-row"><label>SSH password</label>
+      <input type="password" id="gl-pass" placeholder="one-time, never stored"></div>
+    <button class="btn btn-primary" style="margin-top:.5rem"
+      onclick="gitlabBootstrapSSH()">Bootstrap SSH</button>
+    <div id="r-gl-ssh" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Step 2 — Configure</h2>
+    <div class="card-hint">
+      All credentials are written locally to generated/ — never committed to git.
+    </div>
+
+    <p style="font-size:12px;font-weight:600;color:#1565c0;margin:.75rem 0 .4rem">
+      GitLab settings
+    </p>
+    <div class="field-row"><label>GitLab version</label>
+      <input type="text" id="gl-version" value="18.9.1"></div>
+    <div class="field-row"><label>Root password</label>
+      <input type="password" id="gl-root-pass"
+        placeholder="GitLab root account password"></div>
+    <div class="field-row"><label>Sudo password</label>
+      <input type="password" id="gl-become-pass"
+        placeholder="sudo password for the GitLab VM SSH user"></div>
+    <div class="field-row"><label>JupyterHub access IP</label>
+      <input type="text" id="gl-worker-ip"
+        placeholder="worker IP — where JupyterHub NodePort is reachable"
+        oninput="updateCallbackPreview()"></div>
+    <div class="field-row"><label>JupyterHub NodePort</label>
+      <input type="number" id="gl-nodeport" value="32080"
+        oninput="updateCallbackPreview()"></div>
+    <div id="gl-callback-preview"
+      style="font-size:12px;color:#1565c0;background:#e3f2fd;
+             padding:5px 10px;border-radius:4px;margin-top:.4rem;display:none"></div>
+
+    <div style="height:1px;background:#e0e0e0;margin:1rem 0"></div>
+
+    <p style="font-size:12px;font-weight:600;color:#2e7d32;margin-bottom:.4rem">
+      🌱 Seed — first group and test user (created automatically after deploy)
+    </p>
+    <div class="info-box" style="margin-bottom:.75rem">
+      After GitLab is deployed, Ansible will automatically create one group and
+      one test user and add both to the group. This means JupyterHub login works
+      immediately — no manual steps needed.<br><br>
+      <strong>Group name</strong> — the GitLab group users must belong to in order
+      to access JupyterHub. You can create more groups later via the Admin Dashboard.<br><br>
+      <strong>Test username / password</strong> — a real GitLab account you can use
+      to log into JupyterHub and verify the full flow end to end.
+      Change the password to something strong before going to production.
+    </div>
+    <div class="field-row">
+      <label>Seed group name</label>
+      <input type="text" id="gl-seed-group" value="admins"
+        placeholder="e.g. admins  (users must be in this group to access JupyterHub)">
+    </div>
+    <div class="field-row">
+      <label>Test username</label>
+      <input type="text" id="gl-seed-user" value="testuser"
+        placeholder="e.g. testuser  (GitLab username, no spaces)">
+    </div>
+    <div class="field-row">
+      <label>Test password</label>
+      <input type="password" id="gl-seed-pass"
+        placeholder="min 8 chars — this user will log into JupyterHub">
+    </div>
+
+    <div id="gl-already-deployed" style="display:none;margin-top:.75rem;
+         background:#fff3e0;border:1px solid #ffcc02;border-radius:6px;
+         padding:.6rem 1rem;font-size:12px;color:#e65100">
+      ⚠ GitLab credentials already exist. Re-deploying will rotate the admin token.
+      Use the Reset tab → Reset GitLab to start fresh, or tick below to force.
+      <label style="display:flex;align-items:center;gap:6px;margin-top:.5rem;cursor:pointer">
+        <input type="checkbox" id="gl-force-redeploy">
+        I understand — force redeploy anyway
+      </label>
+    </div>
+
+    <button class="btn btn-primary" style="margin-top:.75rem"
+      onclick="gitlabConfigure()">Generate config</button>
+    <div id="r-gl-cfg" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Step 3 — Deploy GitLab</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Installs GitLab CE, configures the registry, creates all tokens and the
+      OAuth app, then seeds the initial group and test user automatically.
+    </p>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="btn btn-primary" onclick="gitlabDeploy()">
+        Deploy GitLab
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~20 min)</span>
+      </button>
+      <span class="dot" id="dot-gitlab"></span>
+      <span id="gl-deploy-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Deploy log</h2>
+    <div class="log" id="gl-log">Waiting for deployment...</div>
+  </div>
+
+  <div class="card" id="gl-outputs-card" style="display:none;border-color:#c8e6c9">
+    <h2 style="color:#2e7d32">✓ GitLab is ready</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      All credentials saved to
+      <span class="mono">generated/gitlab-outputs.json</span>.
+      JupyterHub and Dashboard tabs will read these automatically.
+    </p>
+    <div id="gl-outputs-body" class="outputs-grid"></div>
+    <div class="info-box" style="margin-top:1rem">
+      GitLab UI: <a id="gl-url-link" href="#" target="_blank"
+        style="color:#1976d2"></a>
+      &nbsp;·&nbsp; Login: <strong>root</strong> / your root password
+    </div>
+    <div id="gitlab-url-badge" style="margin-top:.5rem;font-size:13px"></div>
+  </div>
+
+</div>
+
+<script>
+function updateCallbackPreview() {
+  const ip   = document.getElementById('gl-worker-ip').value.trim();
+  const port = document.getElementById('gl-nodeport').value.trim();
+  const prev = document.getElementById('gl-callback-preview');
+  if (ip && port) {
+    prev.textContent = 'OAuth callback → http://' + ip + ':' + port + '/hub/oauth_callback';
+    prev.style.display = 'block';
+  } else {
+    prev.style.display = 'none';
+  }
+}
+
+async function gitlabBootstrapSSH() {
+  const el   = document.getElementById('r-gl-ssh');
+  const body = {
+    ip:       document.getElementById('gl-ip').value.trim(),
+    ssh_user: document.getElementById('gl-user').value.trim(),
+    ssh_pass: document.getElementById('gl-pass').value,
+  };
+  if (!body.ip || !body.ssh_pass) {
+    el.innerHTML = '<span class="badge b-warn">Enter IP and password first.</span>';
+    return;
+  }
+  el.innerHTML = '<span class="badge b-run">Pushing key...</span>';
+  const resp = await fetch('/api/gitlab/bootstrap-ssh', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await resp.json();
+  document.getElementById('gl-pass').value = '';
+  el.innerHTML = d.status === 'ok'
+    ? `<span class="badge b-ok">${d.message}</span>`
+    : `<span class="badge b-err">${d.message}</span>`;
+}
+
+async function gitlabConfigure() {
+  const el            = document.getElementById('r-gl-cfg');
+  const forceRedeploy = document.getElementById('gl-force-redeploy')?.checked || false;
+  const body = {
+    ip:                   document.getElementById('gl-ip').value.trim(),
+    ssh_user:             document.getElementById('gl-user').value.trim(),
+    become_pass:          document.getElementById('gl-become-pass').value,
+    gitlab_version:       document.getElementById('gl-version').value.trim(),
+    gitlab_root_password: document.getElementById('gl-root-pass').value,
+    worker_ip:            document.getElementById('gl-worker-ip').value.trim(),
+    worker_nodeport:      parseInt(document.getElementById('gl-nodeport').value),
+    force_redeploy:       forceRedeploy,
+    seed_group_name:      document.getElementById('gl-seed-group').value.trim(),
+    seed_user_username:   document.getElementById('gl-seed-user').value.trim(),
+    seed_user_password:   document.getElementById('gl-seed-pass').value,
+  };
+  if (!body.ip || !body.gitlab_root_password || !body.worker_ip || !body.become_pass) {
+    el.innerHTML = '<span class="badge b-warn">Fill in all GitLab fields.</span>';
+    return;
+  }
+  if (!body.seed_user_password) {
+    el.innerHTML = '<span class="badge b-warn">Seed user password is required.</span>';
+    return;
+  }
+  el.innerHTML = '<span class="badge b-run">Generating...</span>';
+  const resp = await fetch('/api/gitlab/configure', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await resp.json();
+  if (d.status === 'already_deployed') {
+    el.innerHTML = '';
+    document.getElementById('gl-already-deployed').style.display = 'block';
+    return;
+  }
+  if (d.status === 'ok') {
+    document.getElementById('gl-become-pass').value = '';
+    document.getElementById('gl-root-pass').value   = '';
+    document.getElementById('gl-seed-pass').value   = '';
+    document.getElementById('gl-already-deployed').style.display = 'none';
+    el.innerHTML = `<span class="badge b-ok">Config saved — callback: ${d.callback_url}</span>`;
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.message || JSON.stringify(d)}</span>`;
+  }
+}
+
+function gitlabDeploy() {
+  const logEl    = document.getElementById('gl-log');
+  const statusEl = document.getElementById('gl-deploy-status');
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
+  setDot('dot-gitlab', 'running');
+  const es = new EventSource('/api/gitlab/stream');
+  es.onmessage = async e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-gitlab', 'ok');
+      statusEl.textContent = 'Complete';
+      markStepDone('gitlab');
+      es.close();
+      await loadGitLabOutputs();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-gitlab', 'error');
+      statusEl.textContent = 'Failed';
+      markStepError('gitlab');
+      makeLogLine('FAILED — exit code: ' + e.data.split(':')[1], logEl);
+      es.close();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => {
+    setDot('dot-gitlab', 'error');
+    statusEl.textContent = 'Connection lost';
+    es.close();
+  };
+}
+
+async function loadGitLabOutputs() {
+  const r = await fetch('/api/gitlab/outputs');
+  const d = await r.json();
+  if (d.status !== 'ok') return;
+  document.getElementById('gl-outputs-card').style.display = 'block';
+  const link = document.getElementById('gl-url-link');
+  link.href = d.gitlab_url;
+  link.textContent = d.gitlab_url;
+  document.getElementById('gl-outputs-body').innerHTML = `
+    <span style="color:#666">GitLab URL</span>       <span>${d.gitlab_url}</span>
+    <span style="color:#666">Registry host</span>    <span class="mono">${d.registry_host}</span>
+    <span style="color:#666">OAuth client ID</span>  <span class="mono">${d.oauth_client_id}</span>
+    <span style="color:#666">Project ID</span>       <span>${d.project_id}</span>
+    <span style="color:#666">Deploy token user</span><span class="mono">${d.deploy_token_user}</span>
+    <span style="color:#666">Admin token</span>
+      <span class="badge ${d.admin_token_set?'b-ok':'b-err'}">${d.admin_token_set?'✓ saved':'✗ missing'}</span>
+    <span style="color:#666">OAuth secret</span>
+      <span class="badge ${d.oauth_secret_set?'b-ok':'b-err'}">${d.oauth_secret_set?'✓ saved':'✗ missing'}</span>
+    <span style="color:#666">Registry token</span>
+      <span class="badge ${d.deploy_token_pass_set?'b-ok':'b-err'}">${d.deploy_token_pass_set?'✓ saved':'✗ missing'}</span>
+  `;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadGitLabOutputs();
+});
+</script>

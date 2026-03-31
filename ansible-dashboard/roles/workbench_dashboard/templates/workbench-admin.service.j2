@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Workbench Admin Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User={{ dashboard_user }}
+WorkingDirectory=/home/{{ dashboard_user }}/k8s-launcher/workbench-admin
+EnvironmentFile=/etc/workbench/secrets.env
+Environment="DASHBOARD_USER={{ dashboard_http_user }}"
+Environment="DASHBOARD_PASS={{ dashboard_http_pass }}"
+ExecStart=/usr/bin/python3 /home/{{ dashboard_user }}/k8s-launcher/workbench-admin/dashboard.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

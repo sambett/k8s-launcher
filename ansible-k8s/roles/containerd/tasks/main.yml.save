@@ -1,0 +1,49 @@
+---
+- name: Create apt keyrings dir
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Install Docker GPG key
+  shell: >
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker apt repo
+  apt_repository:
+    repo: >
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu jammy stable
+    filename: docker
+    state: present
+
+- name: Install containerd at pinned version
+  apt:
+    name: "{{ containerd_pkg }}"
+    state: present
+    update_cache: yes
+
+- name: Hold containerd version
+  dpkg_selections:
+    name: containerd.io
+    selection: hold
+
+- name: Generate and write containerd config with correct settings
+  shell: |
+    containerd config default | \
+    sed 's/SystemdCgroup = false/SystemdCgroup = true/' | \
+    sed 's|sandbox_image = ".*"|sandbox_image = "{{ pause_image }}"|' \
+    > /etc/containerd/config.toml
+  changed_when: true
+
+- name: Restart and enable containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+
+

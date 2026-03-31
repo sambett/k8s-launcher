@@ -1,0 +1,31 @@
+{
+  "presets": {
+    "stable-sprint2": {
+      "kubernetes": "1.30.5",
+      "containerd": "1.7.22",
+      "calico": "3.28.2",
+      "longhorn": "1.7.2",
+      "status": "validated"
+    }
+  },
+  "rules": [
+    {
+      "if": { "kubernetes_gte": "1.32" },
+      "affects": "calico",
+      "severity": "breaking",
+      "message": "Calico 3.28 does not support Kubernetes 1.32+. Upgrade Calico to 3.30+."
+    },
+    {
+      "if": { "kubernetes_lt": "1.28" },
+      "affects": "longhorn",
+      "severity": "breaking",
+      "message": "Longhorn 1.7 requires Kubernetes 1.28 or higher."
+    },
+    {
+      "if": { "containerd_major": "2" },
+      "affects": "containerd",
+      "severity": "warning",
+      "message": "containerd 2.x changes the CRI socket path. Verify kubeadm config."
+    }
+  ]
+}

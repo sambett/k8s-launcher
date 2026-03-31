@@ -1,0 +1,28 @@
+---
+# ansible-gitlab/site.yml
+# Installs GitLab CE, configures the registry, creates all tokens and OAuth app,
+# then seeds the initial group and test user so JupyterHub login works immediately.
+
+- name: Install GitLab CE
+  hosts: gitlab
+  become: yes
+  roles:
+    - install
+
+- name: Configure GitLab
+  hosts: gitlab
+  become: yes
+  roles:
+    - configure
+
+- name: Bootstrap tokens, OAuth app, registry project
+  hosts: gitlab
+  become: yes
+  roles:
+    - bootstrap
+
+- name: Seed initial group and test user
+  hosts: gitlab
+  become: yes
+  roles:
+    - seed

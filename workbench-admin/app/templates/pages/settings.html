@@ -1,0 +1,195 @@
+<div id="page-settings" class="page">
+  <h2>Settings</h2>
+
+  <!-- ── What is this token? ───────────────────────────────────────────────── -->
+  <div class="card">
+    <div style="font-size:.85rem;font-weight:600;color:#c4b5fd;margin-bottom:1rem">
+      What is this token and why does the dashboard need it?
+    </div>
+    <p style="font-size:.8rem;color:#94a3b8;line-height:1.8;margin-bottom:1rem">
+      The dashboard talks to your GitLab instance
+      (<code id="info-gitlab-url" style="color:#a78bfa">loading…</code>)
+      on your behalf. Every action — listing groups, creating users,
+      browsing the registry, importing images — is an authenticated
+      GitLab API call. The token is the credential that authorises those calls.
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:1.2rem">
+      <div class="token-use-card">
+        <div class="tuc-icon">👥</div>
+        <div>
+          <div class="tuc-title">User &amp; Group management</div>
+          <div class="tuc-desc">Create users, create groups, add/remove members</div>
+        </div>
+      </div>
+      <div class="token-use-card">
+        <div class="tuc-icon">🐳</div>
+        <div>
+          <div class="tuc-title">Container Registry</div>
+          <div class="tuc-desc">Browse repos, list tags, import images with skopeo</div>
+        </div>
+      </div>
+      <div class="token-use-card">
+        <div class="tuc-icon">🔐</div>
+        <div>
+          <div class="tuc-title">OAuth provider</div>
+          <div class="tuc-desc">GitLab is the identity provider for JupyterHub login</div>
+        </div>
+      </div>
+      <div class="token-use-card">
+        <div class="tuc-icon">📋</div>
+        <div>
+          <div class="tuc-title">Profile visibility</div>
+          <div class="tuc-desc">GitLab groups control which profiles each user sees</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- How to get a token -->
+    <div style="font-size:.82rem;font-weight:600;color:#c4b5fd;margin-bottom:.75rem">
+      How to get a new token
+    </div>
+    <ol style="font-size:.79rem;color:#94a3b8;line-height:2.2;padding-left:1.2rem;margin-bottom:1rem">
+      <li>Open your GitLab instance →
+        <a id="info-gitlab-link" href="#" target="_blank"
+           style="color:#7c6af7;text-decoration:none">loading…</a>
+      </li>
+      <li>Log in as an <strong style="color:#e2e8f0">admin account</strong></li>
+      <li>Click your avatar (top-right) →
+        <strong style="color:#e2e8f0">Edit profile</strong></li>
+      <li>Left sidebar →
+        <strong style="color:#e2e8f0">Access Tokens</strong></li>
+      <li>Click <strong style="color:#e2e8f0">Add new token</strong></li>
+      <li>Fill in:
+        <ul style="margin-top:.3rem;margin-left:1rem;line-height:2.2">
+          <li>Name: <code style="color:#a78bfa">workbench-admin</code></li>
+          <li>Expiry: 1 year recommended</li>
+          <li>Scopes: check
+            <code style="color:#68d391">api</code> and
+            <code style="color:#68d391">read_registry</code>
+          </li>
+        </ul>
+      </li>
+      <li>Click <strong style="color:#e2e8f0">Create personal access token</strong></li>
+      <li>Copy the token — starts with
+        <code style="color:#a78bfa">glpat-</code> and shown
+        <strong style="color:#e2e8f0">only once</strong>
+      </li>
+      <li>Paste it below and click
+        <strong style="color:#e2e8f0">Save &amp; Verify</strong>
+      </li>
+    </ol>
+
+    <div style="font-size:.75rem;color:#4a5568;background:#0f1117;
+                border:1px solid #2d3148;border-radius:6px;
+                padding:.7rem 1rem;line-height:1.8">
+      ⚠ The token is stored in
+      <code id="info-secrets-path" style="color:#a78bfa">loading…</code>
+      on the control plane node — readable only by root and the service user.
+      It is never committed to git or exposed in API responses.
+    </div>
+  </div>
+
+  <!-- ── Token status + rotation ───────────────────────────────────────────── -->
+  <div class="card">
+    <div style="font-size:.85rem;font-weight:600;color:#c4b5fd;margin-bottom:1rem">
+      GitLab Admin Token
+    </div>
+    <div class="token-status-box">
+      <div class="ts-label">Current Token Status</div>
+      <div id="token-status-text" style="color:#64748b">Loading…</div>
+    </div>
+    <div class="fg" style="margin-bottom:.8rem">
+      <label>New Token</label>
+      <div class="token-field-row">
+        <input id="new-token-input" type="password"
+          placeholder="glpat-xxxxxxxxxxxxxxxxxxxx" autocomplete="off"/>
+        <button class="btn btn-ghost" style="white-space:nowrap"
+          onclick="toggleTokenVisibility()" id="toggle-btn">Show</button>
+      </div>
+      <div class="token-hint">
+        Token is validated against GitLab before saving.
+        If invalid, the current token is kept unchanged.
+      </div>
+    </div>
+    <div style="display:flex;gap:.8rem;align-items:center;margin-top:1rem">
+      <button class="btn btn-primary" onclick="rotateToken()" id="rotate-btn">
+        Save &amp; Verify
+      </button>
+      <span id="rotate-msg" style="font-size:.8rem;display:none"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadSettingsInfo() {
+  try {
+    const res  = await fetch('/api/settings/info');
+    const data = await res.json();
+
+    // GitLab URL — injected from registry.conf, never hardcoded
+    const urlEl  = document.getElementById('info-gitlab-url');
+    const linkEl = document.getElementById('info-gitlab-link');
+    if (data.gitlab_url) {
+      urlEl.textContent  = data.gitlab_url;
+      linkEl.href        = data.gitlab_url;
+      linkEl.textContent = data.gitlab_url;
+    }
+
+    // Secrets path
+    const pathEl = document.getElementById('info-secrets-path');
+    if (data.secrets_path) pathEl.textContent = data.secrets_path;
+
+  } catch(e) {
+    // Non-fatal — page still works, just shows "loading…"
+  }
+}
+
+async function loadTokenStatus() {
+  const box = document.getElementById('token-status-text');
+  box.innerHTML = 'Checking…';
+  const res  = await fetch('/api/settings/token');
+  const data = await res.json();
+  box.innerHTML = data.valid
+    ? `<span class="token-ok">✓ Valid</span><br>
+       Authenticated as: <strong>${esc(data.username)}</strong>
+       (${esc(data.name)})`
+    : `<span class="token-err">✗ ${esc(data.reason || 'Invalid or missing')}</span>
+       <br><span style="font-size:.75rem;color:#64748b">
+       Follow the steps above to generate a new token.</span>`;
+}
+
+function toggleTokenVisibility() {
+  const input = document.getElementById('new-token-input');
+  const btn   = document.getElementById('toggle-btn');
+  if (input.type === 'password') { input.type = 'text';     btn.textContent = 'Hide'; }
+  else                           { input.type = 'password'; btn.textContent = 'Show'; }
+}
+
+async function rotateToken() {
+  const input = document.getElementById('new-token-input');
+  const msg   = document.getElementById('rotate-msg');
+  const btn   = document.getElementById('rotate-btn');
+  const token = input.value.trim();
+  if (!token) { showMsg(msg, '✗ Paste a token first.', false); return; }
+  btn.disabled  = true;
+  btn.innerHTML = '<span class="spin"></span>Verifying…';
+  showMsg(msg, '', true);
+  const res  = await fetch('/api/settings/token', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ token })
+  });
+  const data = await res.json();
+  btn.disabled  = false;
+  btn.innerHTML = 'Save &amp; Verify';
+  if (res.ok) {
+    showMsg(msg, '✓ ' + data.message, true);
+    input.value = '';
+    input.type  = 'password';
+    document.getElementById('toggle-btn').textContent = 'Show';
+    loadTokenStatus();
+  } else {
+    showMsg(msg, '✗ ' + (data.error || 'Unknown error'), false);
+  }
+}
+</script>

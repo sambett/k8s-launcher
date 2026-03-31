@@ -1,0 +1,48 @@
+---
+- name: Install required packages
+  apt:
+    name:
+      - curl
+      - openssh-server
+      - ca-certificates
+      - tzdata
+      - perl
+    state: present
+    update_cache: yes
+
+- name: Add GitLab CE apt repository
+  shell: |
+    curl -sS https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
+  args:
+    creates: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+
+- name: Install GitLab CE at pinned version
+  apt:
+    name: "gitlab-ce={{ gitlab_version }}-ce.0"
+    state: present
+    update_cache: yes
+  environment:
+    EXTERNAL_URL: "{{ gitlab_external_url }}"
+  async: 1800
+  poll: 30
+
+- name: Wait for GitLab to be healthy
+  uri:
+    url: "{{ gitlab_external_url }}/users/sign_in"
+    method: GET
+    status_code: 200
+    validate_certs: no
+  register: readiness
+  retries: 40
+  delay: 15
+  until: readiness.status == 200
+
+- name: Set root password
+  shell: |
+    gitlab-rails runner "
+    user = User.find_by_username('root')
+    user.password = '{{ gitlab_root_password }}'
+    user.password_confirmation = '{{ gitlab_root_password }}'
+    user.save!
+    "
+  no_log: true

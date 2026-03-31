@@ -1,0 +1,27 @@
+---
+# ansible-jupyterhub/site.yml
+# Deploys JupyterHub on an existing K8s cluster with GitLab OAuth.
+# Prereqs: ansible-k8s and ansible-longhorn already complete.
+#          gitlab-outputs.json must exist in generated/
+# Usage (via launcher):
+#   ansible-playbook -i generated/inventory.ini site.yml
+#   --extra-vars @generated/group_vars/all.yml
+#   --extra-vars @generated/jupyterhub-vars.yml
+
+- name: Create Kubernetes secrets for JupyterHub
+  hosts: control_plane
+  become: no
+  roles:
+    - k8s_secrets
+
+- name: Deploy JupyterHub via Helm
+  hosts: control_plane
+  become: no
+  roles:
+    - jupyterhub
+
+- name: Validate JupyterHub deployment
+  hosts: control_plane
+  become: no
+  roles:
+    - validate

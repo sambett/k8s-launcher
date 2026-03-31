@@ -1,0 +1,14 @@
+---
+# ansible-dashboard/site.yml
+# Deploys the workbench-admin Flask dashboard on the control plane node.
+# Prereqs: JupyterHub already deployed, gitlab-outputs.json exists.
+# Usage (via launcher):
+#   ansible-playbook -i generated/inventory.ini site.yml
+#   --extra-vars @generated/group_vars/all.yml
+#   --extra-vars @generated/dashboard-vars.yml
+
+- name: Deploy workbench-admin dashboard
+  hosts: control_plane
+  become: yes
+  roles:
+    - workbench_dashboard

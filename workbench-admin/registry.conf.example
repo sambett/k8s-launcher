@@ -1,0 +1,6 @@
+registry:
+  provider: gitlab
+  host: 10.110.188.61:5050
+  namespace: registry/notebook-images
+  project_id: 2
+  gitlab_url: http://10.110.188.61

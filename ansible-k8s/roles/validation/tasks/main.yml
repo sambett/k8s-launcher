@@ -1,0 +1,45 @@
+---
+- name: Wait for all nodes to be present and Ready
+  shell: |
+    TOTAL=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+    NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | awk '{print $2}' | grep -v "^Ready$" | wc -l)
+    EXPECTED={{ groups['all'] | length }}
+    if [ "$TOTAL" -eq "$EXPECTED" ] && [ "$NOT_READY" -eq "0" ]; then
+      echo "ok"
+    else
+      echo "waiting: $TOTAL/$EXPECTED nodes present, $NOT_READY not ready"
+      exit 1
+    fi
+  register: nodes_ready
+  retries: 20
+  delay: 15
+  until: nodes_ready.rc == 0
+  changed_when: false
+
+- name: All nodes must be Ready
+  command: kubectl get nodes --no-headers
+  register: nodes_out
+  failed_when: "'NotReady' in nodes_out.stdout"
+  changed_when: false
+
+- name: Print node status
+  debug:
+    msg: "{{ nodes_out.stdout_lines }}"
+
+- name: Verify kube-system pods are running
+  shell: |
+    kubectl get pods -n kube-system --no-headers | awk '{print $3}' | grep -v Running | grep -v Completed | wc -l
+  register: unhealthy_pods
+  retries: 12
+  delay: 15
+  until: unhealthy_pods.stdout | int == 0
+  changed_when: false
+
+- name: Print kube-system pod status
+  shell: kubectl get pods -n kube-system
+  register: kube_system_pods
+  changed_when: false
+
+- name: Show kube-system pods
+  debug:
+    msg: "{{ kube_system_pods.stdout_lines }}"

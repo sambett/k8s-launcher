@@ -1,0 +1,89 @@
+---
+- name: Create apt keyrings dir
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Check if Docker GPG key is present
+  stat:
+    path: /etc/apt/keyrings/docker.gpg
+  register: docker_gpg_stat
+
+- name: Remove stale docker.list when GPG key is absent
+  file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+  when: not docker_gpg_stat.stat.exists
+
+- name: Install Docker GPG key
+  shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod 644 /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker apt repo
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable\n"
+    mode: '0644'
+
+- name: Install containerd at pinned version
+  apt:
+    name: "{{ containerd_pkg }}"
+    state: present
+    update_cache: yes
+
+- name: Hold containerd version
+  dpkg_selections:
+    name: containerd.io
+    selection: hold
+
+- name: Generate and write containerd config with correct settings
+  shell: |
+    containerd config default | \
+    sed 's/SystemdCgroup = false/SystemdCgroup = true/' | \
+    sed 's|sandbox_image = ".*"|sandbox_image = "{{ pause_image }}"|' \
+    > /etc/containerd/config.toml
+  changed_when: true
+
+- name: Restart and enable containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+
+- name: Verify containerd is active
+  command: systemctl is-active containerd
+  register: cri_check
+  retries: 5
+  delay: 5
+  until: cri_check.stdout == "active"
+  changed_when: false
+  become: yes
+
+- name: Configure insecure GitLab registry for containerd
+  block:
+    - name: Create containerd certs.d directory for GitLab registry
+      file:
+        path: "/etc/containerd/certs.d/{{ gitlab_registry_host | default('') }}"
+        state: directory
+        mode: "0755"
+      when: gitlab_registry_host is defined and gitlab_registry_host != ''
+
+    - name: Write hosts.toml for insecure GitLab registry
+      copy:
+        dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
+        content: |
+          server = "http://{{ gitlab_registry_host }}"
+
+          [host."http://{{ gitlab_registry_host }}"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+        mode: "0644"
+      when: gitlab_registry_host is defined and gitlab_registry_host != ''
+      notify: restart containerd
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''

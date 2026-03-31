@@ -1,0 +1,17 @@
+# Managed by ansible-gitlab — do not edit manually
+
+external_url '{{ gitlab_external_url }}'
+
+# Container registry
+registry_external_url 'http://{{ gitlab_vm_ip }}:{{ gitlab_registry_port }}'
+gitlab_rails['registry_enabled'] = true
+
+# Reduce memory usage on small VMs
+puma['worker_processes'] = 2
+sidekiq['max_concurrency'] = 10
+prometheus_monitoring['enable'] = false
+alertmanager['enable'] = false
+node_exporter['enable'] = false
+redis_exporter['enable'] = false
+postgres_exporter['enable'] = false
+gitlab_exporter['enable'] = false

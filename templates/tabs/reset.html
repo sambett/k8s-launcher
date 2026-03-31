@@ -1,0 +1,282 @@
+<div id="tab-reset" class="panel">
+
+  <!-- ── Component resets ─────────────────────────────────────────────────── -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:1rem">
+
+    <!-- GitLab reset -->
+    <div class="card" style="border-color:#ffcdd2">
+      <h2 style="color:#c62828;font-size:.9rem">🦊 Reset GitLab</h2>
+      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
+        Deletes all users, groups, OAuth apps and revokes the admin token on the
+        GitLab VM. Clears all generated credential files on the controller.
+        <strong>Uninstalls GitLab CE completely from the VM</strong> — removes the package, all data, OAuth apps, tokens, and generated credential files. Re-run the GitLab tab to start fresh.
+        Re-run the GitLab tab to start fresh.
+      </p>
+      <input type="text" id="confirm-gitlab" placeholder="Type RESET"
+        style="max-width:140px;border-color:#ffcdd2;margin-bottom:.5rem">
+      <div>
+        <button class="btn btn-danger btn-sm" onclick="resetComponent('gitlab')">
+          Reset GitLab
+        </button>
+      </div>
+      <div id="r-reset-gitlab" style="margin-top:.5rem;font-size:12px"></div>
+      <div class="log" id="log-reset-gitlab"
+        style="height:120px;display:none;margin-top:.5rem"></div>
+    </div>
+
+    <!-- JupyterHub reset -->
+    <div class="card" style="border-color:#ffcdd2">
+      <h2 style="color:#c62828;font-size:.9rem">📓 Reset JupyterHub</h2>
+      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
+        Uninstalls the JupyterHub Helm release and deletes the
+        <span class="mono">jhub</span> namespace including all secrets and
+        the profiles ConfigMap. Clears the generated JupyterHub vars file.
+        Re-run the JupyterHub tab to redeploy.
+      </p>
+      <input type="text" id="confirm-jupyterhub" placeholder="Type RESET"
+        style="max-width:140px;border-color:#ffcdd2;margin-bottom:.5rem">
+      <div>
+        <button class="btn btn-danger btn-sm" onclick="resetComponent('jupyterhub')">
+          Reset JupyterHub
+        </button>
+      </div>
+      <div id="r-reset-jupyterhub" style="margin-top:.5rem;font-size:12px"></div>
+      <div class="log" id="log-reset-jupyterhub"
+        style="height:120px;display:none;margin-top:.5rem"></div>
+    </div>
+
+    <!-- Dashboard reset -->
+    <div class="card" style="border-color:#ffcdd2">
+      <h2 style="color:#c62828;font-size:.9rem">⚙ Reset Admin Dashboard</h2>
+      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
+        Stops and removes the workbench-admin systemd service and deletes
+        <span class="mono">/etc/workbench/</span> (secrets).
+        Clears the generated dashboard vars file.
+        Re-run the Admin Dashboard tab to redeploy.
+      </p>
+      <input type="text" id="confirm-dashboard" placeholder="Type RESET"
+        style="max-width:140px;border-color:#ffcdd2;margin-bottom:.5rem">
+      <div>
+        <button class="btn btn-danger btn-sm" onclick="resetComponent('dashboard')">
+          Reset Dashboard
+        </button>
+      </div>
+      <div id="r-reset-dashboard" style="margin-top:.5rem;font-size:12px"></div>
+      <div class="log" id="log-reset-dashboard"
+        style="height:120px;display:none;margin-top:.5rem"></div>
+    </div>
+
+  </div>
+
+  <!-- ── Cluster-level reset ───────────────────────────────────────────────── -->
+  <div class="card" style="border-color:#ffcdd2">
+    <h2 style="color:#c62828">Cluster Reset</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:1rem">
+      Tears down the Kubernetes cluster and/or all generated state.
+      None of these actions can be undone.
+    </p>
+
+    <div id="reset-preview-box" style="background:#fff8f8;border:1px solid #ffcdd2;
+         border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;font-size:13px">
+      <strong style="color:#c62828">Nodes that will be affected:</strong>
+      <div id="reset-node-list" style="margin-top:.5rem;color:#555">Loading...</div>
+    </div>
+
+    <div style="background:#fff8f8;border:1px solid #ffcdd2;border-radius:6px;
+                padding:1rem;margin-bottom:1rem">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Reset level:</p>
+
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;
+                    margin-bottom:.75rem;cursor:pointer">
+        <input type="radio" name="reset-level" value="cluster" checked style="margin-top:3px">
+        <div>
+          <strong>Reset cluster</strong>
+          <div style="color:#666;font-size:12px;margin-top:2px">
+            Removes Kubernetes + Longhorn. Nodes left clean and ready to redeploy.
+          </div>
+        </div>
+      </label>
+
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;
+                    margin-bottom:.75rem;cursor:pointer">
+        <input type="radio" name="reset-level" value="full" style="margin-top:3px">
+        <div>
+          <strong>Full wipe</strong>
+          <div style="color:#666;font-size:12px;margin-top:2px">
+            Same as above + removes SSH authorized keys + clears generated inventory.
+          </div>
+        </div>
+      </label>
+
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer">
+        <input type="radio" name="reset-level" value="full_platform" style="margin-top:3px">
+        <div>
+          <strong style="color:#c62828">Full platform reset</strong>
+          <div style="color:#666;font-size:12px;margin-top:2px">
+            Removes everything: Kubernetes + Longhorn + GitLab CE + JupyterHub + Admin Dashboard.
+            Clears all generated files and credentials. Use to start from absolute zero.
+          </div>
+        </div>
+      </label>
+    </div>
+
+    <div class="field-row" style="margin-bottom:1rem">
+      <label style="font-size:13px;color:#c62828;min-width:160px;flex-shrink:0">
+        Type RESET to confirm
+      </label>
+      <input type="text" id="reset-confirm" placeholder="RESET"
+             style="max-width:200px;border-color:#ffcdd2">
+    </div>
+
+    <button class="btn btn-danger" onclick="runReset()">Reset cluster</button>
+    <div id="r-reset" style="margin-top:.75rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Cluster reset log</h2>
+    <div class="log" id="reset-log">Waiting for reset to start...</div>
+  </div>
+
+</div>
+
+<script>
+// ── Component reset (GitLab / JupyterHub / Dashboard) ─────────────────────────
+// resetComponent — triggers a component-level reset (GitLab/JupyterHub/Dashboard)
+// Opens an SSE stream to /api/reset/<name>/stream and tails output into the log panel
+async function resetComponent(name) {
+  const confirmEl = document.getElementById('confirm-' + name);
+  const resultEl  = document.getElementById('r-reset-' + name);
+  const logEl     = document.getElementById('log-reset-' + name);
+
+  if (confirmEl.value !== 'RESET') {
+    resultEl.style.color = '#c62828';
+    resultEl.textContent = 'Type RESET in the field above first.';
+    return;
+  }
+
+  confirmEl.value      = '';
+  logEl.style.display  = 'block';
+  logEl.innerHTML      = '';
+  resultEl.textContent = '';
+
+  const es = new EventSource(
+    '/api/reset/' + name + '/stream?confirmation=' + encodeURIComponent('RESET')
+  );
+
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      resultEl.style.color = '#2e7d32';
+      resultEl.textContent = '✓ Reset complete — ready for fresh deploy.';
+      // Clear the stepper state for this component
+      const stepName = name === 'dashboard' ? 'admindashboard' : name;
+      localStorage.removeItem('step-' + stepName);
+      const stepEl = document.getElementById('step-' + stepName);
+      if (stepEl) stepEl.classList.remove('done', 'error');
+      es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      resultEl.style.color = '#c62828';
+      resultEl.textContent = '✗ Failed: ' + e.data;
+      es.close();
+    } else {
+      const line = document.createElement('div');
+      line.textContent   = e.data;
+      line.style.cssText = 'font-size:11px;font-family:monospace;padding:1px 0';
+      if (e.data.includes('done') || e.data.includes('complete'))
+        line.style.color = '#4ec9b0';
+      if (e.data.includes('ERROR') || e.data.includes('warning'))
+        line.style.color = '#f44747';
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  };
+
+  es.onerror = () => {
+    resultEl.style.color = '#c62828';
+    resultEl.textContent = '✗ Connection lost.';
+    es.close();
+  };
+}
+
+// ── Cluster-level reset ───────────────────────────────────────────────────────
+// loadResetPreview — fetches current inventory and renders the node list
+// Called on tab open and after any reset completes so the list reflects current state
+async function loadResetPreview() {
+  const el = document.getElementById('reset-node-list');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/reset/preview?t=' + Date.now());
+    const d = await r.json();
+    if (d.status === 'no_inventory') {
+      el.innerHTML = '<span style="color:#e65100">No inventory found. Run Configure first.</span>';
+      return;
+    }
+    if (!d.nodes || !d.nodes.length) {
+      el.innerHTML = '<span style="color:#e65100">No nodes found in inventory.</span>';
+      return;
+    }
+    el.innerHTML = d.nodes.map(n =>
+      '<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid #ffcdd2">' +
+      '<span style="min-width:160px;font-weight:500">' + n.hostname + '</span>' +
+      '<span style="color:#888;min-width:120px">' + n.ip + '</span>' +
+      '<span class="badge ' + (n.role === 'control-plane' ? 'b-info' : 'b-warn') + '">' +
+      n.role + '</span></div>'
+    ).join('') +
+    '<div style="margin-top:.5rem;font-size:12px;color:#c62828">' +
+    d.nodes.length + ' node(s) will be affected</div>';
+  } catch(e) {
+    el.innerHTML = '<span style="color:#c62828">Could not load: ' + e + '</span>';
+  }
+}
+
+// runReset — triggers cluster-level reset (cluster / full / full_platform)
+// Requires typing RESET in the confirmation field; streams Ansible output live
+async function runReset() {
+  const confirm_val = document.getElementById('reset-confirm').value;
+  const level       = document.querySelector('input[name="reset-level"]:checked').value;
+  const el          = document.getElementById('r-reset');
+  const rlog        = document.getElementById('reset-log');
+
+  if (confirm_val !== 'RESET') {
+    el.innerHTML = '<span class="badge b-warn">Type RESET in the confirmation field first.</span>';
+    return;
+  }
+
+  el.innerHTML   = '<span class="badge b-run">Resetting... do not close this tab.</span>';
+  rlog.innerHTML = '';
+  document.getElementById('reset-confirm').value = '';
+
+  const es = new EventSource(
+    '/api/reset/stream?level=' + level +
+    '&confirmation=' + encodeURIComponent('RESET')
+  );
+
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      el.innerHTML = '<span class="badge b-ok">Reset complete. Nodes are clean.</span>';
+      setTimeout(loadResetPreview, 800);
+      ['kubernetes', 'gitlab', 'jupyterhub', 'admindashboard'].forEach(name => {
+        localStorage.removeItem('step-' + name);
+        const stepEl = document.getElementById('step-' + name);
+        if (stepEl) stepEl.classList.remove('done', 'error');
+      });
+      es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      el.innerHTML = '<span class="badge b-err">Failed: ' + e.data + '</span>';
+      es.close();
+    } else {
+      const line = document.createElement('div');
+      line.textContent   = e.data;
+      line.style.cssText = 'font-size:12px;font-family:monospace;padding:1px 0';
+      if (e.data.includes('done'))  line.style.color = '#4ec9b0';
+      if (e.data.includes('ERROR')) line.style.color = '#f44747';
+      rlog.appendChild(line);
+      rlog.scrollTop = rlog.scrollHeight;
+    }
+  };
+
+  es.onerror = () => {
+    el.innerHTML = '<span class="badge b-err">Connection lost.</span>';
+    es.close();
+  };
+}
+</script>

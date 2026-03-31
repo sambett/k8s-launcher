@@ -1,0 +1,72 @@
+<div class="card">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+    <div style="font-size:.85rem;font-weight:600;color:#c4b5fd">All Users</div>
+    <button class="btn btn-ghost btn-sm" onclick="loadUserList()">↺ Refresh</button>
+  </div>
+  <div id="user-list-table">
+    <div class="empty">Loading…</div>
+  </div>
+</div>
+
+<script>
+async function loadUserList() {
+  const container = document.getElementById('user-list-table');
+  container.innerHTML = '<div class="empty">Loading…</div>';
+
+  const res  = await fetch('/api/users/search?q=');
+  const data = await res.json();
+
+  if (!data || data.error) {
+    container.innerHTML = '<div class="empty">Failed to load users.</div>';
+    return;
+  }
+  if (!data.length) {
+    container.innerHTML = '<div class="empty">No users yet.</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <thead>
+        <tr style="border-bottom:1px solid #2d3148;color:#64748b;text-align:left">
+          <th style="padding:.5rem .75rem">Username</th>
+          <th style="padding:.5rem .75rem">Full name</th>
+          <th style="padding:.5rem .75rem;text-align:right">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${data.map(u => `
+          <tr style="border-bottom:1px solid #1a1d2e" id="user-row-${u.id}">
+            <td style="padding:.5rem .75rem;color:#e2e8f0;font-weight:500">
+              ${esc(u.username)}
+            </td>
+            <td style="padding:.5rem .75rem;color:#94a3b8">${esc(u.name)}</td>
+            <td style="padding:.5rem .75rem;text-align:right">
+              <button class="btn btn-danger btn-sm"
+                onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function deleteUser(userId, username) {
+  if (!confirm(
+    'Delete user "' + username + '"?\n\n' +
+    'This removes their GitLab account and revokes all JupyterHub access.\n' +
+    'This cannot be undone.'
+  )) return;
+
+  const res  = await fetch('/api/users/' + userId, { method: 'DELETE' });
+  const data = await res.json();
+
+  if (res.ok) {
+    document.getElementById('user-row-' + userId)?.remove();
+    // Refresh group list so member counts update
+    loadGroupList();
+    loadGroupsForUserForm();
+  } else {
+    alert('Delete failed: ' + (data.error || 'Unknown error'));
+  }
+}
+</script>

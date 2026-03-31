@@ -1,0 +1,188 @@
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+  <span style="font-size:.85rem;color:#94a3b8">All groups — click to expand members</span>
+  <button class="btn btn-ghost btn-sm" onclick="loadGroupList()">↺ Refresh</button>
+</div>
+<div id="group-list">
+  <div class="empty">Loading…</div>
+</div>
+
+<script>
+const ROLE_LABELS = {10:'Guest',20:'Reporter',30:'Developer',40:'Maintainer',50:'Owner'};
+
+// ── All GitLab users cache ─────────────────────────────────────────────────────
+let _allUsers = [];
+
+async function loadAllUsers() {
+  const res  = await fetch('/api/users/search?q=');
+  const data = await res.json();
+  if (!data.error) _allUsers = data;
+}
+
+function populateUserDropdown(groupId) {
+  const sel = document.getElementById(`member-select-${groupId}`);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— select a user —</option>' +
+    _allUsers.map(u =>
+      `<option value="${esc(u.username)}">${esc(u.username)} — ${esc(u.name)}</option>`
+    ).join('');
+}
+
+// ── Group list ─────────────────────────────────────────────────────────────────
+async function loadGroupList() {
+  const container = document.getElementById('group-list');
+  container.innerHTML = '<div class="empty">Loading…</div>';
+  const res  = await fetch('/api/groups');
+  const data = await res.json();
+  if (data.error) {
+    container.innerHTML = `<div class="empty">${esc(data.error)}</div>`;
+    return;
+  }
+  if (!data.length) {
+    container.innerHTML = '<div class="empty">No groups yet.</div>';
+    return;
+  }
+  container.innerHTML = data.map(g => `
+    <div class="group-card" id="gc-${g.id}">
+      <div class="group-header" onclick="toggleGroup(${g.id})">
+        <span>
+          <span class="group-name">${esc(g.name)}</span>
+          <span class="group-path">/ ${esc(g.path)}</span>
+        </span>
+        <span style="display:flex;gap:.5rem;align-items:center">
+          <span style="font-size:.72rem;color:#4a5568" id="member-count-${g.id}"></span>
+          <button class="btn btn-danger btn-sm"
+            onclick="event.stopPropagation();deleteGroup(${g.id},'${esc(g.name)}')">
+            Delete
+          </button>
+          <span style="color:#4a5568;font-size:.8rem" id="chevron-${g.id}">▶</span>
+        </span>
+      </div>
+      <div class="group-body" id="gb-${g.id}" style="display:none">
+        <div id="member-list-${g.id}">
+          <div style="font-size:.78rem;color:#4a5568;padding:.3rem 0">Loading…</div>
+        </div>
+
+        <div style="margin-top:.75rem">
+          <div style="font-size:.72rem;color:#64748b;margin-bottom:.35rem;
+                      text-transform:uppercase;letter-spacing:.05em">Add user</div>
+          <div style="display:flex;gap:.5rem;align-items:center">
+            <select id="member-select-${g.id}" style="flex:2">
+              <option value="">— select a user —</option>
+            </select>
+            <select id="new-role-${g.id}" style="flex:1">
+              <option value="30">Developer</option>
+              <option value="40">Maintainer</option>
+              <option value="20">Reporter</option>
+              <option value="10">Guest</option>
+              <option value="50">Owner</option>
+            </select>
+            <button class="btn btn-primary btn-sm"
+              style="white-space:nowrap" onclick="addMember(${g.id})">Add</button>
+          </div>
+          <div id="r-add-member-${g.id}" style="font-size:.75rem;margin-top:.4rem"></div>
+        </div>
+      </div>
+    </div>`
+  ).join('');
+}
+
+async function toggleGroup(groupId) {
+  const body    = document.getElementById(`gb-${groupId}`);
+  const chevron = document.getElementById(`chevron-${groupId}`);
+  if (body.style.display === 'none') {
+    body.style.display  = 'block';
+    chevron.textContent = '▼';
+    await loadMembers(groupId);
+    populateUserDropdown(groupId);
+  } else {
+    body.style.display  = 'none';
+    chevron.textContent = '▶';
+  }
+}
+
+async function loadMembers(groupId) {
+  const container = document.getElementById(`member-list-${groupId}`);
+  container.innerHTML = '<div style="font-size:.78rem;color:#4a5568;padding:.3rem 0">Loading…</div>';
+  const res  = await fetch(`/api/groups/${groupId}/members`);
+  const data = await res.json();
+  if (data.error) {
+    container.innerHTML = `<div style="font-size:.78rem;color:#fc8181">${esc(data.error)}</div>`;
+    return;
+  }
+  document.getElementById(`member-count-${groupId}`).textContent =
+    data.length + ' member' + (data.length === 1 ? '' : 's');
+  if (!data.length) {
+    container.innerHTML = '<div style="font-size:.78rem;color:#4a5568;padding:.3rem 0">No members yet.</div>';
+    return;
+  }
+  container.innerHTML = data.map(m => `
+    <div class="member-row">
+      <span>
+        <span class="member-name">${esc(m.username)}</span>
+        <span class="member-role">${ROLE_LABELS[m.access_level] || m.access_level}</span>
+        <span style="font-size:.72rem;color:#4a5568;margin-left:.4rem">${esc(m.name)}</span>
+      </span>
+      <button class="btn btn-danger btn-sm"
+        onclick="removeMember(${groupId},${m.id},'${esc(m.username)}')">Remove</button>
+    </div>`
+  ).join('');
+}
+
+async function addMember(groupId) {
+  const sel      = document.getElementById(`member-select-${groupId}`);
+  const username = sel.value;
+  const role     = parseInt(document.getElementById(`new-role-${groupId}`).value);
+  const el       = document.getElementById(`r-add-member-${groupId}`);
+
+  if (!username) {
+    el.style.color = '#fc8181';
+    el.textContent = 'Select a user first.';
+    return;
+  }
+  el.style.color = '#94a3b8';
+  el.textContent = 'Adding…';
+
+  const res  = await fetch(`/api/groups/${groupId}/members`, {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ username, access_level: role })
+  });
+  const data = await res.json();
+
+  if (res.ok) {
+    el.style.color = '#68d391';
+    el.textContent = '✓ ' + username + ' added as ' + (ROLE_LABELS[role] || role);
+    sel.value = '';
+    await loadMembers(groupId);
+    setTimeout(() => el.textContent = '', 3000);
+  } else {
+    el.style.color = '#fc8181';
+    el.textContent = '✗ ' + (data.error || 'Error');
+  }
+}
+
+async function removeMember(groupId, userId, username) {
+  if (!confirm('Remove ' + username + ' from this group?')) return;
+  const res  = await fetch(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (res.ok) {
+    await loadMembers(groupId);
+  } else {
+    alert('Remove failed: ' + (data.error || 'Unknown error'));
+  }
+}
+
+async function deleteGroup(groupId, groupName) {
+  if (!confirm('Delete group "' + groupName + '"?\n\nAll members will lose access.')) return;
+  const res  = await fetch(`/api/groups/${groupId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (res.ok) {
+    loadGroupList();
+    loadGroupsForUserForm();
+  } else {
+    alert('Delete failed: ' + (data.error || 'Unknown error'));
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadAllUsers);
+</script>

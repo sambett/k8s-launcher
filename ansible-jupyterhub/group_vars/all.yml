@@ -1,0 +1,19 @@
+# ansible-jupyterhub variables — example for manual use
+# When using the launcher, these are generated into generated/jupyterhub-vars.yml
+
+jhub_gitlab_url:          "http://REPLACE_WITH_GITLAB_IP"
+jhub_oauth_client_id:     "REPLACE_FROM_gitlab-outputs.json"
+jhub_oauth_client_secret: "REPLACE_FROM_gitlab-outputs.json"
+jhub_registry_host:       "REPLACE_WITH_GITLAB_IP:5050"
+jhub_registry_namespace:  "registry/notebook-images"
+jhub_registry_pull_user:  "REPLACE_FROM_gitlab-outputs.json"
+jhub_registry_pull_pass:  "REPLACE_FROM_gitlab-outputs.json"
+jhub_crypt_key:            ""
+jhub_access_node_ip:      "REPLACE_WITH_WORKER_IP"
+jhub_nodeport:             32080
+jhub_chart_version:        "3.3.8"
+jhub_namespace:            "jhub"
+jhub_release_name:         "jhub"
+jhub_artifacts_dir:        "/home/{{ cp_ssh_user }}/cluster-artifacts/jupyterhub"
+storage_class:             "longhorn-jupyterhomes"
+user_storage_capacity:     "10Gi"

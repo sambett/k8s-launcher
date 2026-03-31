@@ -1,0 +1,179 @@
+<div id="tab-bootstrap" class="panel active">
+
+  <div class="card">
+    <h2>Phase 0 — Install Ansible on the controller</h2>
+    <div class="card-hint">
+      The controller is the machine that runs Ansible and orchestrates the cluster.
+      It must NOT be one of your cluster nodes — it stays separate.
+      If you are running this launcher directly on the controller, tick the checkbox below.
+      Otherwise enter the controller's IP, SSH user, and password.
+    </div>
+
+    <div style="margin-bottom:.75rem">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="ctrl-is-local" onchange="toggleControllerFields()"
+          style="width:16px;height:16px;accent-color:#1976d2">
+        This machine IS the controller (launcher is running on it)
+      </label>
+    </div>
+
+    <div id="ctrl-remote-fields">
+      <div class="field-row">
+        <label>Controller IP</label>
+        <input type="text" id="ctrl-ip"
+          placeholder="e.g. 10.0.0.5  (the Ansible controller machine)">
+      </div>
+      <div class="field-row">
+        <label>SSH user</label>
+        <input type="text" id="ctrl-user" placeholder="e.g. ubuntu">
+      </div>
+      <div class="field-row">
+        <label>SSH password</label>
+        <input type="password" id="ctrl-pass" placeholder="used once, never stored">
+      </div>
+    </div>
+
+    <button class="btn btn-primary" style="margin-top:.75rem"
+      onclick="installAnsible()">Install / verify Ansible</button>
+    <div id="r-ansible" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Phase 1 — SSH key bootstrap (cluster nodes)</h2>
+    <div class="card-hint">
+      Fill in the IP, hostname, and SSH user for each cluster node.
+      The password is used once to push the SSH key — it is never saved anywhere.
+    </div>
+    <div id="bnodes"></div>
+    <button class="btn btn-sm" style="margin-top:4px" onclick="addBNode()">+ Add node</button>
+    <div style="margin-top:.75rem">
+      <button class="btn btn-primary" onclick="runBootstrapSSH()">Bootstrap SSH</button>
+    </div>
+    <div id="r-ssh" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Phase 2 — Preflight checks</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Verifies OS, RAM, disk, swap, Python 3, and clean state on every node.
+    </p>
+    <button class="btn btn-primary" onclick="runPreflight()">Run preflight</button>
+    <div id="r-preflight" style="margin-top:.5rem"></div>
+  </div>
+
+</div>
+
+<script>
+function toggleControllerFields() {
+  const isLocal = document.getElementById('ctrl-is-local').checked;
+  document.getElementById('ctrl-remote-fields').style.display = isLocal ? 'none' : 'block';
+}
+
+async function installAnsible() {
+  const el      = document.getElementById('r-ansible');
+  const isLocal = document.getElementById('ctrl-is-local').checked;
+
+  let body = null;
+
+  if (isLocal) {
+    body = { is_local: true, ip: '', ssh_user: '' , ssh_pass: '' };
+  } else {
+    const ip   = document.getElementById('ctrl-ip').value.trim();
+    const user = document.getElementById('ctrl-user').value.trim();
+    const pass = document.getElementById('ctrl-pass').value;
+    if (!ip || !user || !pass) {
+      el.innerHTML = '<span class="badge b-warn">Fill in all controller fields, or tick the checkbox if this IS the controller.</span>';
+      return;
+    }
+    body = { is_local: false, ip, ssh_user: user, ssh_pass: pass };
+  }
+
+  el.innerHTML = '<span class="badge b-run">Installing...</span>';
+
+  const r = await fetch('/api/bootstrap/ansible', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body)
+  });
+  const d = await r.json();
+
+  // Clear password after use
+  const passEl = document.getElementById('ctrl-pass');
+  if (passEl) passEl.value = '';
+
+  el.innerHTML = d.status === 'ok'
+    ? `<span class="badge b-ok">${d.message}</span>`
+    : `<span class="badge b-err">${d.message || d.detail}</span>`;
+}
+
+// ── Phase 1 node rows ──────────────────────────────────────────────────────────
+let bnc = 0;
+function addBNode(ip='', hn='', user='') {
+  bnc++;
+  const d = document.createElement('div');
+  d.className = 'node-row';
+  d.innerHTML = `
+    <input type="text" placeholder="e.g. 10.0.0.10  (node IP)" value="${ip}" class="bi">
+    <input type="text" placeholder="e.g. cp-01  (hostname)" value="${hn}" class="bh">
+    <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu">
+    <input type="password" placeholder="SSH password (used once)" class="bp">
+    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
+  document.getElementById('bnodes').appendChild(d);
+}
+addBNode();
+addBNode();
+addBNode();
+
+async function runBootstrapSSH() {
+  const rows  = document.querySelectorAll('#bnodes .node-row');
+  const nodes = Array.from(rows).map(r => ({
+    ip:       r.querySelector('.bi').value,
+    hostname: r.querySelector('.bh').value,
+    ssh_user: r.querySelector('.bu').value,
+    ssh_pass: r.querySelector('.bp').value,
+  })).filter(n => n.ip && n.ssh_pass);
+
+  const el = document.getElementById('r-ssh');
+  el.innerHTML = '<span class="badge b-run">Pushing keys...</span>';
+  const resp = await fetch('/api/bootstrap/ssh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes })
+  });
+  const d = await resp.json();
+  rows.forEach(r => r.querySelector('.bp').value = '');
+  el.innerHTML = d.results.map(res =>
+    `<div style="margin:3px 0">
+      <span class="badge ${res.status === 'ok' ? 'b-ok' : 'b-err'}">${res.ip}</span>
+      ${res.message}</div>`
+  ).join('');
+}
+
+async function runPreflight() {
+  const rows  = document.querySelectorAll('#bnodes .node-row');
+  const nodes = Array.from(rows).map(r => ({
+    ip:       r.querySelector('.bi').value,
+    hostname: r.querySelector('.bh').value,
+    ssh_user: r.querySelector('.bu').value,
+  })).filter(n => n.ip);
+
+  const el = document.getElementById('r-preflight');
+  el.innerHTML = '<span class="badge b-run">Checking nodes...</span>';
+  const resp = await fetch('/api/preflight', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes })
+  });
+  const d = await resp.json();
+  el.innerHTML = d.results.map(node => {
+    const checks = Object.entries(node.checks).map(([k, v]) =>
+      `<div class="check-row ${v.startsWith('FAIL') ? 'check-fail' : 'check-ok'}">
+        ${v.startsWith('FAIL') ? '✗' : '✓'} ${k}: ${v}</div>`
+    ).join('');
+    return `<div style="margin:6px 0">
+      <strong>${node.hostname}</strong>
+      <span class="badge ${node.status === 'ok' ? 'b-ok' : 'b-err'}" style="margin-left:6px">${node.status}</span>
+      <div style="margin-left:1rem;margin-top:3px">${checks}</div></div>`;
+  }).join('');
+}
+</script>

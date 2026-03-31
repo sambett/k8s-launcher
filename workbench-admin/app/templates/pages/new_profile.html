@@ -1,0 +1,137 @@
+<div id="page-new" class="page">
+  <h2>New Profile</h2>
+  <div class="card">
+    <div class="grid2">
+      <div class="fg">
+        <label>Display Name</label>
+        <input id="f-name" placeholder="e.g. CPU Standard — SciPy"/>
+      </div>
+      <div class="fg">
+        <label>Slug (auto-generated, editable)</label>
+        <input id="f-slug" placeholder="e.g. ai-lab1-cpu-standard"/>
+      </div>
+      <div class="fg">
+        <label>GitLab Group
+          <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadGroups()">↺</button>
+        </label>
+        <select id="f-group"><option>Loading…</option></select>
+      </div>
+      <div class="fg">
+        <label>Description (optional)</label>
+        <input id="f-desc" placeholder="Short description shown to users"/>
+      </div>
+      <div class="fg">
+        <label>Image Repository
+          <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadRepos()">↺</button>
+        </label>
+        <select id="f-repo" onchange="loadTags()">
+          <option value="">— select repository —</option>
+        </select>
+      </div>
+      <div class="fg">
+        <label>Image Tags — check one or more</label>
+        <div id="tag-list" class="tag-list">
+          <span class="tag-empty">Select a repository first</span>
+        </div>
+        <div class="tag-hint">Multiple tags → user gets a dropdown at spawn time</div>
+      </div>
+      <div class="fg">
+        <label>CPU Limit (cores)</label>
+        <input id="f-cpu-lim" type="number" step="0.5" value="2"/>
+      </div>
+      <div class="fg">
+        <label>CPU Guarantee (cores)</label>
+        <input id="f-cpu-req" type="number" step="0.25" value="0.5"/>
+      </div>
+      <div class="fg">
+        <label>Memory Limit</label>
+        <input id="f-mem-lim" value="4G"/>
+      </div>
+      <div class="fg">
+        <label>Memory Guarantee</label>
+        <input id="f-mem-req" value="1G"/>
+      </div>
+      <div class="fg">
+        <label>GPU Count (0 = CPU only)</label>
+        <input id="f-gpu" type="number" min="0" value="0"/>
+      </div>
+    </div>
+    <div style="margin-top:1.2rem;display:flex;gap:.8rem;align-items:center">
+      <button class="btn btn-primary" onclick="createProfile()">Add Profile</button>
+      <span id="create-msg" style="font-size:.8rem;display:none"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadGroups() {
+  const sel = document.getElementById('f-group');
+  sel.innerHTML = '<option>Loading…</option>';
+  const res    = await fetch('/api/gitlab/groups');
+  const groups = await res.json();
+  if (groups.error) { sel.innerHTML = '<option>Failed to load</option>'; return; }
+  sel.innerHTML = groups
+    .filter(g => g.path !== 'registry')
+    .map(g => `<option value="${esc(g.path)}">${esc(g.full_path)}</option>`)
+    .join('');
+}
+
+async function loadRepos() {
+  const sel = document.getElementById('f-repo');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  const res   = await fetch('/api/registry/repos');
+  const repos = await res.json();
+  if (repos.error) { sel.innerHTML = '<option value="">Failed to load</option>'; return; }
+  sel.innerHTML = '<option value="">— select repository —</option>' +
+    repos.map(r => `<option value="${r.id}" data-name="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+}
+
+async function loadTags() {
+  const repoSel = document.getElementById('f-repo');
+  const tagDiv  = document.getElementById('tag-list');
+  const repoId  = repoSel.value;
+  if (!repoId) { tagDiv.innerHTML = '<span class="tag-empty">Select a repository first</span>'; return; }
+  tagDiv.innerHTML = '<span class="tag-empty">Loading…</span>';
+  const res  = await fetch('/api/registry/repos/' + repoId + '/tags');
+  const tags = await res.json();
+  if (!tags.length) { tagDiv.innerHTML = '<span class="tag-empty">No tags found</span>'; return; }
+  tagDiv.innerHTML = tags.map(t =>
+    `<label class="tag-item">
+      <input type="checkbox" name="img-tag" value="${esc(t.name)}"/> ${esc(t.name)}
+    </label>`
+  ).join('');
+}
+
+async function createProfile() {
+  const repoSel  = document.getElementById('f-repo');
+  const repoName = repoSel.options[repoSel.selectedIndex]?.dataset?.name || '';
+  const msg      = document.getElementById('create-msg');
+  const tags     = [...document.querySelectorAll('input[name="img-tag"]:checked')].map(cb => cb.value);
+  const body = {
+    slug:          document.getElementById('f-slug').value.trim(),
+    display_name:  document.getElementById('f-name').value.trim(),
+    description:   document.getElementById('f-desc').value.trim(),
+    gitlab_group:  document.getElementById('f-group').value,
+    image_name:    repoName,
+    image_options: tags,
+    cpu_limit:     parseFloat(document.getElementById('f-cpu-lim').value),
+    cpu_guarantee: parseFloat(document.getElementById('f-cpu-req').value),
+    mem_limit:     document.getElementById('f-mem-lim').value.trim(),
+    mem_guarantee: document.getElementById('f-mem-req').value.trim(),
+    gpu:           parseInt(document.getElementById('f-gpu').value) || 0,
+  };
+  if (!body.slug || !body.display_name || !body.gitlab_group || !body.image_name) {
+    showMsg(msg, '✗ Fill in all required fields.', false); return;
+  }
+  if (!body.image_options.length) {
+    showMsg(msg, '✗ Select at least one image tag.', false); return;
+  }
+  const res  = await fetch('/api/profiles', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  res.ok
+    ? showMsg(msg, '✓ Profile added — go to Profiles and click Apply.', true)
+    : showMsg(msg, '✗ ' + data.error, false);
+}
+</script>

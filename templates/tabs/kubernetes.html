@@ -1,0 +1,89 @@
+<div id="tab-kubernetes" class="panel">
+
+  <div class="card">
+    <h2>Phases</h2>
+    <ul class="phase-list">
+      <li>
+        <span class="dot" id="dot-k8s"></span>
+        Phase 4 — Deploy Kubernetes
+        <button class="btn btn-sm btn-primary" style="margin-left:auto"
+          onclick="deployK8s()">
+          Deploy
+          <span style="font-weight:400;opacity:.7;margin-left:4px">(~12 min)</span>
+        </button>
+      </li>
+      <li>
+        <span class="dot" id="dot-vk8s"></span>
+        Phase 5 — Validate Kubernetes
+        <button class="btn btn-sm" style="margin-left:auto" onclick="validateK8s()">Validate</button>
+      </li>
+      <li>
+        <span class="dot" id="dot-lh"></span>
+        Phase 6 — Deploy Longhorn
+        <button class="btn btn-sm btn-primary" style="margin-left:auto"
+          onclick="deployLonghorn()">
+          Deploy
+          <span style="font-weight:400;opacity:.7;margin-left:4px">(~7 min)</span>
+        </button>
+      </li>
+      <li>
+        <span class="dot" id="dot-vlh"></span>
+        Phase 7 — Validate Longhorn
+        <button class="btn btn-sm" style="margin-left:auto" onclick="validateLonghorn()">Validate</button>
+      </li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Phase 4 — Kubernetes deploy log</h2>
+    <div class="log" id="k8s-log">Waiting for deployment...</div>
+  </div>
+
+  <div class="card" id="vk8s-log-card" style="display:none">
+    <h2>Phase 5 — Validation results</h2>
+    <div id="st-k8s" style="font-size:13px;color:#888">Run Validate to see results.</div>
+  </div>
+
+  <div class="card">
+    <h2>Phase 6 — Longhorn deploy log</h2>
+    <div class="log" id="lh-log">Waiting for deployment...</div>
+  </div>
+
+  <div class="card" id="vlh-log-card" style="display:none">
+    <h2>Phase 7 — Validation results</h2>
+    <div id="st-lh" style="font-size:13px;color:#888">Run Validate to see results.</div>
+    <div id="st-ui" style="margin-top:.5rem;font-size:13px;color:#888"></div>
+  </div>
+
+</div>
+
+<script>
+function deployK8s()      { streamToLog('/api/deploy/k8s/stream',     'dot-k8s', 'k8s-log'); }
+function deployLonghorn() { streamToLog('/api/deploy/longhorn/stream', 'dot-lh',  'lh-log'); }
+
+async function validateK8s() {
+  document.getElementById('vk8s-log-card').style.display = 'block';
+  setDot('dot-vk8s', 'running');
+  const r = await fetch('/api/validate/k8s', { method: 'POST' });
+  const d = await r.json();
+  setDot('dot-vk8s', d.status === 'ok' ? 'ok' : 'error');
+  renderChecks('st-k8s', d.checks);
+}
+
+async function validateLonghorn() {
+  document.getElementById('vlh-log-card').style.display = 'block';
+  setDot('dot-vlh', 'running');
+  const r = await fetch('/api/validate/longhorn', { method: 'POST' });
+  const d = await r.json();
+  setDot('dot-vlh', d.status === 'ok' ? 'ok' : 'error');
+  if (d.status === 'ok') markStepDone('kubernetes');
+  else markStepError('kubernetes');
+  renderChecks('st-lh', d.checks);
+  const ui = d.checks && d.checks.longhorn_ui;
+  if (ui && ui.startsWith('ok')) {
+    const url = ui.replace(/^ok — /, '');
+    document.getElementById('st-ui').innerHTML =
+      `Longhorn UI: <a href="${url}" target="_blank" style="color:#1976d2;font-size:13px">${url}</a>`;
+  }
+}
+</script>

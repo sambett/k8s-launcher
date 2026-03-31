@@ -1,0 +1,90 @@
+---
+- name: Create artifact directory
+  file:
+    path: "{{ artifacts_dir }}"
+    state: directory
+    mode: '0750'
+    owner: "{{ ansible_user }}"
+  become: yes
+
+- name: Write kubeadm config from template
+  template:
+    src: kubeadm-config.yaml.j2
+    dest: "{{ artifacts_dir }}/kubeadm-config.yaml"
+    mode: '0640'
+    owner: "{{ ansible_user }}"
+  become: yes
+
+- name: Check if control plane is already initialised
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf
+  become: yes
+
+- name: Pre-pull control plane images
+  command: kubeadm config images pull --kubernetes-version {{ k8s_version }}
+  become: yes
+  when: not admin_conf.stat.exists
+
+- name: Run kubeadm init
+  shell: >
+    kubeadm init
+    --config {{ artifacts_dir }}/kubeadm-config.yaml
+    --upload-certs
+    2>&1 | tee {{ artifacts_dir }}/kubeadm-init.log
+  when: not admin_conf.stat.exists
+  become: yes
+  async: 600
+  poll: 30
+
+- name: Create .kube directory for user
+  file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0750'
+    owner: "{{ ansible_user }}"
+  become: yes
+
+- name: Copy admin.conf to user kubeconfig
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: yes
+    owner: "{{ ansible_user }}"
+    mode: '0600'
+  become: yes
+
+- name: Extract and save worker join command
+  shell: |
+    grep -A1 "Then you can join any number of worker nodes" {{ artifacts_dir }}/kubeadm-init.log \
+    | grep "kubeadm join" \
+    | sed 's/^[[:space:]]*//'
+  register: join_cmd_raw
+  become: yes
+  changed_when: false
+
+- name: Fetch discovery token hash
+  shell: |
+    grep "discovery-token-ca-cert-hash" {{ artifacts_dir }}/kubeadm-init.log \
+    | tail -1 \
+    | grep -o 'sha256:[a-f0-9]*'
+  register: token_hash
+  become: yes
+  changed_when: false
+
+- name: Fetch bootstrap token
+  shell: |
+    grep "bootstrap-token" {{ artifacts_dir }}/kubeadm-init.log \
+    | grep -o '[a-z0-9]*\.[a-z0-9]*' \
+    | head -1
+  register: bootstrap_token
+  become: yes
+  changed_when: false
+
+- name: Write clean join command
+  copy:
+    content: "kubeadm join {{ cp_ip }}:{{ api_port }} --token {{ bootstrap_token.stdout }} --discovery-token-ca-cert-hash {{ token_hash.stdout }}\n"
+    dest: "{{ artifacts_dir }}/join-command.txt"
+    owner: "{{ ansible_user }}"
+    mode: '0600'
+  become: yes

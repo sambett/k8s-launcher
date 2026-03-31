@@ -1,0 +1,46 @@
+---
+- name: Add JupyterHub Helm repo
+  command: helm repo add jupyterhub https://hub.jupyter.org/helm-chart/
+  register: repo_add
+  changed_when: "'already exists' not in repo_add.stdout"
+  failed_when: repo_add.rc != 0 and 'already exists' not in repo_add.stdout
+
+- name: Update Helm repos
+  command: helm repo update
+  changed_when: true
+
+- name: Create artifacts directory
+  file:
+    path: "{{ jhub_artifacts_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render config.yaml from template
+  template:
+    src: config.yaml.j2
+    dest: "{{ jhub_artifacts_dir }}/config.yaml"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy JupyterHub via Helm
+  command: >
+    helm upgrade --install {{ jhub_release_name }}
+    jupyterhub/jupyterhub
+    --namespace {{ jhub_namespace }}
+    --version {{ jhub_chart_version }}
+    --values {{ jhub_artifacts_dir }}/config.yaml
+    --timeout 10m
+    --wait
+  register: helm_result
+  changed_when: true
+
+- name: Wait for hub pod to be Running
+  command: >
+    kubectl get pods -n {{ jhub_namespace }}
+    -l component=hub
+    -o jsonpath='{.items[0].status.phase}'
+  register: hub_phase
+  retries: 24
+  delay: 15
+  until: hub_phase.stdout == "Running"
+  changed_when: false

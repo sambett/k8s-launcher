@@ -1,0 +1,52 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install base packages
+  apt:
+    name: [apt-transport-https, ca-certificates, curl, gpg, socat, openssh-server]
+    state: present
+
+- name: Populate /etc/hosts with cluster nodes
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ip }} {{ item.name }}"
+    regexp: "^{{ item.ip }}\\s"
+  loop: "{{ cluster_hosts }}"
+
+- name: Generate SSH key pair if missing
+  openssh_keypair:
+    path: "/home/{{ ansible_user }}/.ssh/id_rsa"
+    type: rsa
+    size: 4096
+    state: present
+  become: no
+
+- name: Collect this node's public key
+  slurp:
+    src: "/home/{{ ansible_user }}/.ssh/id_rsa.pub"
+  register: node_pubkey
+  become: no
+
+- name: Push all node public keys to this node
+  authorized_key:
+    user: "{{ ansible_user }}"
+    state: present
+    key: "{{ hostvars[item]['node_pubkey']['content'] | b64decode }}"
+  loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
+
+- name: Write ~/.ssh/config for cluster hosts
+  blockinfile:
+    path: "/home/{{ ansible_user }}/.ssh/config"
+    create: yes
+    mode: '0600'
+    marker: "# {mark} ANSIBLE MANAGED"
+    block: |
+      {% for h in cluster_hosts %}
+      Host {{ h.name }}
+        HostName {{ h.ip }}
+        StrictHostKeyChecking no
+      {% endfor %}
+  become: no

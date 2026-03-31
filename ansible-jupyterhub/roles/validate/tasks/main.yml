@@ -1,0 +1,28 @@
+---
+- name: Check hub pod is Running
+  command: >
+    kubectl get pods -n {{ jhub_namespace }}
+    -l component=hub --no-headers
+  register: hub_pods
+  changed_when: false
+  failed_when: "'Running' not in hub_pods.stdout"
+
+- name: Check proxy pod is Running
+  command: >
+    kubectl get pods -n {{ jhub_namespace }}
+    -l component=proxy --no-headers
+  register: proxy_pods
+  changed_when: false
+  failed_when: "'Running' not in proxy_pods.stdout"
+
+- name: Check NodePort service exists
+  command: >
+    kubectl get svc proxy-public -n {{ jhub_namespace }}
+    -o jsonpath='{.spec.type}'
+  register: svc_type
+  changed_when: false
+  failed_when: svc_type.stdout != "NodePort"
+
+- name: Print JupyterHub access URL
+  debug:
+    msg: "JupyterHub is ready at http://{{ jhub_access_node_ip }}:{{ jhub_nodeport }}"

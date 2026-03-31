@@ -1,0 +1,55 @@
+<div class="card">
+  <div style="font-size:.85rem;font-weight:600;color:#c4b5fd;margin-bottom:1rem">
+    Create Group
+  </div>
+  <div style="display:flex;gap:.75rem;align-items:flex-end">
+    <div class="fg" style="flex:1">
+      <label>Group name</label>
+      <input id="new-group-name" placeholder="e.g. data-scientists"
+        onkeydown="if(event.key==='Enter')createGroup()"/>
+    </div>
+    <div class="fg" style="flex:1">
+      <label>Visibility</label>
+      <select id="new-group-visibility">
+        <option value="private">Private</option>
+        <option value="internal">Internal</option>
+        <option value="public">Public</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="createGroup()" style="flex-shrink:0">
+      Create
+    </button>
+  </div>
+  <div id="r-create-group" style="margin-top:.5rem;font-size:.8rem"></div>
+</div>
+
+<script>
+async function createGroup() {
+  const name = document.getElementById('new-group-name').value.trim();
+  const vis  = document.getElementById('new-group-visibility').value;
+  const el   = document.getElementById('r-create-group');
+  if (!name) {
+    el.style.color = '#fc8181';
+    el.textContent = 'Enter a group name first.';
+    return;
+  }
+  el.style.color = '#94a3b8';
+  el.textContent = 'Creating…';
+  const res  = await fetch('/api/groups', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ name, visibility: vis })
+  });
+  const data = await res.json();
+  if (res.ok) {
+    el.style.color = '#68d391';
+    el.textContent = '✓ Group "' + data.name + '" created';
+    document.getElementById('new-group-name').value = '';
+    loadGroupList();
+    loadGroupsForUserForm();
+  } else {
+    el.style.color = '#fc8181';
+    el.textContent = '✗ ' + (data.error || 'Error');
+  }
+}
+</script>

@@ -1,0 +1,19 @@
+# ansible-gitlab variables — example for manual use
+# When using the launcher, these are generated into generated/gitlab-vars.yml
+
+gitlab_vm_ip:              "REPLACE_WITH_GITLAB_VM_IP"
+gitlab_external_url:       "http://REPLACE_WITH_GITLAB_VM_IP"
+gitlab_registry_port:      5050
+gitlab_version:            "18.9.1"
+gitlab_root_password:      "REPLACE_WITH_ROOT_PASSWORD"
+
+# OAuth app — JupyterHub callback URL
+# Format: http://<worker-ip>:<nodeport>/hub/oauth_callback
+jupyterhub_callback_url:   "http://REPLACE_WITH_WORKER_IP:32080/hub/oauth_callback"
+
+# Registry project structure — matches the existing dropdown layout
+registry_group_name:       "registry"
+notebook_images_project:   "notebook-images"
+
+# Where to save outputs on the controller (set by launcher)
+controller_outputs_path:   "/tmp/gitlab-outputs.json"

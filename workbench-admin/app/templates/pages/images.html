@@ -1,0 +1,238 @@
+<div id="page-images" class="page">
+  <h2>Import Image</h2>
+  <div class="card">
+    <div style="font-size:.78rem;color:#64748b;margin-bottom:1.2rem;line-height:1.7">
+      Pull an image from any public registry, retag it, and push it into the GitLab registry.
+      The imported image will appear in <strong>New Profile</strong> immediately after import.
+    </div>
+    <div class="grid2">
+      <div class="fg" style="grid-column:1/-1">
+        <label>Source Image (full reference)</label>
+        <input id="img-source" placeholder="e.g. docker.io/jupyter/scipy-notebook:2024-01-15"/>
+      </div>
+      <div class="fg">
+        <label>Target Repository
+          <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadImportRepos()">↺</button>
+        </label>
+        <input id="img-repo"
+          list="img-repo-list"
+          placeholder="e.g. notebook-cpu  (type freely or pick existing)"
+          autocomplete="off"
+          oninput="sanitizeSlug(this)"/>
+        <datalist id="img-repo-list"></datalist>
+        <div style="font-size:.72rem;color:#4a5568;margin-top:.3rem">
+          Type a new name to create a repository, or pick an existing one from the list.
+        </div>
+      </div>
+      <div class="fg">
+        <label>Target Tag</label>
+        <input id="img-tag"
+          placeholder="e.g. scipy-2024"
+          oninput="sanitizeSlug(this)"/>
+      </div>
+    </div>
+    <div style="margin-top:1.2rem;display:flex;align-items:center;gap:1rem">
+      <button class="btn btn-primary" id="import-btn" onclick="startImport()">Import</button>
+      <span style="font-size:.78rem;color:#4a5568" id="import-target-preview"></span>
+    </div>
+  </div>
+
+  <div class="card" id="import-log-card" style="display:none">
+    <div style="display:flex;align-items:center;margin-bottom:.8rem">
+      <span style="font-size:.85rem;font-weight:600;color:#c4b5fd">Import Log</span>
+      <span id="import-badge" class="import-status-badge badge-idle">idle</span>
+    </div>
+    <div id="import-log" class="log-box">—</div>
+    <div id="import-done-msg" style="margin-top:.8rem;font-size:.8rem;display:none"></div>
+  </div>
+
+  <div class="card" style="margin-top:1.5rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+      <span style="font-size:.85rem;font-weight:600;color:#c4b5fd">Registry Images</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadRegistryImages()">↺ Refresh</button>
+    </div>
+    <div id="registry-images-list"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<script>
+let _pollTimer = null;
+
+function sanitizeSlug(input) {
+  input.value = input.value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/-{2,}/g, "-");
+}
+
+async function loadImportRepos() {
+  const dl = document.getElementById('img-repo-list');
+  dl.innerHTML = '';
+  try {
+    const res   = await fetch('/api/registry/repos');
+    const repos = await res.json();
+    if (!repos || repos.error) return;
+    repos.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.name;
+      dl.appendChild(opt);
+    });
+  } catch(e) { /* free text still works */ }
+}
+
+async function loadRegistryImages() {
+  const container = document.getElementById('registry-images-list');
+  container.innerHTML = '<div class="empty">Loading…</div>';
+  const reposRes = await fetch('/api/registry/repos');
+  const repos    = await reposRes.json();
+  if (repos.error) {
+    container.innerHTML = '<div class="empty">Failed to load</div>';
+    return;
+  }
+  if (!repos.length || (repos.length === 1 && repos[0].id === null)) {
+    container.innerHTML =
+      '<div class="empty">No images yet — import your first image above.</div>';
+    return;
+  }
+  const repoData = await Promise.all(repos.map(async r => {
+    const tagsRes = await fetch('/api/registry/repos/' + r.id + '/tags');
+    const tags    = await tagsRes.json();
+    return { ...r, tags: tags.error ? [] : tags };
+  }));
+  container.innerHTML = repoData.map(repo => {
+    const tagRows = repo.tags.length
+      ? repo.tags.map(t => `
+          <div style="display:flex;align-items:center;justify-content:space-between;
+                      padding:.35rem .5rem;border-radius:4px;margin:.15rem 0;
+                      background:#0f1117;border:1px solid #2d3148">
+            <span style="font-family:monospace;font-size:.78rem;color:#a0aec0">${esc(t.name)}</span>
+            <button class="btn btn-danger btn-sm"
+              onclick="deleteTag(${repo.id},'${esc(t.name)}','${esc(repo.name)}')">Delete</button>
+          </div>`).join('')
+      : '<div style="font-size:.75rem;color:#4a5568;padding:.3rem .5rem">No tags</div>';
+    return `
+      <div style="margin-bottom:1.2rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:.2rem 0;border-bottom:1px solid #2d3148;margin-bottom:.4rem">
+          <span style="font-size:.78rem;font-weight:600;color:#7c6af7">${esc(repo.name)}</span>
+          <button class="btn btn-danger btn-sm"
+            onclick="deleteRepo(${repo.id},'${esc(repo.name)}')">Delete Repo</button>
+        </div>
+        ${tagRows}
+      </div>`;
+  }).join('');
+}
+
+async function deleteRepo(repoId, repoName) {
+  if (!confirm('Delete entire repository "' + repoName + '" and ALL its tags?\n\nThis cannot be undone.'))
+    return;
+  const res  = await fetch(
+    '/api/images/repos/' + repoId + '?repo_name=' + encodeURIComponent(repoName),
+    { method: 'DELETE' }
+  );
+  const data = await res.json();
+  if (res.ok) {
+    loadRegistryImages();
+    loadImportRepos();
+  } else if (res.status === 409) {
+    const names = (data.blocking||[]).map(p => '  · ' + p.display_name).join('\n');
+    alert('Cannot delete "' + repoName + '"\n\nUsed by profiles:\n' + names + '\n\n' + (data.hint||''));
+  } else {
+    alert('Delete failed: ' + (data.error || 'Unknown error'));
+  }
+}
+
+async function deleteTag(repoId, tagName, repoName) {
+  if (!confirm('Delete tag "' + tagName + '" from ' + repoName + '?\n\nThis cannot be undone.'))
+    return;
+  const res  = await fetch(
+    '/api/images/tags/' + repoId + '/' + tagName +
+    '?repo_name=' + encodeURIComponent(repoName),
+    { method: 'DELETE' }
+  );
+  const data = await res.json();
+  if (res.ok) {
+    loadRegistryImages();
+    loadImportRepos();
+  } else if (res.status === 409) {
+    const names = (data.blocking||[])
+      .map(p => '  · ' + p.display_name + ' (' + p.gitlab_group + ')')
+      .join('\n');
+    alert(
+      'Cannot delete "' + tagName + '"\n\nUsed by ' +
+      (data.blocking||[]).length + ' profile(s):\n' + names +
+      '\n\n' + (data.hint||'Delete these profiles first.')
+    );
+  } else {
+    alert('Delete failed: ' + (data.error || 'Unknown error'));
+  }
+}
+
+async function startImport() {
+  const source = document.getElementById('img-source').value.trim();
+  const repo   = document.getElementById('img-repo').value.trim();
+  const tag    = document.getElementById('img-tag').value.trim();
+  if (!source || !repo || !tag) {
+    alert('Fill in all three fields before importing.');
+    return;
+  }
+  clearInterval(_pollTimer);
+  const logCard = document.getElementById('import-log-card');
+  const logBox  = document.getElementById('import-log');
+  const badge   = document.getElementById('import-badge');
+  const doneMsg = document.getElementById('import-done-msg');
+  const btn     = document.getElementById('import-btn');
+  logCard.style.display = 'block';
+  logBox.textContent    = 'Submitting…';
+  badge.textContent     = 'starting';
+  badge.className       = 'import-status-badge badge-running';
+  doneMsg.style.display = 'none';
+  btn.disabled          = true;
+
+  const res  = await fetch('/api/images/import', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ source, target_repo: repo, target_tag: tag })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    logBox.textContent = '✗ ' + (data.error || 'Submission failed');
+    badge.textContent  = 'failed';
+    badge.className    = 'import-status-badge badge-failed';
+    btn.disabled       = false;
+    return;
+  }
+  document.getElementById('import-target-preview').textContent = '→ ' + data.target;
+  const jobId = data.job_id;
+  _pollTimer = setInterval(async () => {
+    const pr   = await fetch('/api/images/import/' + jobId);
+    const poll = await pr.json();
+    logBox.innerHTML = poll.log.map(line => {
+      if (line.startsWith('✓')) return `<span class="log-ok">${esc(line)}</span>`;
+      if (line.startsWith('✗')) return `<span class="log-err">${esc(line)}</span>`;
+      if (line.startsWith('▶')) return `<span class="log-step">${esc(line)}</span>`;
+      return esc(line);
+    }).join('\n');
+    logBox.scrollTop  = logBox.scrollHeight;
+    badge.textContent = poll.status;
+    if (poll.status === 'done') {
+      clearInterval(_pollTimer);
+      badge.className       = 'import-status-badge badge-done';
+      btn.disabled          = false;
+      doneMsg.style.display = 'block';
+      doneMsg.innerHTML     =
+        `<span style="color:#68d391">✓ Image available at:</span><br>
+         <code style="font-size:.78rem;color:#a78bfa">${esc(poll.target)}</code><br>
+         <span style="color:#64748b;font-size:.72rem">Now create a profile using this image.</span>`;
+      loadRegistryImages();
+      loadImportRepos();
+    } else if (poll.status === 'failed') {
+      clearInterval(_pollTimer);
+      badge.className = 'import-status-badge badge-failed';
+      btn.disabled    = false;
+    } else {
+      badge.className = 'import-status-badge badge-running';
+    }
+  }, 2000);
+}
+</script>

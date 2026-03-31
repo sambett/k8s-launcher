@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Workbench Launcher</title>
+{% include "shared/styles.html" %}
+</head>
+<body>
+
+<header>
+  <h1>🚀 AI Workbench Launcher</h1>
+  <span class="badge b-info" style="background:rgba(255,255,255,.2);color:#fff">
+    On-premise Kubernetes Platform
+  </span>
+</header>
+
+<!-- ── Progress stepper ── -->
+<div class="stepper" id="stepper">
+  <button class="step active" id="step-bootstrap"
+    onclick="showTab('bootstrap',this)">
+    <span class="step-num">1</span> Bootstrap
+  </button>
+  <span class="step-arrow">›</span>
+  <button class="step" id="step-configure"
+    onclick="showTab('configure',this)">
+    <span class="step-num">2</span> Configure
+  </button>
+  <span class="step-arrow">›</span>
+  <button class="step" id="step-kubernetes"
+    onclick="showTab('kubernetes',this)">
+    <span class="step-num">3</span> Kubernetes
+  </button>
+  <span class="step-arrow">›</span>
+  <button class="step" id="step-gitlab"
+    onclick="showTab('gitlab',this)">
+    <span class="step-num">4</span> GitLab
+  </button>
+  <span class="step-arrow">›</span>
+  <button class="step" id="step-jupyterhub"
+    onclick="showTab('jupyterhub',this)">
+    <span class="step-num">5</span> JupyterHub
+  </button>
+  <span class="step-arrow">›</span>
+  <button class="step" id="step-admindashboard"
+    onclick="showTab('admindashboard',this)">
+    <span class="step-num">6</span> Admin Dashboard
+  </button>
+  <span class="step-arrow" style="margin:0 4px">·</span>
+  <button class="step" id="step-status"
+    onclick="showTab('status',this)">
+    📊 Status
+  </button>
+  <button class="step" id="step-reset"
+    onclick="showTab('reset',this)"
+    style="color:#c62828;margin-left:4px">
+    🗑 Reset
+  </button>
+</div>
+
+{% include "tabs/bootstrap.html" %}
+{% include "tabs/configure.html" %}
+{% include "tabs/kubernetes.html" %}
+{% include "tabs/gitlab.html" %}
+{% include "tabs/jupyterhub.html" %}
+{% include "tabs/dashboard_deploy.html" %}
+{% include "tabs/status.html" %}
+{% include "tabs/reset.html" %}
+
+{% include "shared/scripts.html" %}
+</body>
+</html>

@@ -1,0 +1,81 @@
+---
+- name: Install Python dependencies
+  apt:
+    name:
+      - python3-pip
+      - python3-flask
+      - python3-yaml
+      - git
+    state: present
+    update_cache: yes
+
+- name: Install skopeo for image import
+  apt:
+    name: skopeo
+    state: present
+
+- name: Create secrets directory
+  file:
+    path: /etc/workbench
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Write secrets.env
+  template:
+    src: secrets.env.j2
+    dest: /etc/workbench/secrets.env
+    owner: root
+    group: "{{ dashboard_user }}"
+    mode: "0640"
+  no_log: true
+
+- name: Clone k8s-launcher repo directly into ~/k8s-launcher
+  become: no
+  git:
+    repo: "{{ workbench_repo }}"
+    dest: "/home/{{ dashboard_user }}/k8s-launcher"
+    version: main
+    force: yes
+
+- name: Write registry.conf into repo workbench-admin dir
+  become: no
+  template:
+    src: registry.conf.j2
+    dest: "/home/{{ dashboard_user }}/k8s-launcher/workbench-admin/registry.conf"
+    mode: "0640"
+
+- name: Install systemd unit
+  template:
+    src: workbench-admin.service.j2
+    dest: /etc/systemd/system/workbench-admin.service
+    mode: "0644"
+
+- name: Enable and start service
+  systemd:
+    name: workbench-admin
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Force restart workbench-admin to load latest code
+  systemd:
+    name: workbench-admin
+    state: restarted
+    daemon_reload: yes
+
+- name: Wait for dashboard to be reachable after restart
+  uri:
+    url: "http://localhost:{{ dashboard_port }}/api/settings/info"
+    method: GET
+    user: "{{ dashboard_http_user }}"
+    password: "{{ dashboard_http_pass }}"
+    force_basic_auth: yes
+    status_code: 200
+    validate_certs: no
+  retries: 10
+  delay: 3
+  register: dashboard_check
+  until: dashboard_check.status == 200
+  changed_when: false

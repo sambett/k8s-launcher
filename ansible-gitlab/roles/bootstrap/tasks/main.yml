@@ -1,0 +1,137 @@
+---
+# PAT creation: always destroy and recreate.
+# The raw token value is only available at creation time in GitLab Rails —
+# existing.token cannot be read back after the fact.
+# Idempotency is handled at the launcher level (route checks for gitlab-outputs.json).
+- name: Create root admin PAT
+  shell: |
+    gitlab-rails runner "
+    existing = PersonalAccessToken.find_by(name: 'workbench-admin-token')
+    existing.destroy! if existing
+    token = User.find_by_username('root').personal_access_tokens.create!(
+      name: 'workbench-admin-token',
+      scopes: ['api'],
+      expires_at: 365.days.from_now
+    )
+    puts token.token
+    "
+  register: pat_output
+  no_log: true
+
+- name: Store admin token as fact
+  set_fact:
+    gitlab_admin_token: "{{ pat_output.stdout_lines | last }}"
+  no_log: true
+
+- name: Create registry group
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "{{ registry_group_name }}"
+      path: "{{ registry_group_name }}"
+      visibility: "private"
+    status_code: [200, 201, 400]
+    validate_certs: no
+  register: group_create
+
+- name: Get registry group info
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups/{{ registry_group_name }}"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: group_info
+
+- name: Create notebook-images project
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/projects"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "{{ notebook_images_project }}"
+      path: "{{ notebook_images_project }}"
+      namespace_id: "{{ group_info.json.id }}"
+      visibility: "private"
+      container_registry_access_level: "enabled"
+    status_code: [200, 201, 400]
+    validate_certs: no
+
+- name: Get notebook-images project info
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/projects/{{ registry_group_name | urlencode }}%2F{{ notebook_images_project | urlencode }}"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: project_info
+
+- name: Create registry deploy token
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/projects/{{ project_info.json.id }}/deploy_tokens"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "workbench-registry-token"
+      scopes:
+        - read_registry
+        - write_registry
+    status_code: [200, 201]
+    validate_certs: no
+  register: deploy_token
+  no_log: true
+
+- name: Create OAuth application
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/applications"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "jupyterhub"
+      redirect_uri: "{{ jupyterhub_callback_url }}"
+      scopes: "api read_user openid"
+      confidential: true
+    status_code: [200, 201]
+    validate_certs: no
+  register: oauth_app
+  no_log: true
+
+- name: Write outputs JSON on GitLab VM
+  copy:
+    content: "{{ outputs | to_nice_json }}"
+    dest: /tmp/gitlab-outputs.json
+    mode: "0600"
+  vars:
+    outputs:
+      gitlab_url:                  "{{ gitlab_external_url }}"
+      gitlab_registry_host:        "{{ gitlab_vm_ip }}:{{ gitlab_registry_port }}"
+      registry_namespace:          "{{ registry_group_name }}/{{ notebook_images_project }}"
+      notebook_images_project_id:  "{{ project_info.json.id }}"
+      admin_token:                 "{{ gitlab_admin_token }}"
+      oauth_client_id:             "{{ oauth_app.json.application_id }}"
+      oauth_client_secret:         "{{ oauth_app.json.secret }}"
+      registry_deploy_token_user:  "{{ deploy_token.json.username }}"
+      registry_deploy_token_pass:  "{{ deploy_token.json.token }}"
+  no_log: true
+
+- name: Fetch outputs to controller
+  fetch:
+    src: /tmp/gitlab-outputs.json
+    dest: "{{ controller_outputs_path }}"
+    flat: yes
+  no_log: true
+
+- name: Clean outputs from GitLab VM
+  file:
+    path: /tmp/gitlab-outputs.json
+    state: absent

@@ -1,0 +1,62 @@
+---
+# longhorn_prereqs — run on ALL nodes before any Helm work
+# Ensures every node satisfies Longhorn's OS-level requirements.
+# Safe to re-run: all tasks are idempotent.
+
+# ── iscsi_tcp kernel module ───────────────────────────────────────────────────
+# Longhorn uses iSCSI to attach block volumes to nodes.
+# Without this module, volume attachment fails silently at mount time.
+
+- name: longhorn_prereqs | Load iscsi_tcp kernel module
+  community.general.modprobe:
+    name: iscsi_tcp
+    state: present
+  become: yes
+
+- name: longhorn_prereqs | Persist iscsi_tcp across reboots
+  copy:
+    dest: /etc/modules-load.d/iscsi_tcp.conf
+    content: "iscsi_tcp\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: yes
+
+# ── cryptsetup ────────────────────────────────────────────────────────────────
+# Required by Longhorn for device mapping and encrypted volume support.
+# Even if encryption is not used, the package is a documented prerequisite.
+
+- name: longhorn_prereqs | Install cryptsetup
+  apt:
+    name: cryptsetup
+    state: present
+    update_cache: yes
+  become: yes
+
+# ── multipathd ────────────────────────────────────────────────────────────────
+# Ubuntu 22.04 ships with multipathd active by default.
+# It can claim iSCSI block devices (/dev/sdb, /dev/sdc) before Longhorn
+# mounts them, causing volume attachment failures.
+# In a lab/VM environment there is no need for multipathing — disable it.
+# Reference: Longhorn KB troubleshooting-volume-with-multipath
+
+- name: longhorn_prereqs | Disable and stop multipathd
+  systemd:
+    name: multipathd
+    state: stopped
+    enabled: no
+  become: yes
+  # If multipathd is not installed at all, this task is a no-op
+  failed_when: false
+
+# ── iscsid service ────────────────────────────────────────────────────────────
+# open-iscsi was already installed by ansible-k8s node_prep role.
+# Verify the daemon is running — if it was only enabled but not started,
+# Longhorn volume attach will fail on this node.
+
+- name: longhorn_prereqs | Ensure iscsid is running
+  systemd:
+    name: iscsid
+    state: started
+    enabled: yes
+  become: yes

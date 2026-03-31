@@ -1,0 +1,63 @@
+---
+- name: Create calico artifact dir
+  file:
+    path: "{{ artifacts_dir }}/calico"
+    state: directory
+
+- name: Download Tigera operator manifest
+  get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+    dest: "{{ artifacts_dir }}/calico/tigera-operator.yaml"
+    force: no
+
+- name: Download Calico custom-resources manifest
+  get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
+    dest: "{{ artifacts_dir }}/calico/custom-resources.yaml"
+    force: no
+
+- name: Enforce correct pod CIDR in custom-resources.yaml
+  replace:
+    path: "{{ artifacts_dir }}/calico/custom-resources.yaml"
+    regexp:  'cidr:.*'
+    replace: "cidr: {{ pod_cidr }}"
+
+- name: Check if Tigera operator already deployed
+  command: kubectl get deployment tigera-operator -n tigera-operator
+  register: tigera_check
+  changed_when: false
+  failed_when: false
+
+- name: Apply Tigera operator
+  command: kubectl apply --server-side -f {{ artifacts_dir }}/calico/tigera-operator.yaml
+  when: tigera_check.rc != 0
+
+- name: Wait for Tigera operator rollout
+  command: kubectl rollout status deployment tigera-operator -n tigera-operator --timeout=120s
+  changed_when: false
+
+- name: Check if Calico Installation CR already exists
+  command: kubectl get installation default
+  register: calico_check
+  changed_when: false
+  failed_when: false
+
+- name: Apply Calico custom resources
+  command: kubectl apply -f {{ artifacts_dir }}/calico/custom-resources.yaml
+  when: calico_check.rc != 0
+
+- name: Wait for calico-system namespace to have pods
+  shell: kubectl get pods -n calico-system --no-headers 2>/dev/null | wc -l
+  register: calico_pod_count
+  retries: 12
+  delay: 15
+  until: calico_pod_count.stdout | int > 0
+  changed_when: false
+
+- name: Wait for Calico pods to be Ready
+  command: kubectl wait pod --all -n calico-system --for=condition=Ready --timeout=300s
+  changed_when: false
+
+- name: Wait for control plane node to be Ready
+  command: kubectl wait node {{ cp_hostname }} --for=condition=Ready --timeout=120s
+  changed_when: false

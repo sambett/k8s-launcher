@@ -1,0 +1,22 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ longhorn_storageclass_name }}
+  annotations:
+    # Make this the cluster-wide default StorageClass.
+    # JupyterHub spawner creates PVCs without explicit storageClassName —
+    # this annotation connects JupyterHub to Longhorn automatically.
+    storageclass.kubernetes.io/is-default-class: "{{ longhorn_storageclass_default }}"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: {{ longhorn_reclaim_policy }}
+volumeBindingMode: Immediate
+parameters:
+  # Number of replicas. Must match worker node count.
+  numberOfReplicas: "{{ longhorn_replica_count }}"
+  # Data locality: best-effort places one replica on the same node as the pod.
+  dataLocality: "best-effort"
+  # NOTE: diskSelector and nodeSelector are intentionally omitted.
+  # Setting them to "" causes Longhorn to reject PVCs with:
+  # "specified disk tag does not exist" → PVC stays Pending forever.
+  # Lesson learned from manual installation run on 2026-02-19.

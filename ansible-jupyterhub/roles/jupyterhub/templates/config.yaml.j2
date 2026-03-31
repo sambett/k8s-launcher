@@ -1,0 +1,134 @@
+proxy:
+  service:
+    type: NodePort
+    nodePorts:
+      http: {{ jhub_nodeport }}
+
+hub:
+  config:
+    JupyterHub:
+      authenticator_class: gitlab
+      shutdown_on_logout: true
+      cookie_secure: false
+      logout_redirect_url: "http://{{ jhub_gitlab_url | replace("http://","") }}/users/sign_in"
+    GitLabOAuthenticator:
+      oauth_callback_url: "http://{{ jhub_access_node_ip }}:{{ jhub_nodeport }}/hub/oauth_callback"
+      gitlab_url: "{{ jhub_gitlab_url }}"
+      scope:
+        - read_user
+        - api
+        - openid
+      username_claim: username
+      enable_auth_state: true
+
+  extraEnv:
+    GITLAB_CLIENT_ID:
+      valueFrom:
+        secretKeyRef:
+          name: gitlab-oauth-secret
+          key: client_id
+    GITLAB_CLIENT_SECRET:
+      valueFrom:
+        secretKeyRef:
+          name: gitlab-oauth-secret
+          key: client_secret
+    GITLAB_URL:
+      value: "{{ jhub_gitlab_url }}"
+    REGISTRY_HOST:
+      value: "{{ jhub_registry_host }}"
+    REGISTRY_NAMESPACE:
+      value: "{{ jhub_registry_namespace }}"
+
+  extraVolumes:
+    - name: profiles-config
+      configMap:
+        name: jupyterhub-profiles
+  extraVolumeMounts:
+    - name: profiles-config
+      mountPath: /etc/jupyterhub/profiles
+
+  extraConfig:
+    00-prompt: |
+      c.GitLabOAuthenticator.extra_authorize_params = {"prompt": "login"}
+    00-crypt-key: |
+      c.CryptKeeper.keys = [bytes.fromhex("{{ jhub_crypt_key }}")]
+
+    01-dynamic-profiles: |
+      import json, os, logging
+      log = logging.getLogger(__name__)
+
+      async def profile_list(spawner):
+          auth_state = await spawner.user.get_auth_state()
+          if not auth_state:
+              return []
+          token = (auth_state.get("access_token") or
+                   auth_state.get("gitlab_user", {}).get("access_token", ""))
+          import urllib.request
+          gitlab_url = os.environ.get("GITLAB_URL", "{{ jhub_gitlab_url }}")
+          req = urllib.request.Request(
+              f"{gitlab_url}/api/v4/groups?min_access_level=10&per_page=50",
+              headers={"Authorization": f"Bearer {token}"}
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=5) as resp:
+                  user_groups = {g["path"] for g in json.loads(resp.read())}
+          except Exception as e:
+              log.error("GitLab groups fetch failed: %s", e)
+              return []
+          try:
+              with open("/etc/jupyterhub/profiles/profiles.json") as f:
+                  all_profiles = json.load(f)
+          except Exception as e:
+              log.error("Failed to read profiles.json: %s", e)
+              return []
+          def build_profile(p):
+              registry_host = os.environ.get("REGISTRY_HOST", "{{ jhub_registry_host }}")
+              reg_ns        = os.environ.get("REGISTRY_NAMESPACE", "{{ jhub_registry_namespace }}")
+              image_name    = p.get("image_name", "notebook-cpu")
+              image_options = p.get("image_options", [])
+              default_tag   = image_options[0] if image_options else "latest"
+              gpu_count     = int(p.get("gpu", 0))
+              kubespawner = {
+                  "image":         f"{registry_host}/{reg_ns}/{image_name}:{default_tag}",
+                  "cpu_limit":     float(p.get("cpu_limit", 2)),
+                  "cpu_guarantee": float(p.get("cpu_guarantee", 0.5)),
+                  "mem_limit":     p.get("mem_limit", "4G"),
+                  "mem_guarantee": p.get("mem_guarantee", "1G"),
+                  "image_pull_secrets": ["gitlab-registry-secret"],
+              }
+              if gpu_count > 0:
+                  kubespawner["extra_resource_limits"] = {"nvidia.com/gpu": str(gpu_count)}
+              return {
+                  "display_name":        p.get("display_name", "Profile"),
+                  "description":         p.get("description", ""),
+                  "slug":                p.get("slug", ""),
+                  "kubespawner_override": kubespawner,
+              }
+          return [
+              build_profile(p)
+              for p in all_profiles
+              if p.get("gitlab_group") in user_groups
+          ]
+
+      c.KubeSpawner.profile_list = profile_list
+singleuser:
+  storage:
+    type: dynamic
+    dynamic:
+      storageClass: "{{ storage_class }}"
+    capacity: "{{ user_storage_capacity }}"
+    homeMountPath: /home/jovyan
+  nodeSelector:
+    kubernetes.io/os: linux
+  extraEnv:
+    JUPYTER_ENABLE_LAB: "yes"
+
+cull:
+  enabled: true
+  timeout: 1200
+  every: 300
+  maxAge: 0
+  users: false
+
+ingress:
+  enabled: false

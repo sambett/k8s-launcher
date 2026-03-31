@@ -1,0 +1,163 @@
+<div id="tab-configure" class="panel">
+
+  <div class="card">
+    <h2>Control plane</h2>
+    <div class="field-row"><label>IP address</label>
+      <input type="text" id="cp-ip" placeholder="e.g. 10.0.0.10  (control plane IP)"></div>
+    <div class="field-row"><label>Hostname</label>
+      <input type="text" id="cp-hostname" placeholder="e.g. cp-01  (must match VM hostname)"></div>
+    <div class="field-row"><label>SSH user</label>
+      <input type="text" id="cp-user" placeholder="e.g. ubuntu"></div>
+  </div>
+
+  <div class="card">
+    <h2>Worker nodes</h2>
+    <p style="font-size:12px;color:#1565c0;background:#e3f2fd;border-radius:4px;padding:6px 10px;margin-bottom:.75rem">
+      Add or remove rows as needed before generating configuration.
+    </p>
+    <div id="workers"></div>
+    <button class="btn btn-sm" style="margin-top:4px" onclick="addWorker()">+ Add worker</button>
+  </div>
+
+  <div class="card">
+    <h2>Versions
+      <span style="font-size:11px;font-weight:400;color:#888;margin-left:6px">validated defaults pre-filled</span>
+    </h2>
+    <div class="field-row"><label>Kubernetes</label>
+      <input type="text" id="v-k8s" value="1.30.5" oninput="checkCompat()"></div>
+    <div id="w-k8s"></div>
+    <div class="field-row"><label>containerd</label>
+      <input type="text" id="v-containerd" value="1.7.22" oninput="checkCompat()"></div>
+    <div id="w-containerd"></div>
+    <div class="field-row"><label>Calico</label>
+      <input type="text" id="v-calico" value="v3.28.2"></div>
+    <div class="field-row"><label>Longhorn</label>
+      <input type="text" id="v-longhorn" value="1.7.2" oninput="checkCompat()"></div>
+    <div id="w-longhorn"></div>
+  </div>
+
+  <div class="card">
+    <h2>Network</h2>
+    <div class="field-row"><label>Pod CIDR</label>
+      <input type="text" id="pod-cidr" value="192.168.0.0/16"></div>
+    <div class="field-row"><label>Service CIDR</label>
+      <input type="text" id="svc-cidr" value="10.96.0.0/12"></div>
+    <div class="field-row"><label>Cluster name</label>
+      <input type="text" id="cluster-name" value="k8s-cluster"></div>
+  </div>
+
+  <div class="card">
+    <h2>Components</h2>
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="cb-longhorn" checked> Deploy Longhorn storage
+    </label>
+  </div>
+
+  <button class="btn btn-primary" onclick="generateConfig()">Generate configuration</button>
+  <div id="r-config" style="margin-top:.75rem"></div>
+
+  <div id="config-preview" style="display:none;margin-top:.75rem">
+    <div class="card">
+      <h2>Generated inventory.ini</h2>
+      <pre id="prev-inv" class="log" style="height:auto;max-height:180px"></pre>
+    </div>
+    <div class="card">
+      <h2>Generated group_vars/all.yml</h2>
+      <pre id="prev-vars" class="log" style="height:auto;max-height:260px"></pre>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let wc = 0;
+function addWorker(ip='', hn='', user='') {
+  wc++;
+  const d = document.createElement('div');
+  d.className = 'node-row';
+  d.innerHTML = `
+    <input type="text" placeholder="e.g. 10.0.0.11" value="${ip}" class="wi">
+    <input type="text" placeholder="e.g. worker-01" value="${hn}" class="wh">
+    <input type="text" placeholder="e.g. ubuntu" value="${user}" class="wu">
+    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
+  document.getElementById('workers').appendChild(d);
+}
+addWorker();
+addWorker();
+
+let COMPAT_RULES = [];
+async function loadCompatMatrix() {
+  try {
+    const r = await fetch('/api/compat-matrix');
+    const d = await r.json();
+    COMPAT_RULES = d.rules || [];
+    const p = d.presets && d.presets['stable-sprint2'];
+    if (p) {
+      document.getElementById('v-k8s').value       = p.kubernetes  || '1.30.5';
+      document.getElementById('v-containerd').value = p.containerd || '1.7.22';
+      document.getElementById('v-calico').value     = p.calico     || 'v3.28.2';
+      document.getElementById('v-longhorn').value   = p.longhorn   || '1.7.2';
+    }
+  } catch(e) {}
+}
+
+function checkCompat() {
+  ['w-k8s', 'w-containerd', 'w-longhorn'].forEach(id =>
+    document.getElementById(id).innerHTML = '');
+  const k8s        = parseFloat(document.getElementById('v-k8s').value.replace('v', ''));
+  const containerd = document.getElementById('v-containerd').value;
+  COMPAT_RULES.forEach(rule => {
+    const c = rule.if;
+    let triggered = false, warnEl = 'w-k8s';
+    if (c.kubernetes_gte && k8s >= parseFloat(c.kubernetes_gte)) { triggered = true; warnEl = 'w-k8s'; }
+    if (c.kubernetes_lt  && k8s <  parseFloat(c.kubernetes_lt))  { triggered = true; warnEl = 'w-k8s'; }
+    if (c.containerd_major && containerd.startsWith(c.containerd_major + '.')) { triggered = true; warnEl = 'w-containerd'; }
+    if (triggered)
+      document.getElementById(warnEl).innerHTML +=
+        `<div class="warn-box">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
+  });
+}
+loadCompatMatrix();
+
+async function generateConfig() {
+  const workers = Array.from(document.querySelectorAll('#workers .node-row')).map(r => ({
+    ip:       r.querySelector('.wi').value,
+    hostname: r.querySelector('.wh').value,
+    ssh_user: r.querySelector('.wu').value,
+  })).filter(w => w.ip);
+  const body = {
+    control_plane: {
+      ip:       document.getElementById('cp-ip').value,
+      hostname: document.getElementById('cp-hostname').value,
+      ssh_user: document.getElementById('cp-user').value,
+    },
+    workers,
+    kubernetes_version: document.getElementById('v-k8s').value,
+    containerd_version: document.getElementById('v-containerd').value,
+    calico_version:     document.getElementById('v-calico').value,
+    longhorn_version:   document.getElementById('v-longhorn').value,
+    pod_cidr:           document.getElementById('pod-cidr').value,
+    service_cidr:       document.getElementById('svc-cidr').value,
+    cluster_name:       document.getElementById('cluster-name').value,
+    deploy_longhorn:    document.getElementById('cb-longhorn').checked,
+  };
+  const el = document.getElementById('r-config');
+  el.innerHTML = '<span class="badge b-run">Generating...</span>';
+  const resp = await fetch('/api/configure', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const d = await resp.json();
+  if (d.status === 'ok') {
+    el.innerHTML = `<span class="badge b-ok">Generated — workers: ${d.derived.worker_count}, replicas: ${d.derived.longhorn_replica_count}</span>`;
+    const r2 = await fetch('/api/configure/preview');
+    const d2 = await r2.json();
+    document.getElementById('config-preview').style.display = 'block';
+    document.getElementById('prev-inv').textContent  = d2.inventory  || '';
+    document.getElementById('prev-vars').textContent = d2.group_vars || '';
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.detail}</span>`;
+  }
+}
+</script>

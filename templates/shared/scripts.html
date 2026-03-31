@@ -1,0 +1,140 @@
+<script>
+const STEP_ORDER = [
+  'bootstrap','configure','kubernetes','gitlab','jupyterhub','admindashboard'
+];
+
+function showTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  const stepEl = document.getElementById('step-' + name);
+  if (stepEl) stepEl.classList.add('active');
+  if (name === 'reset')      loadResetPreview();
+  if (name === 'status')     refreshPlatformOverview();
+  if (name === 'gitlab')     loadGitLabOutputs();
+  if (name === 'jupyterhub') loadJhubPrefill();
+  checkPrereqs(name);
+}
+
+function markStepDone(name) {
+  const el = document.getElementById('step-' + name);
+  if (el) { el.classList.add('done'); el.classList.remove('error','active'); }
+  localStorage.setItem('step-' + name, 'done');
+}
+
+function markStepError(name) {
+  const el = document.getElementById('step-' + name);
+  if (el) { el.classList.add('error'); el.classList.remove('done'); }
+  localStorage.setItem('step-' + name, 'error');
+}
+
+function restoreStepStates() {
+  STEP_ORDER.forEach(name => {
+    const state = localStorage.getItem('step-' + name);
+    if (state === 'done')  markStepDone(name);
+    if (state === 'error') markStepError(name);
+  });
+}
+
+async function checkPrereqs(tabName) {
+  if (tabName === 'jupyterhub' || tabName === 'admindashboard') {
+    const bannerId = tabName === 'jupyterhub' ? 'prereq-jhub' : 'prereq-dash';
+    try {
+      const r = await fetch('/api/gitlab/outputs');
+      const d = await r.json();
+      showBanner(bannerId, d.status !== 'ok',
+        '⚠ Complete the GitLab tab first — credentials not found. ' +
+        '<a onclick="showTab(\'gitlab\',document.getElementById(\'step-gitlab\'))" ' +
+        'style="color:#1565c0;cursor:pointer;text-decoration:underline">Go to GitLab tab →</a>');
+    } catch(e) {}
+  }
+}
+
+function showBanner(id, visible, html) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = html;
+  el.style.display = visible ? 'flex' : 'none';
+}
+
+function makeLogLine(text, logEl) {
+  const s = document.createElement('span');
+  if (text.startsWith('PLAY'))               s.className = 'l-play';
+  else if (/ok:/.test(text))                s.className = 'l-ok';
+  else if (/changed:/.test(text))           s.className = 'l-changed';
+  else if (/FAILED|ERROR|fatal/.test(text)) s.className = 'l-err';
+  else if (/skipping/.test(text))           s.className = 'l-skip';
+  s.textContent = text + '\n';
+  logEl.appendChild(s);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setDot(id, state) {
+  const el = document.getElementById(id);
+  if (el) el.className = 'dot ' + state;
+}
+
+function streamToLog(url, dotId, logElId) {
+  const logEl = document.getElementById(logElId);
+  logEl.innerHTML = '';
+  setDot(dotId, 'running');
+  const es = new EventSource(url);
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot(dotId, 'ok');
+      es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot(dotId, 'error');
+      makeLogLine('FAILED — exit code: ' + e.data.split(':')[1], logEl);
+      es.close();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => { setDot(dotId, 'error'); es.close(); };
+  return es;
+}
+
+function renderChecks(elId, checks) {
+  if (!checks) return;
+  document.getElementById(elId).innerHTML = Object.entries(checks).map(([k, v]) => {
+    const ok = !v.startsWith('FAIL');
+    return `<div class="check-row ${ok ? 'check-ok' : 'check-fail'}" style="margin:3px 0">
+      ${ok ? '✓' : '✗'} <strong>${k}</strong>: ${v}</div>`;
+  }).join('');
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+async function loadPlatformStatus() {
+  try {
+    const r = await fetch('/api/platform/status');
+    const d = await r.json();
+    if (d.cluster?.status    === 'ready') markStepDone('kubernetes');
+    if (d.gitlab?.status     === 'ready') markStepDone('gitlab');
+    if (d.jupyterhub?.status === 'ready') markStepDone('jupyterhub');
+    if (d.dashboard?.status  === 'ready') markStepDone('admindashboard');
+    if (d.gitlab?.url)     populateUrl('gitlab-url-badge',    d.gitlab.url);
+    if (d.jupyterhub?.url) populateUrl('jhub-url-badge',      d.jupyterhub.url);
+  } catch(e) {}
+}
+
+function populateUrl(elId, url) {
+  const el = document.getElementById(elId);
+  if (el && url) {
+    el.innerHTML = `<a href="${url}" target="_blank" style="color:#1976d2">${url}</a>`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  restoreStepStates();
+  loadPlatformStatus();
+  showTab('bootstrap', document.getElementById('step-bootstrap'));
+});
+</script>

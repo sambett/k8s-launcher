@@ -1,0 +1,94 @@
+---
+# seed — runs after bootstrap to create the initial group and test user.
+# All values come from variables — nothing is hardcoded.
+# This ensures the first JupyterHub login works without any manual steps.
+
+# ── Create seed group ─────────────────────────────────────────────────────────
+- name: seed | Create default access group
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "{{ seed_group_name }}"
+      path: "{{ seed_group_name | lower | replace(' ', '-') }}"
+      visibility: "private"
+    status_code: [200, 201, 400]
+    validate_certs: no
+  register: seed_group_create
+
+- name: seed | Get seed group info
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups/{{ seed_group_name | lower | replace(' ', '-') }}"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: seed_group_info
+
+# ── Add root to seed group ────────────────────────────────────────────────────
+- name: seed | Add root (admin) to seed group as Owner
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups/{{ seed_group_info.json.id }}/members"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      user_id: 1
+      access_level: 50
+    status_code: [200, 201, 409]
+    validate_certs: no
+
+# ── Create test user ──────────────────────────────────────────────────────────
+- name: seed | Create test user account
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/users"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      name: "{{ seed_user_username }}"
+      username: "{{ seed_user_username }}"
+      email: "{{ seed_user_username }}@workbench.local"
+      password: "{{ seed_user_password }}"
+      skip_confirmation: true
+      can_create_group: false
+    status_code: [200, 201, 409]
+    validate_certs: no
+  register: seed_user_create
+  no_log: true
+
+- name: seed | Get test user info
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/users?username={{ seed_user_username }}"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: seed_user_info
+
+# ── Add test user to seed group ───────────────────────────────────────────────
+- name: seed | Add test user to seed group as Developer
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/groups/{{ seed_group_info.json.id }}/members"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    body_format: json
+    body:
+      user_id: "{{ seed_user_info.json[0].id }}"
+      access_level: 30
+    status_code: [200, 201, 409]
+    validate_certs: no
+
+- name: seed | Print seed summary
+  debug:
+    msg:
+      - "Seed group '{{ seed_group_name }}' created"
+      - "root added as Owner"
+      - "Test user '{{ seed_user_username }}' created and added as Developer"
+      - "Both accounts can now log into JupyterHub"

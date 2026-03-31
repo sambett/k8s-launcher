@@ -1,0 +1,11 @@
+<div id="page-users" class="page">
+  <h2>User Management</h2>
+  {% include "pages/users/create_user.html" %}
+  {% include "pages/users/user_list.html" %}
+</div>
+
+<script>
+function onUsersPageShow() {
+  loadUserList();
+}
+</script>

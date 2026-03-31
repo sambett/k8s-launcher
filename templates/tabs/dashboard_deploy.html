@@ -1,0 +1,138 @@
+<div id="tab-admindashboard" class="panel">
+  <div id="prereq-dash" style="display:none;background:#fff3e0;border:1px solid #ffcc02;border-radius:6px;padding:.6rem 1rem;font-size:12px;color:#e65100;margin-bottom:1rem;align-items:center;gap:8px"></div>
+
+  <div class="card">
+    <h2>Admin Dashboard deployment</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Deploys the workbench-admin Flask service on the control plane node.
+      All GitLab credentials are read automatically from previous steps.
+    </p>
+    <div class="field-row">
+      <label>Dashboard password</label>
+      <input type="password" id="dash-http-pass"
+        placeholder="HTTP Basic Auth password for the admin UI"/>
+    </div>
+    <div class="field-row">
+      <label>Port</label>
+      <input type="number" id="dash-port" value="8888"/>
+    </div>
+    <div class="field-row">
+      <label>Source repo</label>
+      <input type="text" id="dash-repo"
+        value="https://github.com/sambett/k8s-launcher.git"/>
+    </div>
+    <button class="btn btn-primary" style="margin-top:.75rem"
+      onclick="dashConfigure()">Generate config</button>
+    <div id="r-dash-cfg" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Deploy</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Clones the repo, installs Flask, writes secrets.env and registry.conf,
+      and starts the systemd service.
+    </p>
+    <div id="dash-prereq" style="display:none;background:#fff3e0;border:1px solid #ffcc02;
+         border-radius:4px;padding:.5rem .75rem;font-size:12px;color:#e65100;margin-bottom:.75rem">
+      ⚠ Run <strong>Generate config</strong> above before deploying.
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="btn btn-primary" id="dash-deploy-btn"
+        onclick="dashDeploy()" disabled>
+        Deploy Dashboard
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~3 min)</span>
+      </button>
+      <span class="dot" id="dot-dash"></span>
+      <span id="dash-deploy-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Deploy log</h2>
+    <div class="log" id="dash-log">Waiting for deployment...</div>
+  </div>
+
+  <div class="card" id="dash-ready-card" style="display:none">
+    <h2>Admin Dashboard is ready</h2>
+    <div id="dashboard-url-badge" style="font-size:13px;margin-bottom:.5rem"></div>
+    <div class="info-box">
+      Login: <strong>admin</strong> / your chosen password<br>
+      Manage profiles, import images, create users and groups — all from the browser.
+    </div>
+  </div>
+
+</div>
+
+<script>
+async function checkDashboardStatus() {
+  try {
+    const r   = await fetch('/api/dashboard/status');
+    const d   = await r.json();
+    const btn    = document.getElementById('dash-deploy-btn');
+    const prereq = document.getElementById('dash-prereq');
+    btn.disabled         = !d.configured;
+    prereq.style.display = d.configured ? 'none' : 'block';
+  } catch(e) {}
+}
+
+async function dashConfigure() {
+  const el   = document.getElementById('r-dash-cfg');
+  const pass = document.getElementById('dash-http-pass').value;
+  if (!pass) {
+    el.innerHTML = '<span class="badge b-warn">Enter a dashboard password first.</span>';
+    return;
+  }
+  el.innerHTML = '<span class="badge b-run">Generating...</span>';
+  const resp = await fetch('/api/dashboard/configure', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      http_pass: pass,
+      port:      parseInt(document.getElementById('dash-port').value),
+      repo:      document.getElementById('dash-repo').value.trim(),
+    })
+  });
+  const d = await resp.json();
+  document.getElementById('dash-http-pass').value = '';
+  if (d.status === 'ok') {
+    el.innerHTML = '<span class="badge b-ok">Config saved</span>';
+    checkDashboardStatus();
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.message || 'Error'}</span>`;
+  }
+}
+
+function dashDeploy() {
+  const logEl    = document.getElementById('dash-log');
+  const statusEl = document.getElementById('dash-deploy-status');
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
+  setDot('dot-dash', 'running');
+
+  const es = new EventSource('/api/dashboard/stream');
+  es.onmessage = async e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-dash', 'ok');
+      statusEl.textContent = 'Complete';
+      markStepDone('admindashboard');
+      es.close();
+      document.getElementById('dash-ready-card').style.display = 'block';
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-dash', 'error');
+      statusEl.textContent = 'Failed';
+      markStepError('admindashboard');
+      makeLogLine('FAILED — ' + e.data, logEl);
+      es.close();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => {
+    setDot('dot-dash', 'error');
+    statusEl.textContent = 'Connection lost';
+    es.close();
+  };
+}
+
+document.addEventListener('DOMContentLoaded', checkDashboardStatus);
+</script>

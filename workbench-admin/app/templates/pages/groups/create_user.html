@@ -1,0 +1,133 @@
+<div class="card">
+  <div style="font-size:.85rem;font-weight:600;color:#c4b5fd;margin-bottom:1rem">
+    Create GitLab User
+  </div>
+  <p style="font-size:.78rem;color:#64748b;margin-bottom:1rem;line-height:1.6">
+    Creates a new GitLab account. You can assign them to a group immediately.
+  </p>
+  <div class="grid2">
+    <div class="fg">
+      <label>Full name</label>
+      <input id="new-user-name" placeholder="e.g. Ahmed Benali"/>
+    </div>
+    <div class="fg">
+      <label>Username</label>
+      <input id="new-user-username" placeholder="e.g. ahmed.benali"/>
+    </div>
+    <div class="fg">
+      <label>Email</label>
+      <input id="new-user-email" type="email" placeholder="e.g. ahmed@university.dz"/>
+    </div>
+    <div class="fg">
+      <label>Temporary password</label>
+      <input id="new-user-password" type="password"
+        placeholder="min 8 chars, strong (e.g. Name@2026!)"/>
+    </div>
+  </div>
+  <div style="margin-top:.8rem;display:flex;gap:.75rem;align-items:flex-end">
+    <div class="fg" style="flex:1">
+      <label>Add to group immediately (optional)</label>
+      <select id="new-user-group">
+        <option value="">Loading groups…</option>
+      </select>
+    </div>
+    <div class="fg" style="width:160px">
+      <label>Role</label>
+      <select id="new-user-role">
+        <option value="30">Developer</option>
+        <option value="40">Maintainer</option>
+        <option value="20">Reporter</option>
+        <option value="10">Guest</option>
+      </select>
+    </div>
+  </div>
+  <div style="margin-top:1rem;display:flex;gap:.8rem;align-items:center">
+    <button class="btn btn-primary" onclick="createUser()">Create User</button>
+    <span id="r-create-user" style="font-size:.8rem;display:none"></span>
+  </div>
+</div>
+
+<script>
+async function loadGroupsForUserForm() {
+  const sel = document.getElementById('new-user-group');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const res  = await fetch('/api/groups');
+    const data = await res.json();
+    if (!data || data.error || !data.length) {
+      sel.innerHTML = '<option value="">— no groups yet —</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">— skip, add to group later —</option>' +
+      data.filter(g => g.path !== 'registry')
+          .map(g => `<option value="${g.id}">${esc(g.name)}</option>`)
+          .join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">— error loading groups —</option>';
+  }
+}
+
+async function createUser() {
+  const name     = document.getElementById('new-user-name').value.trim();
+  const username = document.getElementById('new-user-username').value.trim();
+  const email    = document.getElementById('new-user-email').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const groupId  = document.getElementById('new-user-group').value;
+  const role     = parseInt(document.getElementById('new-user-role').value);
+  const el       = document.getElementById('r-create-user');
+
+  if (!name || !username || !email || !password) {
+    el.style.cssText = 'display:inline;color:#fc8181';
+    el.textContent   = '✗ Fill in all fields.';
+    return;
+  }
+
+  el.style.cssText = 'display:inline;color:#94a3b8';
+  el.textContent   = 'Creating user…';
+
+  const resp = await fetch('/api/users', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ name, username, email, password })
+  });
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    el.style.cssText = 'display:inline;color:#fc8181';
+    let msg = data.error || 'Error';
+    if (data.detail && data.detail.message) {
+      msg += ' — ' + Object.entries(data.detail.message)
+        .map(([k,v]) => k + ': ' + (Array.isArray(v) ? v.join(', ') : v))
+        .join(' | ');
+    }
+    el.textContent = '✗ ' + msg;
+    return;
+  }
+
+  if (groupId) {
+    el.textContent = 'User created, adding to group…';
+    const addResp = await fetch(`/api/groups/${groupId}/members`, {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ username: data.username, access_level: role })
+    });
+    const addData = await addResp.json();
+    el.style.cssText = 'display:inline;color:' + (addResp.ok ? '#68d391' : '#ce9178');
+    el.textContent   = addResp.ok
+      ? `✓ "${data.username}" created and added to group as ${ROLE_LABELS[role]}`
+      : `✓ User created — group add failed: ${addData.error}`;
+    loadGroupList();
+  } else {
+    el.style.cssText = 'display:inline;color:#68d391';
+    el.textContent   = `✓ "${data.username}" created — expand a group below to add them`;
+  }
+
+  document.getElementById('new-user-name').value     = '';
+  document.getElementById('new-user-username').value = '';
+  document.getElementById('new-user-email').value    = '';
+  document.getElementById('new-user-password').value = '';
+  document.getElementById('new-user-group').value    = '';
+  setTimeout(() => { el.style.display = 'none'; }, 7000);
+}
+</script>

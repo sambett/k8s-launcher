@@ -1,0 +1,141 @@
+<div id="tab-jupyterhub" class="panel">
+  <div id="prereq-jhub" style="display:none;background:#fff3e0;border:1px solid #ffcc02;border-radius:6px;padding:.6rem 1rem;font-size:12px;color:#e65100;margin-bottom:1rem;align-items:center;gap:8px"></div>
+
+  <div class="card">
+    <h2>JupyterHub deployment</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Credentials are read automatically from the GitLab tab outputs.
+      You only need to confirm the NodePort and optionally provide a crypt key.
+    </p>
+
+    <div id="jhub-prefill-status" style="margin-bottom:1rem"></div>
+
+    <div class="field-row">
+      <label>NodePort</label>
+      <input type="number" id="jhub-nodeport" value="32080"/>
+    </div>
+    <div class="field-row">
+      <label>Crypt key (optional)</label>
+      <input type="text" id="jhub-crypt-key"
+        placeholder="leave blank to auto-generate a secure key"/>
+    </div>
+    <div class="field-row">
+      <label>Storage class</label>
+      <input type="text" id="jhub-storage-class" value="longhorn-jupyterhomes"/>
+    </div>
+    <div class="field-row">
+      <label>User storage</label>
+      <input type="text" id="jhub-user-storage" value="10Gi"/>
+    </div>
+
+    <button class="btn btn-primary" style="margin-top:.75rem"
+      onclick="jhubConfigure()">Generate config</button>
+    <div id="r-jhub-cfg" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Deploy</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Deploys JupyterHub via Helm on the existing Kubernetes cluster.
+    </p>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="btn btn-primary" onclick="jhubDeploy()">
+        Deploy JupyterHub
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~10 min)</span>
+      </button>
+      <span class="dot" id="dot-jhub"></span>
+      <span id="jhub-deploy-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Deploy log</h2>
+    <div class="log" id="jhub-log">Waiting for deployment...</div>
+  </div>
+
+  <div class="card" id="jhub-ready-card" style="display:none">
+    <h2>JupyterHub is ready</h2>
+    <div id="jhub-url-badge" style="font-size:13px;margin-bottom:.5rem"></div>
+    <div class="info-box">
+      Users log in with their GitLab credentials.
+      Add them to a group in the admin dashboard to grant access.
+    </div>
+  </div>
+
+</div>
+
+<script>
+async function loadJhubPrefill() {
+  const el = document.getElementById('jhub-prefill-status');
+  if (!el) return;
+  const r  = await fetch('/api/jupyterhub/prefill');
+  const d  = await r.json();
+  if (d.status === 'ok') {
+    el.innerHTML =
+      `<div class="badge b-ok" style="font-size:12px">
+        ✓ GitLab credentials loaded automatically —
+        ${d.gitlab_url} · OAuth client ID confirmed
+      </div>`;
+  } else {
+    el.innerHTML =
+      `<div class="badge b-warn" style="font-size:12px">
+        ⚠ ${d.message}
+      </div>`;
+  }
+}
+
+async function jhubConfigure() {
+  const el   = document.getElementById('r-jhub-cfg');
+  const body = {
+    nodeport:      parseInt(document.getElementById('jhub-nodeport').value),
+    crypt_key:     document.getElementById('jhub-crypt-key').value.trim(),
+    storage_class: document.getElementById('jhub-storage-class').value.trim(),
+    user_storage:  document.getElementById('jhub-user-storage').value.trim(),
+  };
+  el.innerHTML = '<span class="badge b-run">Generating...</span>';
+  const resp = await fetch('/api/jupyterhub/configure', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await resp.json();
+  if (d.status === 'ok') {
+    el.innerHTML =
+      `<span class="badge b-ok">Config saved — access URL: ${d.access_url}` +
+      (d.crypt_key_auto ? ' · crypt key auto-generated' : '') + `</span>`;
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.message || 'Error'}</span>`;
+  }
+}
+
+function jhubDeploy() {
+  const logEl    = document.getElementById('jhub-log');
+  const statusEl = document.getElementById('jhub-deploy-status');
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
+  setDot('dot-jhub', 'running');
+
+  const es = new EventSource('/api/jupyterhub/stream');
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-jhub', 'ok');
+      statusEl.textContent = 'Complete';
+      markStepDone('jupyterhub');
+      es.close();
+      document.getElementById('jhub-ready-card').style.display = 'block';
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-jhub', 'error');
+      statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data, logEl);
+      es.close();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => {
+    setDot('dot-jhub', 'error');
+    statusEl.textContent = 'Connection lost';
+    es.close();
+  };
+}
+</script>

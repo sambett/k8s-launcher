@@ -1,0 +1,48 @@
+---
+- name: Create jhub namespace
+  shell: >
+    kubectl create namespace jhub --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false
+
+- name: Create GitLab OAuth secret
+  shell: >
+    kubectl create secret generic gitlab-oauth-secret
+    --from-literal=client_id="{{ jhub_oauth_client_id }}"
+    --from-literal=client_secret="{{ jhub_oauth_client_secret }}"
+    --namespace jhub
+    --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false
+  no_log: true
+
+- name: Create registry pull secret
+  shell: >
+    kubectl create secret docker-registry gitlab-registry-secret
+    --docker-server={{ jhub_registry_host }}
+    --docker-username={{ jhub_registry_pull_user }}
+    --docker-password="{{ jhub_registry_pull_pass }}"
+    --namespace jhub
+    --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false
+  no_log: true
+
+- name: Generate crypt key if not provided
+  set_fact:
+    jhub_crypt_key: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') }}"
+  when: jhub_crypt_key == "" or jhub_crypt_key is not defined
+
+- name: Create JupyterHub crypt key secret
+  shell: >
+    kubectl create secret generic jupyterhub-crypt-key
+    --from-literal=crypt-key="{{ jhub_crypt_key }}"
+    --namespace jhub
+    --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false
+  no_log: true
+
+- name: Create empty profiles ConfigMap
+  shell: >
+    kubectl create configmap jupyterhub-profiles
+    --from-literal=profiles.json='[]'
+    --namespace jhub
+    --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false

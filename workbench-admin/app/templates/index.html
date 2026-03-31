@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>AI Workbench — Admin Dashboard</title>
+{% include "shared/styles.html" %}
+</head>
+<body>
+<header>
+  <div class="logo">⚙ AI Workbench</div>
+  <div class="sub">Admin Dashboard</div>
+</header>
+<div class="layout">
+  <nav>
+    <div class="nav-section">Profiles</div>
+    <a class="active" onclick="nav('profiles',this)">All Profiles</a>
+    <a onclick="nav('new',this)">New Profile</a>
+    <div class="nav-section">Users</div>
+    <a onclick="nav('users',this)">All Users</a>
+    <a onclick="nav('groups',this)">Groups &amp; Members</a>
+    <div class="nav-section">Registry</div>
+    <a onclick="nav('images',this)">Import Image</a>
+    <div class="nav-section">System</div>
+    <a onclick="nav('settings',this)">Settings</a>
+  </nav>
+  <main>
+    {% include "pages/profiles.html" %}
+    {% include "pages/new_profile.html" %}
+    {% include "pages/users.html" %}
+    {% include "pages/groups.html" %}
+    {% include "pages/images.html" %}
+    {% include "pages/settings.html" %}
+  </main>
+</div>
+{% include "shared/scripts.html" %}
+</body>
+</html>
