@@ -18,3 +18,9 @@
 - hosts: control_plane
   become: no
   roles: [validation]
+
+# Hardening runs last — after cluster is validated and all nodes are Ready.
+# Adds deletion protection, fixes typha placement, and saves artifacts.
+- hosts: control_plane
+  become: no
+  roles: [harden]
