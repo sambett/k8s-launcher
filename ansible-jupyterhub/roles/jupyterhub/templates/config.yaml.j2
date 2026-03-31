@@ -53,6 +53,46 @@ hub:
     00-crypt-key: |
       c.CryptKeeper.keys = [bytes.fromhex("{{ jhub_crypt_key }}")]
 
+    00-check-allowed: |
+      import json, os, logging, urllib.request
+      from oauthenticator.gitlab import GitLabOAuthenticator
+      log = logging.getLogger(__name__)
+
+      def _groups_from_profiles():
+          try:
+              with open("/etc/jupyterhub/profiles/profiles.json") as f:
+                  profiles = json.load(f)
+              return {p["gitlab_group"] for p in profiles if p.get("gitlab_group")}
+          except Exception as e:
+              log.error("check_allowed: cannot read profiles.json: %s", e)
+              return set()
+
+      async def _check_allowed(self, username, auth_model):
+          allowed_groups = _groups_from_profiles()
+          if not allowed_groups:
+              log.warning("check_allowed: profiles.json empty — denying %s", username)
+              return False
+          access_token = (auth_model.get("auth_state") or {}).get("access_token", "")
+          if not access_token:
+              log.warning("check_allowed: no access_token for %s", username)
+              return False
+          gitlab_url = os.environ.get("GITLAB_URL", "{{ jhub_gitlab_url }}")
+          req = urllib.request.Request(
+              f"{gitlab_url}/api/v4/groups?min_access_level=10&per_page=100",
+              headers={"Authorization": f"Bearer {access_token}"}
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=5) as resp:
+                  user_groups = {g["path"] for g in json.loads(resp.read())}
+          except Exception as e:
+              log.error("check_allowed: GitLab API failed for %s: %s", username, e)
+              return False
+          result = bool(user_groups & allowed_groups)
+          log.info("check_allowed: user=%s groups=%s allowed=%s", username, user_groups, result)
+          return result
+
+      GitLabOAuthenticator.check_allowed = _check_allowed
+
     01-dynamic-profiles: |
       import json, os, logging
       log = logging.getLogger(__name__)
