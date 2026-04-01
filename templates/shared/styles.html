@@ -122,4 +122,46 @@ input:focus{outline:none;border-color:#1976d2}
 .summary-item .s-value{font-size:13px;font-weight:500;color:#1565c0;
                         font-family:monospace;word-break:break-all}
 .summary-item .s-status{font-size:11px;color:#2e7d32;margin-top:.2rem}
+
+/* ── Stepper — clearer completion states ── */
+.step.done{
+  color:#2e7d32;
+  background:#e8f5e9;
+  border-radius:20px;
+}
+.step.done .step-num{
+  background:#2e7d32;
+  color:#fff;
+}
+.step.done::after{
+  content:' ✓';
+  font-size:11px;
+}
+.step.error{
+  color:#c62828;
+  background:#ffebee;
+  border-radius:20px;
+}
+.step.error .step-num{background:#f44336;color:#fff}
+
+/* ── Button success flash ── */
+.btn-flash-ok{
+  background:#2e7d32 !important;
+  border-color:#1b5e20 !important;
+  color:#fff !important;
+  transition:background .3s;
+}
+
+/* ── Card hint — consistent style ── */
+.card-hint{
+  font-size:12px;
+  color:#555;
+  line-height:1.65;
+  background:#f5f8ff;
+  border-left:3px solid #90caf9;
+  padding:.5rem .75rem;
+  border-radius:0 4px 4px 0;
+  margin-bottom:.9rem;
+}
+
 </style>

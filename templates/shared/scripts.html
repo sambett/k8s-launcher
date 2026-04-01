@@ -107,6 +107,16 @@ function renderChecks(elId, checks) {
   }).join('');
 }
 
+function btnSuccess(btn, label='Done') {
+  const orig = btn.textContent;
+  btn.classList.add('btn-flash-ok');
+  btn.textContent = label;
+  setTimeout(() => {
+    btn.classList.remove('btn-flash-ok');
+    btn.textContent = orig;
+  }, 2000);
+}
+
 function esc(str) {
   if (!str) return '';
   return String(str)
