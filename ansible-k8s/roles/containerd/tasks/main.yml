@@ -45,7 +45,8 @@
   shell: |
     containerd config default | \
     sed 's/SystemdCgroup = false/SystemdCgroup = true/' | \
-    sed 's|sandbox_image = ".*"|sandbox_image = "{{ pause_image }}"|' \
+    sed 's|sandbox_image = ".*"|sandbox_image = "{{ pause_image }}"|' | \
+    sed 's|config_path = ""|config_path = "/etc/containerd/certs.d"|g' \
     > /etc/containerd/config.toml
   changed_when: true
 

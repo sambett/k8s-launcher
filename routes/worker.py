@@ -24,6 +24,18 @@ class NewWorker(BaseModel):
     ssh_pass: str
 
 
+def _get_registry_host() -> str:
+    """Read jhub_registry_host from generated jupyterhub vars. Returns empty string if not found."""
+    from core.paths import JUPYTERHUB_VARS_PATH
+    try:
+        for line in JUPYTERHUB_VARS_PATH.read_text().splitlines():
+            if line.strip().startswith("jhub_registry_host:"):
+                return line.split(":", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
 def _get_k8s_version() -> str:
     try:
         for line in VARS_PATH.read_text().splitlines():
@@ -176,9 +188,10 @@ def _add_worker_stream(node: NewWorker):
             "apt-mark hold containerd.io",
         ),
         (
-            "Configure containerd (SystemdCgroup = true)",
+            "Configure containerd (SystemdCgroup = true + config_path)",
             "containerd config default "
             "| sed 's/SystemdCgroup = false/SystemdCgroup = true/' "
+            "| sed 's|config_path = ...|config_path = /etc/containerd/certs.d|g' "
             "> /etc/containerd/config.toml && "
             "systemctl restart containerd && "
             "systemctl enable containerd",
@@ -192,6 +205,29 @@ def _add_worker_stream(node: NewWorker):
             yield _err("containerd")
             return
     yield _ok("containerd installed and configured")
+
+    # ── Insecure registry (GitLab HTTP registry) ───────────────────────────────
+    yield _log("changed: [Configure insecure GitLab registry]")
+    registry_host = _get_registry_host()
+    if registry_host:
+        hosts_toml = (
+            f'server = "http://{registry_host}"\n'
+            f'[host."http://{registry_host}"]\n'
+            f'  capabilities = ["pull", "resolve", "push"]\n'
+            f'  skip_verify = true\n'
+        )
+        r = _ansible(
+            f"mkdir -p /etc/containerd/certs.d/{registry_host} && "
+            f"printf '%s' '{hosts_toml}' "
+            f"> /etc/containerd/certs.d/{registry_host}/hosts.toml"
+        )
+        if r.returncode != 0:
+            yield _fail(f"Insecure registry config failed:\n{r.stdout}\n{r.stderr}")
+            yield _err("containerd_registry")
+            return
+        yield _ok(f"Insecure registry configured: {registry_host}")
+    else:
+        yield _log("No registry host in vars — skipping insecure registry config")
 
     # ── Step 5 — Kubernetes packages ─────────────────────────────────────────
     yield _step(5, f"Installing kubeadm + kubelet {k8s_version} (pinned)")
