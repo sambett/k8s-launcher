@@ -1,38 +1,25 @@
 <div id="tab-extensions" class="panel">
 
-  <!-- ── GPU Support ───────────────────────────────────────────────────── -->
   <div class="card">
-    <h2>GPU Support — NVIDIA Device Plugin
+    <h2>NVIDIA Device Plugin
       <span id="gpu-status-badge" class="badge b-warn"
         style="margin-left:8px;font-weight:400">checking...</span>
     </h2>
-    <p style="color:#666;font-size:13px;margin-bottom:1rem">
-      The NVIDIA Device Plugin runs as a DaemonSet on every node. It communicates
-      with the kubelet to advertise <span class="mono">nvidia.com/gpu</span> as a
-      schedulable Kubernetes resource. Without it, GPU pods stay
-      <span class="mono">Pending</span> regardless of what drivers are installed.
+    <p class="card-hint">
+      The NVIDIA Device Plugin runs as a DaemonSet and advertises
+      <span class="mono">nvidia.com/gpu</span> as a schedulable resource.
+      Without it, GPU pods stay <span class="mono">Pending</span> even if
+      drivers are installed. Label the node below after installing.
     </p>
 
-    <div class="info-box" style="margin-bottom:1rem">
-      <strong>Prerequisites per GPU node (done outside this launcher):</strong><br>
-      1. Install NVIDIA drivers on the VM (apt / runfile)<br>
-      2. Install NVIDIA Container Toolkit on the VM<br>
-      3. Configure containerd to use the NVIDIA runtime<br>
-      Once those are done, label the node below and it will automatically
-      advertise its GPU count.
-    </div>
-
-    <!-- Version selector -->
     <div class="field-row" style="align-items:flex-start">
       <label style="padding-top:6px">Plugin version</label>
       <div style="flex:1">
         <div style="display:flex;gap:8px;align-items:center">
           <input type="text" id="gpu-version-input"
-            placeholder="e.g. v0.17.0"
-            style="max-width:160px"/>
-          <button class="btn btn-sm btn-ghost" onclick="loadGpuVersions()">
-            Show suggestions
-          </button>
+            placeholder="e.g. v0.17.0" style="max-width:160px"/>
+          <button class="btn btn-sm btn-ghost"
+            onclick="loadGpuVersions()">Show suggestions</button>
         </div>
         <div id="gpu-version-suggestions" style="margin-top:.5rem"></div>
       </div>
@@ -41,7 +28,6 @@
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
       <button class="btn btn-primary" onclick="installGpuPlugin()">
         Install Device Plugin
-        <span style="font-weight:400;opacity:.7;margin-left:4px">(~1 min)</span>
       </button>
       <span class="dot" id="dot-gpu-install"></span>
       <span id="gpu-install-status" style="font-size:12px;color:#666"></span>
@@ -53,60 +39,38 @@
     <div class="log" id="gpu-install-log">Waiting for installation...</div>
   </div>
 
-  <!-- ── Label GPU nodes ───────────────────────────────────────────────── -->
   <div class="card">
-    <h2>Label a node as GPU-capable</h2>
-    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      Labels the node <span class="mono">accelerator=nvidia</span>.
-      This is what tells the device plugin and your JupyterHub GPU profiles
-      which nodes have GPUs. Only label nodes that physically have an NVIDIA GPU
-      and the required drivers installed.
+    <h2>GPU node labels</h2>
+    <p class="card-hint">
+      Only nodes labeled <span class="mono">accelerator=nvidia</span> will be
+      targeted by the device plugin DaemonSet and the GPU JupyterHub profile.
+      If you made a mistake, select the node and click Remove label.
     </p>
-    <div class="field-row">
-      <label>Node</label>
-      <select id="gpu-node-select"
-        style="flex:1;border:1px solid #ddd;border-radius:4px;
-               padding:5px 9px;font-size:13px;background:#fff">
-        <option value="">— click refresh to load nodes —</option>
-      </select>
-      <button class="btn btn-sm btn-ghost" style="margin-left:4px"
-        onclick="loadNodesForGpu()">↺</button>
-    </div>
-    <button class="btn btn-primary btn-sm" style="margin-top:.5rem"
-      onclick="labelGpuNode()">Label node</button>
-    <div id="r-gpu-label" style="margin-top:.5rem"></div>
-  </div>
 
-  <!-- ── Current GPU nodes ─────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>GPU nodes
-      <button class="btn btn-sm btn-ghost" style="margin-left:8px"
-        onclick="loadGpuNodes()">↺ Refresh</button>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:.75rem">
+      <select id="gpu-node-select"
+        style="flex:1;max-width:260px;border:1px solid #ddd;border-radius:4px;
+               padding:5px 9px;font-size:13px">
+        <option value="">— click ↺ to load nodes —</option>
+      </select>
+      <button class="btn btn-sm btn-ghost" onclick="loadNodesForGpu()">↺</button>
+      <button class="btn btn-sm btn-primary" onclick="labelGpuNode()">+ Add label</button>
+      <button class="btn btn-sm btn-danger"  onclick="unlabelGpuNode()">− Remove label</button>
+    </div>
+    <div id="r-gpu-label" style="margin-bottom:.75rem"></div>
+
+    <h2 style="font-size:.8rem;color:#666;margin-bottom:.5rem">Currently labeled nodes
+      <button class="btn btn-sm btn-ghost" style="margin-left:6px"
+        onclick="loadGpuNodes()">↺</button>
     </h2>
     <div id="gpu-nodes-table">
       <span style="color:#888;font-size:13px">Loading...</span>
     </div>
   </div>
 
-  <!-- ── Coming soon ───────────────────────────────────────────────────── -->
-  <div class="card" style="border-style:dashed;background:#fafafa">
-    <h2 style="color:#999">Coming soon</h2>
-    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem">
-      <div style="font-size:13px;color:#aaa;padding:.5rem .75rem;
-                  border:1px dashed #e0e0e0;border-radius:6px">
-        📊 Monitoring — Prometheus + Grafana
-      </div>
-      <div style="font-size:13px;color:#aaa;padding:.5rem .75rem;
-                  border:1px dashed #e0e0e0;border-radius:6px">
-        🔒 Ingress + TLS — nginx + cert-manager
-      </div>
-    </div>
-  </div>
-
 </div>
 
 <script>
-// ── GPU status ────────────────────────────────────────────────────────────────
 async function loadGpuStatus() {
   const badge = document.getElementById('gpu-status-badge');
   try {
@@ -114,18 +78,14 @@ async function loadGpuStatus() {
     const d = await r.json();
     if (d.status === 'installed') {
       badge.className = 'badge b-ok';
-      badge.textContent = `✓ installed ${d.version}`;
+      badge.textContent = '✓ installed ' + (d.version || '');
     } else {
       badge.className = 'badge b-warn';
       badge.textContent = 'not installed';
     }
-  } catch(e) {
-    badge.className = 'badge b-err';
-    badge.textContent = 'error';
-  }
+  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
 }
 
-// ── Version suggestions ───────────────────────────────────────────────────────
 async function loadGpuVersions() {
   const el = document.getElementById('gpu-version-suggestions');
   el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
@@ -133,107 +93,67 @@ async function loadGpuVersions() {
     const r = await fetch('/api/extensions/gpu/versions');
     const d = await r.json();
     if (!d.versions || !d.versions.length) {
-      el.innerHTML = '<span style="color:#888;font-size:12px">No version data in compat_matrix.json.</span>';
+      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
       return;
     }
-    el.innerHTML = `
-      <div style="font-size:12px;color:#666;margin-bottom:.4rem">
-        Your cluster runs K8s <strong>${d.k8s_version || 'unknown'}</strong>.
-        ${d.recommended ? `Recommended: <strong>${d.recommended}</strong>` : ''}
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${d.versions.map(v => `
-          <button class="btn btn-sm ${v.version === d.recommended ? 'btn-primary' : 'btn-ghost'}"
-            onclick="document.getElementById('gpu-version-input').value='${v.version}'"
-            title="${v.notes || ''}">
-            ${v.version}
-            ${v.version === d.recommended ? ' ★' : ''}
-          </button>
-        `).join('')}
-      </div>
-      <div style="margin-top:.4rem;font-size:11px;color:#999">
-        Click a version to select it, then click Install.
-      </div>
-    `;
-  } catch(e) {
-    el.innerHTML = `<span class="badge b-err">Failed: ${e}</span>`;
-  }
+    el.innerHTML =
+      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
+        K8s in use: <strong>${d.k8s_version||'unknown'}</strong>.
+        ${d.recommended ? ' Recommended: <strong>'+d.recommended+'</strong>' : ''}
+       </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px">
+         ${d.versions.map(v =>
+           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
+              title="${v.notes||''}"
+              onclick="document.getElementById('gpu-version-input').value='${v.version}'">
+              ${v.version}${v.version===d.recommended?' ★':''}
+            </button>`).join('')}
+       </div>
+       <div style="margin-top:.3rem;font-size:11px;color:#999">Click a version to select it.</div>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
 }
 
-// ── Install ───────────────────────────────────────────────────────────────────
 function installGpuPlugin() {
   const version  = document.getElementById('gpu-version-input').value.trim();
   const logEl    = document.getElementById('gpu-install-log');
   const statusEl = document.getElementById('gpu-install-status');
-
-  if (!version) {
-    statusEl.textContent = 'Enter a version first.';
-    statusEl.style.color = '#c62828';
-    return;
-  }
-
-  logEl.innerHTML = '';
-  statusEl.style.color = '#666';
-  statusEl.textContent = 'Running…';
+  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
   setDot('dot-gpu-install', 'running');
-
-  const es = new EventSource(
-    '/api/extensions/gpu/install/stream?version=' + encodeURIComponent(version)
-  );
+  const es = new EventSource('/api/extensions/gpu/install/stream?version=' + encodeURIComponent(version));
   es.onmessage = e => {
     if (e.data === '__DONE__') {
-      setDot('dot-gpu-install', 'ok');
-      statusEl.textContent = 'Complete';
-      loadGpuStatus();
-      es.close();
+      setDot('dot-gpu-install','ok'); statusEl.textContent = 'Complete';
+      loadGpuStatus(); es.close();
     } else if (e.data.startsWith('__ERROR__')) {
-      setDot('dot-gpu-install', 'error');
-      statusEl.textContent = 'Failed';
-      makeLogLine('FAILED — ' + e.data, logEl);
-      es.close();
-    } else {
-      makeLogLine(e.data, logEl);
-    }
+      setDot('dot-gpu-install','error'); statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data, logEl); es.close();
+    } else { makeLogLine(e.data, logEl); }
   };
-  es.onerror = () => {
-    setDot('dot-gpu-install', 'error');
-    statusEl.textContent = 'Connection lost';
-    es.close();
-  };
+  es.onerror = () => { setDot('dot-gpu-install','error'); es.close(); };
 }
 
-// ── Node dropdown ─────────────────────────────────────────────────────────────
 async function loadNodesForGpu() {
   const sel = document.getElementById('gpu-node-select');
   sel.innerHTML = '<option value="">Loading...</option>';
   try {
     const r = await fetch('/api/extensions/nodes');
     const d = await r.json();
-    const workers = (d.nodes || []).filter(n => n.role === 'worker');
-    if (!workers.length) {
-      sel.innerHTML = '<option value="">No workers found</option>';
-      return;
-    }
-    sel.innerHTML = workers.map(n =>
-      `<option value="${n.name}">${n.name}</option>`
-    ).join('');
-  } catch(e) {
-    sel.innerHTML = '<option value="">Error loading nodes</option>';
-  }
+    const workers = (d.nodes||[]).filter(n => n.role === 'worker');
+    sel.innerHTML = workers.length
+      ? workers.map(n => `<option value="${n.name}">${n.name}</option>`).join('')
+      : '<option value="">No workers found</option>';
+  } catch(e) { sel.innerHTML = '<option value="">Error</option>'; }
 }
 
 async function labelGpuNode() {
   const node = document.getElementById('gpu-node-select').value;
   const el   = document.getElementById('r-gpu-label');
-  if (!node) {
-    el.innerHTML = '<span class="badge b-warn">Select a node first.</span>';
-    return;
-  }
+  if (!node) { el.innerHTML = '<span class="badge b-warn">Select a node first.</span>'; return; }
   el.innerHTML = '<span class="badge b-run">Labeling...</span>';
   const r = await fetch('/api/extensions/gpu/label-node', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ node_name: node }),
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ node_name: node }),
   });
   const d = await r.json();
   el.innerHTML = d.status === 'ok'
@@ -242,48 +162,40 @@ async function labelGpuNode() {
   if (d.status === 'ok') loadGpuNodes();
 }
 
-// ── GPU nodes table ───────────────────────────────────────────────────────────
+async function unlabelGpuNode() {
+  const node = document.getElementById('gpu-node-select').value;
+  const el   = document.getElementById('r-gpu-label');
+  if (!node) { el.innerHTML = '<span class="badge b-warn">Select a node first.</span>'; return; }
+  el.innerHTML = '<span class="badge b-run">Removing label...</span>';
+  const r = await fetch('/api/extensions/gpu/unlabel-node', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ node_name: node }),
+  });
+  const d = await r.json();
+  el.innerHTML = d.status === 'ok'
+    ? `<span class="badge b-ok">${d.message}</span>`
+    : `<span class="badge b-err">${d.message}</span>`;
+  if (d.status === 'ok') loadGpuNodes();
+}
+
 async function loadGpuNodes() {
   const el = document.getElementById('gpu-nodes-table');
   try {
     const r = await fetch('/api/extensions/gpu/nodes');
     const d = await r.json();
     if (!d.nodes || !d.nodes.length) {
-      el.innerHTML =
-        '<span style="color:#888;font-size:13px">No GPU nodes labeled yet.</span>';
+      el.innerHTML = '<span style="color:#888;font-size:13px">No GPU nodes labeled yet.</span>';
       return;
     }
-    el.innerHTML = `
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>
-          <tr style="border-bottom:2px solid #e0e0e0;text-align:left">
-            <th style="padding:6px 10px">Node</th>
-            <th style="padding:6px 10px">Status</th>
-            <th style="padding:6px 10px">nvidia.com/gpu</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${d.nodes.map(n => `
-            <tr style="border-bottom:1px solid #f0f0f0">
-              <td style="padding:6px 10px;font-family:monospace">${n.name}</td>
-              <td style="padding:6px 10px">
-                <span class="badge ${n.status === 'Ready' ? 'b-ok' : 'b-warn'}">
-                  ${n.status}
-                </span>
-              </td>
-              <td style="padding:6px 10px">
-                <span class="mono">${n.gpu_count}</span>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`;
-  } catch(e) {
-    el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`;
-  }
+    el.innerHTML = `<table class="data-table">
+      <thead><tr><th>Node</th><th>Status</th><th>nvidia.com/gpu</th></tr></thead>
+      <tbody>${d.nodes.map(n => `
+        <tr>
+          <td><span class="mono">${n.name}</span></td>
+          <td><span class="badge ${n.status==='Ready'?'b-ok':'b-warn'}">${n.status}</span></td>
+          <td><span class="mono">${n.gpu_count}</span></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-  // Loaded when tab opens via showTab
-});
 </script>

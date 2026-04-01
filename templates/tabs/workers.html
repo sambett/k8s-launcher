@@ -1,35 +1,32 @@
 <div id="tab-workers" class="panel">
 
-  <!-- ── Current nodes ─────────────────────────────────────────────────── -->
+  <!-- Current nodes -->
   <div class="card">
     <h2>Cluster nodes
-      <button class="btn btn-sm btn-ghost" style="margin-left:8px"
+      <button class="btn btn-sm btn-ghost" style="float:right"
         onclick="loadWorkerNodes()">↺ Refresh</button>
     </h2>
-    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      Live view of all nodes. Workers can be removed from the cluster here.
-      The control-plane node cannot be removed via this interface.
+    <p class="card-hint">
+      All nodes currently in the cluster. Use the Remove button to drain
+      and remove a worker. The control-plane row has no actions.
     </p>
     <div id="worker-nodes-table">
       <span style="color:#888;font-size:13px">Loading...</span>
     </div>
   </div>
 
-  <!-- ── Remove worker ─────────────────────────────────────────────────── -->
+  <!-- Remove confirmation card (shown when Remove is clicked) -->
   <div class="card" id="remove-worker-card" style="display:none;border-color:#ffcdd2">
-    <h2 style="color:#c62828">Remove worker:
-      <span id="remove-target-name" style="font-family:monospace"></span>
+    <h2 style="color:#c62828">Remove node:
+      <span id="remove-target-name" style="font-family:monospace;margin-left:6px"></span>
     </h2>
-
-    <p style="font-size:13px;color:#555;margin-bottom:1rem">
-      Choose how to remove this node. Both options drain all pods first.
+    <p style="font-size:13px;color:#555;margin:.5rem 0 1rem">
+      Choose how to remove this node. Both options drain running pods first.
     </p>
 
-    <!-- Option A -->
     <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
                   border:1px solid #e0e0e0;border-radius:6px;padding:.75rem;
-                  margin-bottom:.6rem;background:#fafafa"
-           id="remove-opt-soft-label">
+                  margin-bottom:.6rem;background:#fafafa">
       <input type="radio" name="remove-mode" value="soft" checked
         style="margin-top:3px" onchange="toggleRemoveMode()">
       <div>
@@ -37,19 +34,15 @@
           <span class="badge b-warn" style="margin-left:6px">recommended</span>
         </div>
         <div style="font-size:12px;color:#666;margin-top:3px">
-          Drains pods, removes node from the cluster.
-          <strong>VM stays running</strong> — can be re-added immediately via
-          "Add worker" below without any manual cleanup.
-          Use this for maintenance, re-labeling, or reprovisioning.
+          Drains pods, removes from cluster. <strong>VM stays running</strong>
+          and can be re-added via the Add worker form without any cleanup.
         </div>
       </div>
     </label>
 
-    <!-- Option B -->
     <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
                   border:1px solid #ffcdd2;border-radius:6px;padding:.75rem;
-                  margin-bottom:.75rem;background:#fff8f8"
-           id="remove-opt-full-label">
+                  margin-bottom:.75rem;background:#fff8f8">
       <input type="radio" name="remove-mode" value="full"
         style="margin-top:3px" onchange="toggleRemoveMode()">
       <div>
@@ -57,34 +50,29 @@
           <span class="badge b-err" style="margin-left:6px">destructive</span>
         </div>
         <div style="font-size:12px;color:#666;margin-top:3px">
-          Drains pods, removes node from cluster, then SSHs into the VM and runs
-          <span class="mono">kubeadm reset</span> + removes all K8s/containerd
-          packages. <strong>VM is wiped clean</strong> — ready to be reprovisioned
-          from scratch via the Bootstrap tab.
-          Use this to permanently decommission a node.
+          Drains pods, removes from cluster, then SSHs in and runs
+          <span class="mono">kubeadm reset</span> + removes all K8s packages.
+          <strong>VM is wiped</strong> — ready to reprovision from scratch.
         </div>
       </div>
     </label>
 
-    <!-- SSH pass — only for full reset -->
     <div id="remove-ssh-pass-row" style="display:none;margin-bottom:.75rem">
       <div class="field-row">
         <label>SSH password</label>
         <input type="password" id="remove-ssh-pass"
-          placeholder="needed to SSH in for kubeadm reset"/>
+          placeholder="required for kubeadm reset"/>
       </div>
     </div>
 
     <div class="field-row" style="margin-bottom:.75rem">
-      <label style="color:#c62828;min-width:160px">Type RESET to confirm</label>
+      <label style="color:#c62828">Type RESET to confirm</label>
       <input type="text" id="remove-confirm-input"
         placeholder="RESET" style="max-width:180px;border-color:#ffcdd2"/>
     </div>
 
     <div style="display:flex;gap:8px;align-items:center">
-      <button class="btn btn-danger btn-sm" onclick="doRemoveWorker()">
-        Confirm removal
-      </button>
+      <button class="btn btn-danger btn-sm" onclick="doRemoveWorker()">Confirm removal</button>
       <button class="btn btn-ghost btn-sm"
         onclick="document.getElementById('remove-worker-card').style.display='none'">
         Cancel
@@ -92,22 +80,20 @@
       <span class="dot" id="dot-remove"></span>
       <span id="remove-status-label" style="font-size:12px;color:#666"></span>
     </div>
-
-    <div class="log" id="remove-log"
-      style="margin-top:.75rem;display:none;height:200px">
-    </div>
+    <div class="log" id="remove-log" style="margin-top:.75rem;display:none;height:200px"></div>
   </div>
 
-  <!-- ── Add worker ─────────────────────────────────────────────────────── -->
+  <!-- Add worker -->
   <div class="card">
     <h2>Add worker node</h2>
-    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      Joins a new VM to the running cluster. Password used once, never stored.
-      The node will be provisioned identically to the original cluster workers.
+    <p class="card-hint">
+      Joins a new VM to the running cluster. The password is used once to push
+      the SSH key and is <strong>never stored</strong>. The node will be
+      configured identically to the existing workers (~10 minutes).
     </p>
     <div class="field-row">
       <label>IP address</label>
-      <input type="text" id="aw-ip" placeholder="e.g. 10.0.0.12"/>
+      <input type="text" id="aw-ip" placeholder="e.g. 10.0.0.14"/>
     </div>
     <div class="field-row">
       <label>Hostname</label>
@@ -125,23 +111,21 @@
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
       <button class="btn btn-primary" id="aw-btn" onclick="addWorkerNode()">
         Add worker
-        <span style="font-weight:400;opacity:.7;margin-left:4px">(~10 min)</span>
       </button>
       <span class="dot" id="dot-aw"></span>
       <span id="aw-status-label" style="font-size:12px;color:#666"></span>
     </div>
 
-    <!-- Step tracker -->
     <div id="aw-steps" style="display:none;margin-top:1rem;
          border-top:1px solid #f0f0f0;padding-top:.75rem">
-      <div id="aw-step-1"  class="aw-step-row"><span>⬜</span> Step 1 / 8 — Push SSH key</div>
-      <div id="aw-step-2"  class="aw-step-row"><span>⬜</span> Step 2 / 8 — Repair stale apt state</div>
-      <div id="aw-step-3"  class="aw-step-row"><span>⬜</span> Step 3 / 8 — Base packages + /etc/hosts</div>
-      <div id="aw-step-4"  class="aw-step-row"><span>⬜</span> Step 4 / 8 — Node prerequisites</div>
-      <div id="aw-step-5"  class="aw-step-row"><span>⬜</span> Step 5 / 8 — Install containerd</div>
-      <div id="aw-step-6"  class="aw-step-row"><span>⬜</span> Step 6 / 8 — Kubernetes packages</div>
-      <div id="aw-step-7"  class="aw-step-row"><span>⬜</span> Step 7 / 8 — Join cluster</div>
-      <div id="aw-step-8"  class="aw-step-row"><span>⬜</span> Step 8 / 8 — Label and update inventory</div>
+      <div id="aw-step-1" class="aw-step">⬜ Step 1 / 8 — Push SSH key</div>
+      <div id="aw-step-2" class="aw-step">⬜ Step 2 / 8 — Repair stale apt state</div>
+      <div id="aw-step-3" class="aw-step">⬜ Step 3 / 8 — Base packages + /etc/hosts</div>
+      <div id="aw-step-4" class="aw-step">⬜ Step 4 / 8 — Node prerequisites</div>
+      <div id="aw-step-5" class="aw-step">⬜ Step 5 / 8 — Install containerd</div>
+      <div id="aw-step-6" class="aw-step">⬜ Step 6 / 8 — Kubernetes packages</div>
+      <div id="aw-step-7" class="aw-step">⬜ Step 7 / 8 — Join cluster</div>
+      <div id="aw-step-8" class="aw-step">⬜ Step 8 / 8 — Label and update inventory</div>
     </div>
     <div id="r-addworker" style="margin-top:.75rem"></div>
   </div>
@@ -154,74 +138,53 @@
 </div>
 
 <style>
-.aw-step-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  font-size: 13px;
-  color: #9e9e9e;
-}
+.aw-step{display:flex;align-items:center;gap:8px;padding:4px 0;
+         font-size:13px;color:#9e9e9e}
 </style>
 
 <script>
-// ── Current nodes table ───────────────────────────────────────────────────────
-let _removeTarget = { hostname: '', ip: '', ssh_user: '' };
+const AW_LABELS = [
+  '', 'Push SSH key', 'Repair stale apt state', 'Base packages + /etc/hosts',
+  'Node prerequisites', 'Install containerd', 'Kubernetes packages',
+  'Join cluster', 'Label and update inventory',
+];
 
 async function loadWorkerNodes() {
   const el = document.getElementById('worker-nodes-table');
   el.innerHTML = '<span style="color:#888;font-size:13px">Loading...</span>';
   try {
-    const r = await fetch('/api/platform/status');
+    const r = await fetch('/api/reset/preview');
     const d = await r.json();
-    const count = d.cluster?.node_count || 0;
-    if (count === 0) {
-      el.innerHTML = '<span class="badge b-warn">No cluster found — deploy Kubernetes first.</span>';
+    if (d.status === 'no_inventory') {
+      el.innerHTML = '<span class="badge b-warn">No cluster configured yet.</span>';
       return;
     }
-    // Fetch node details
-    const r2 = await fetch('/api/reset/preview');
-    const d2 = await r2.json();
-    if (!d2.nodes || !d2.nodes.length) {
-      el.innerHTML = '<span class="badge b-warn">No nodes in inventory.</span>';
+    if (!d.nodes || !d.nodes.length) {
+      el.innerHTML = '<span class="badge b-warn">No nodes found in inventory.</span>';
       return;
     }
     el.innerHTML = `
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>
-          <tr style="border-bottom:2px solid #e0e0e0;text-align:left">
-            <th style="padding:6px 10px">Hostname</th>
-            <th style="padding:6px 10px">IP</th>
-            <th style="padding:6px 10px">Role</th>
-            <th style="padding:6px 10px">Actions</th>
-          </tr>
-        </thead>
+      <table class="data-table">
+        <thead><tr><th>Hostname</th><th>IP</th><th>Role</th><th>Action</th></tr></thead>
         <tbody>
-          ${d2.nodes.map(n => `
-            <tr style="border-bottom:1px solid #f0f0f0">
-              <td style="padding:6px 10px;font-family:monospace">${n.hostname}</td>
-              <td style="padding:6px 10px;color:#666">${n.ip}</td>
-              <td style="padding:6px 10px">
-                <span class="badge ${n.role === 'control-plane' ? 'b-info' : 'b-warn'}">
-                  ${n.role}
-                </span>
-              </td>
-              <td style="padding:6px 10px">
-                ${n.role === 'worker' ? `
-                  <button class="btn btn-sm btn-danger"
-                    onclick="openRemoveWorker('${n.hostname}','${n.ip}','${n.ssh_user || ''}')">
-                    Remove
-                  </button>
-                ` : '<span style="color:#bbb;font-size:12px">—</span>'}
-              </td>
-            </tr>
-          `).join('')}
+          ${d.nodes.map(n => `<tr>
+            <td><span class="mono">${n.hostname}</span></td>
+            <td style="color:#666">${n.ip}</td>
+            <td><span class="badge ${n.role === 'control-plane' ? 'b-info' : 'b-warn'}">${n.role}</span></td>
+            <td>${n.role === 'worker'
+              ? `<button class="btn btn-sm btn-danger"
+                   onclick="openRemoveWorker('${n.hostname}','${n.ip}','${n.ssh_user||'ubuntu'}')">Remove</button>`
+              : '<span style="color:#bbb;font-size:12px">—</span>'
+            }</td>
+          </tr>`).join('')}
         </tbody>
       </table>`;
   } catch(e) {
-    el.innerHTML = `<span class="badge b-err">Failed to load: ${e}</span>`;
+    el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`;
   }
 }
+
+let _removeTarget = {};
 
 function openRemoveWorker(hostname, ip, ssh_user) {
   _removeTarget = { hostname, ip, ssh_user };
@@ -232,8 +195,7 @@ function openRemoveWorker(hostname, ip, ssh_user) {
   document.getElementById('remove-log').innerHTML = '';
   document.getElementById('remove-status-label').textContent = '';
   setDot('dot-remove', '');
-  document.getElementById('remove-worker-card')
-    .scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('remove-worker-card').scrollIntoView({behavior:'smooth'});
 }
 
 function toggleRemoveMode() {
@@ -243,91 +205,58 @@ function toggleRemoveMode() {
 }
 
 async function doRemoveWorker() {
-  const confirm_val = document.getElementById('remove-confirm-input').value;
-  const mode        = document.querySelector('input[name="remove-mode"]:checked').value;
-  const logEl       = document.getElementById('remove-log');
-  const statusEl    = document.getElementById('remove-status-label');
-
-  if (confirm_val !== 'RESET') {
-    statusEl.textContent = 'Type RESET to confirm.';
-    statusEl.style.color = '#c62828';
-    return;
-  }
+  const val  = document.getElementById('remove-confirm-input').value;
+  const mode = document.querySelector('input[name="remove-mode"]:checked').value;
+  const logEl  = document.getElementById('remove-log');
+  const statEl = document.getElementById('remove-status-label');
+  if (val !== 'RESET') { statEl.textContent = 'Type RESET to confirm.'; return; }
 
   const body = {
     hostname: _removeTarget.hostname,
     ip:       _removeTarget.ip,
     ssh_user: _removeTarget.ssh_user || 'ubuntu',
-    ssh_pass: mode === 'full'
-      ? document.getElementById('remove-ssh-pass').value
-      : '',
+    ssh_pass: mode === 'full' ? document.getElementById('remove-ssh-pass').value : '',
     mode,
   };
 
-  logEl.style.display = 'block';
-  logEl.innerHTML = '';
-  statusEl.style.color = '#666';
-  statusEl.textContent = 'Running…';
+  logEl.style.display = 'block'; logEl.innerHTML = '';
+  statEl.textContent = 'Running…';
   setDot('dot-remove', 'running');
 
   try {
     const resp = await fetch('/api/cluster/remove-worker', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
     });
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-
+    let buf = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n'); buffer = events.pop();
-      for (const event of events) {
-        const lines = event.split('\n').filter(l => l.startsWith('data: '));
+      buf += decoder.decode(value, { stream:true });
+      const events = buf.split('\n\n'); buf = events.pop();
+      for (const ev of events) {
+        const lines = ev.split('\n').filter(l => l.startsWith('data: '));
         if (!lines.length) continue;
-        const msg = lines[lines.length - 1].slice(6);
+        const msg = lines[lines.length-1].slice(6);
         if (msg === '__DONE__') {
-          setDot('dot-remove', 'ok');
-          statusEl.textContent = 'Complete';
-          document.getElementById('remove-confirm-input').value = '';
-          if (mode === 'full')
-            document.getElementById('remove-ssh-pass').value = '';
+          setDot('dot-remove','ok'); statEl.textContent = 'Complete';
           setTimeout(() => {
             document.getElementById('remove-worker-card').style.display = 'none';
             loadWorkerNodes();
-            refreshPlatformOverview();
           }, 1500);
         } else if (msg.startsWith('__ERROR__')) {
-          setDot('dot-remove', 'error');
-          statusEl.textContent = 'Failed';
+          setDot('dot-remove','error'); statEl.textContent = 'Failed';
           makeLogLine('FAILED: ' + msg, logEl);
-        } else {
-          makeLogLine(msg, logEl);
-        }
+        } else { makeLogLine(msg, logEl); }
       }
     }
   } catch(e) {
-    setDot('dot-remove', 'error');
-    statusEl.textContent = 'Request failed';
+    setDot('dot-remove','error'); statEl.textContent = 'Failed';
     makeLogLine('Error: ' + e, logEl);
   }
 }
-
-// ── Add worker (same logic as before, 8 steps) ───────────────────────────────
-const AW_STEP_LABELS = [
-  '', // 1-indexed
-  'Push SSH key',
-  'Repair stale apt state',
-  'Base packages + /etc/hosts',
-  'Node prerequisites',
-  'Install containerd',
-  'Kubernetes packages',
-  'Join cluster',
-  'Label and update inventory',
-];
 
 function _markAwStep(n, state) {
   const el = document.getElementById('aw-step-' + n);
@@ -336,7 +265,7 @@ function _markAwStep(n, state) {
   const colors = { idle:'#9e9e9e', running:'#1976d2', ok:'#2e7d32', error:'#c62828' };
   el.style.color = colors[state];
   el.style.fontWeight = (state === 'running' || state === 'ok') ? '500' : 'normal';
-  el.innerHTML = `<span>${icons[state]}</span> Step ${n} / 8 — ${AW_STEP_LABELS[n]}`;
+  el.textContent = icons[state] + ' Step ' + n + ' / 8 — ' + AW_LABELS[n];
 }
 
 async function addWorkerNode() {
@@ -346,7 +275,6 @@ async function addWorkerNode() {
   const stepsEl  = document.getElementById('aw-steps');
   const btn      = document.getElementById('aw-btn');
   const statusEl = document.getElementById('aw-status-label');
-
   const body = {
     ip:       document.getElementById('aw-ip').value.trim(),
     hostname: document.getElementById('aw-hostname').value.trim(),
@@ -367,61 +295,48 @@ async function addWorkerNode() {
 
   try {
     const resp = await fetch('/api/cluster/add-worker', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = ''; let currentStep = 0;
-
+    let buf = ''; let cur = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n'); buffer = events.pop();
-      for (const event of events) {
-        const dataLines = event.split('\n').filter(l => l.startsWith('data: '));
-        if (!dataLines.length) continue;
-        const msg = dataLines[dataLines.length - 1].slice(6);
+      buf += decoder.decode(value, { stream:true });
+      const events = buf.split('\n\n'); buf = events.pop();
+      for (const ev of events) {
+        const lines = ev.split('\n').filter(l => l.startsWith('data: '));
+        if (!lines.length) continue;
+        const msg = lines[lines.length-1].slice(6);
         if (msg === '__DONE__') {
-          if (currentStep > 0) _markAwStep(currentStep, 'ok');
-          setDot('dot-aw', 'ok');
-          statusEl.textContent = 'Complete';
-          resultEl.innerHTML = '<span class="badge b-ok">Worker added successfully.</span>';
+          if (cur > 0) _markAwStep(cur, 'ok');
+          setDot('dot-aw','ok'); statusEl.textContent = 'Complete';
+          resultEl.innerHTML = '<span class="badge b-ok">✓ Worker added successfully.</span>';
+          btn.disabled = false; loadWorkerNodes();
+        } else if (msg.startsWith('__ERROR__')) {
+          if (cur > 0) _markAwStep(cur, 'error');
+          setDot('dot-aw','error'); statusEl.textContent = 'Failed';
+          resultEl.innerHTML = '<span class="badge b-err">Failed: ' + msg + '</span>';
           btn.disabled = false;
-          loadWorkerNodes();
-          refreshPlatformOverview();
-          continue;
+        } else {
+          const m = msg.match(/\[Step (\d+)\/\d+\]/);
+          if (m) {
+            const s = parseInt(m[1]);
+            if (cur > 0 && s > cur) _markAwStep(cur, 'ok');
+            cur = s; _markAwStep(cur, 'running');
+            statusEl.textContent = 'Step ' + cur + ' / 8 — ' + AW_LABELS[cur];
+          }
+          makeLogLine(msg, logEl);
         }
-        if (msg.startsWith('__ERROR__:')) {
-          if (currentStep > 0) _markAwStep(currentStep, 'error');
-          setDot('dot-aw', 'error');
-          statusEl.textContent = 'Failed';
-          resultEl.innerHTML = '<span class="badge b-err">Failed: ' + msg.split(':')[1] + '</span>';
-          btn.disabled = false;
-          continue;
-        }
-        const stepMatch = msg.match(/\[Step (\d+)\/8\]/);
-        if (stepMatch) {
-          const newStep = parseInt(stepMatch[1]);
-          if (currentStep > 0 && newStep > currentStep) _markAwStep(currentStep, 'ok');
-          currentStep = newStep; _markAwStep(currentStep, 'running');
-          statusEl.textContent = 'Step ' + currentStep + ' / 8 — ' + AW_STEP_LABELS[currentStep];
-        }
-        makeLogLine(msg, logEl);
       }
     }
   } catch(e) {
-    setDot('dot-aw', 'error');
-    statusEl.textContent = 'Failed';
+    setDot('dot-aw','error'); statusEl.textContent = 'Failed';
     resultEl.innerHTML = '<span class="badge b-err">Request failed: ' + e + '</span>';
     btn.disabled = false;
   }
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-  // Will be called when tab opens via showTab
-});
 </script>

@@ -4,7 +4,7 @@
     <h2>Platform Overview</h2>
     <p class="card-hint">
       Live health check of all deployed components.
-      Green means the component is running and reachable.
+      Green means the component is running and reachable from this machine.
     </p>
     <div id="platform-overview">
       <span style="color:#888;font-size:13px">Loading...</span>
@@ -16,23 +16,22 @@
   <div class="card">
     <h2>Join token</h2>
     <p class="card-hint">
-      Used to add new worker nodes to this cluster.
-      Saved at <span class="mono">~/cluster-artifacts/join-command.txt</span>
-      on the control plane. Expires after 24 hours.
+      Used to join new worker nodes to this cluster. Saved at
+      <span class="mono">~/cluster-artifacts/join-command.txt</span> on the control plane.
+      Tokens expire after 24 hours.
     </p>
     <button class="btn btn-sm" onclick="fetchJoinToken()">Show join token</button>
     <div id="st-token" style="margin-top:.5rem"></div>
     <div class="info-box" style="margin-top:.5rem">
-      To regenerate an expired token:<br>
-      <span class="mono">kubeadm token create --print-join-command</span>
+      To regenerate: <span class="mono">kubeadm token create --print-join-command</span>
     </div>
   </div>
 
   <div class="card">
     <h2>kubeconfig</h2>
     <p class="card-hint">
-      Download this file to control the cluster from your local machine.
-      Copy it to <span class="mono">~/.kube/config</span> then run
+      Download this file to manage the cluster from your local machine.
+      Copy to <span class="mono">~/.kube/config</span>, then run
       <span class="mono">kubectl get nodes</span> to verify.
     </p>
     <a href="/api/status/kubeconfig" download="kubeconfig.yaml">
@@ -48,11 +47,15 @@ async function fetchJoinToken() {
   const d  = await r.json();
   const el = document.getElementById('st-token');
   if (d.status === 'ok') {
+    const cmd = d.join_command;
     el.innerHTML =
       '<div class="mono" style="margin:.5rem 0;padding:8px;background:#f5f5f5;' +
-      'border-radius:4px;word-break:break-all">' + d.join_command + '</div>' +
-      '<button class="btn btn-sm" onclick="navigator.clipboard.writeText(\'' +
-      d.join_command.replace(/'/g,"\\'") + '\');btnSuccess(this,\'Copied!\')">Copy</button>';
+      'border-radius:4px;word-break:break-all">' + cmd + '</div>' +
+      '<button class="btn btn-sm" id="btn-copy-token">Copy</button>';
+    document.getElementById('btn-copy-token').onclick = function() {
+      navigator.clipboard.writeText(cmd);
+      btnSuccess(this, '✓ Copied!');
+    };
   } else {
     el.innerHTML = '<span class="badge b-warn">' + d.message + '</span>';
   }

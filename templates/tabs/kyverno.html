@@ -1,18 +1,163 @@
 <div id="tab-kyverno" class="panel">
 
   <div class="card">
-    <h2>Kyverno — Policy Engine</h2>
+    <h2>Kyverno — Policy Engine
+      <span id="kyverno-status-badge" class="badge b-warn"
+        style="margin-left:8px;font-weight:400">checking...</span>
+    </h2>
     <p class="card-hint">
-      Kyverno enforces policies on Kubernetes resources. Use it to require
-      resource limits, restrict privileged containers, and enforce GPU node
-      labels on GPU workloads.
+      Kyverno enforces rules on Kubernetes resources without modifying
+      application code. Policies run in <strong>Audit</strong> mode by default
+      (log violations, never block) which is safe for a first deployment.
     </p>
-    <div style="padding:2rem;text-align:center;color:#bbb;font-size:13px;
-                border:2px dashed #e0e0e0;border-radius:8px;margin-top:.5rem">
-      <div style="font-size:2rem;margin-bottom:.5rem">🛡</div>
-      <strong>Coming soon</strong><br>
-      Kyverno install and policy management will appear here.
+
+    <div class="field-row" style="align-items:flex-start">
+      <label style="padding-top:6px">Chart version</label>
+      <div style="flex:1">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="kyverno-version-input"
+            placeholder="e.g. 3.2.6" style="max-width:160px"/>
+          <button class="btn btn-sm btn-ghost"
+            onclick="loadKyvernoVersions()">Show suggestions</button>
+        </div>
+        <div id="kyverno-version-suggestions" style="margin-top:.5rem"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
+      <button class="btn btn-primary" onclick="installKyverno()">
+        Install Kyverno
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~2 min)</span>
+      </button>
+      <span class="dot" id="dot-kyverno"></span>
+      <span id="kyverno-install-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Install log</h2>
+    <div class="log" id="kyverno-install-log">Waiting for installation...</div>
+  </div>
+
+  <div class="card">
+    <h2>Policies</h2>
+    <p class="card-hint">
+      Apply the built-in JupyterHub policy to ensure all notebook pods
+      declare CPU and memory limits. Runs in Audit mode — nothing is blocked.
+    </p>
+    <button class="btn btn-sm btn-primary" onclick="applyJhubPolicy()">
+      Apply JupyterHub resource limits policy
+    </button>
+    <div style="font-size:12px;color:#666;margin-top:.3rem">
+      Validates that pods in the <span class="mono">jhub</span> namespace
+      have both CPU and memory limits defined.
+    </div>
+    <div id="r-jhub-policy" style="margin-top:.5rem"></div>
+
+    <h2 style="font-size:.8rem;color:#666;margin:.75rem 0 .5rem">Installed policies
+      <button class="btn btn-sm btn-ghost" style="margin-left:6px"
+        onclick="loadKyvPolicies()">↺</button>
+    </h2>
+    <div id="kyverno-policies-table">
+      <span style="color:#888;font-size:13px">Loading...</span>
     </div>
   </div>
 
 </div>
+
+<script>
+async function loadKyvernoStatus() {
+  const badge = document.getElementById('kyverno-status-badge');
+  try {
+    const r = await fetch('/api/kyverno/status');
+    const d = await r.json();
+    if (d.status === 'installed') {
+      badge.className = 'badge b-ok';
+      badge.textContent = '✓ installed ' + (d.chart || '');
+    } else {
+      badge.className = 'badge b-warn';
+      badge.textContent = 'not installed';
+    }
+  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
+}
+
+async function loadKyvernoVersions() {
+  const el = document.getElementById('kyverno-version-suggestions');
+  el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
+  try {
+    const r = await fetch('/api/kyverno/versions');
+    const d = await r.json();
+    if (!d.versions || !d.versions.length) {
+      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
+      return;
+    }
+    el.innerHTML =
+      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
+        K8s in use: <strong>${d.k8s_version||'unknown'}</strong>.
+        ${d.recommended ? ' Recommended: <strong>'+d.recommended+'</strong>' : ''}
+       </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px">
+         ${d.versions.map(v =>
+           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
+              title="${v.notes||''}"
+              onclick="document.getElementById('kyverno-version-input').value='${v.version}'">
+              ${v.version}${v.version===d.recommended?' ★':''}
+            </button>`).join('')}
+       </div>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+}
+
+function installKyverno() {
+  const version  = document.getElementById('kyverno-version-input').value.trim();
+  const logEl    = document.getElementById('kyverno-install-log');
+  const statusEl = document.getElementById('kyverno-install-status');
+  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
+  setDot('dot-kyverno', 'running');
+  const es = new EventSource('/api/kyverno/install/stream?version=' + encodeURIComponent(version));
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-kyverno','ok'); statusEl.textContent = 'Complete';
+      loadKyvernoStatus(); loadKyvPolicies(); es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-kyverno','error'); statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data, logEl); es.close();
+    } else { makeLogLine(e.data, logEl); }
+  };
+  es.onerror = () => { setDot('dot-kyverno','error'); es.close(); };
+}
+
+async function applyJhubPolicy() {
+  const el = document.getElementById('r-jhub-policy');
+  el.innerHTML = '<span class="badge b-run">Applying...</span>';
+  try {
+    const r = await fetch('/api/kyverno/apply-jhub-policy', { method:'POST' });
+    const d = await r.json();
+    el.innerHTML = d.status === 'ok'
+      ? `<span class="badge b-ok">${d.message}</span>`
+      : `<span class="badge b-err">${d.message}</span>`;
+    if (d.status === 'ok') loadKyvPolicies();
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+}
+
+async function loadKyvPolicies() {
+  const el = document.getElementById('kyverno-policies-table');
+  try {
+    const r = await fetch('/api/kyverno/policies');
+    const d = await r.json();
+    if (!d.policies || !d.policies.length) {
+      el.innerHTML = '<span style="color:#888;font-size:13px">No policies installed yet.</span>';
+      return;
+    }
+    el.innerHTML = `<table class="data-table">
+      <thead><tr><th>Policy</th><th>Ready</th><th>Background</th></tr></thead>
+      <tbody>${d.policies.map(p => `
+        <tr>
+          <td><span class="mono">${p.name}</span></td>
+          <td><span class="badge ${p.ready==='true'?'b-ok':'b-warn'}">${p.ready}</span></td>
+          <td>${p.background}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+}
+</script>

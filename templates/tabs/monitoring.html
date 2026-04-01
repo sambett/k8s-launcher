@@ -1,17 +1,132 @@
 <div id="tab-monitoring" class="panel">
 
   <div class="card">
-    <h2>Monitoring</h2>
+    <h2>Prometheus + Grafana
+      <span id="monitoring-status-badge" class="badge b-warn"
+        style="margin-left:8px;font-weight:400">checking...</span>
+    </h2>
     <p class="card-hint">
-      Deploy Prometheus and Grafana to collect cluster metrics and visualize
-      workload health, resource usage, and GPU utilization.
+      Deploys <strong>kube-prometheus-stack</strong> via Helm — a single chart
+      that installs Prometheus, Alertmanager, and Grafana. After install,
+      Grafana is on NodePort <strong>32300</strong> and Prometheus on <strong>32301</strong>.
     </p>
-    <div style="padding:2rem;text-align:center;color:#bbb;font-size:13px;
-                border:2px dashed #e0e0e0;border-radius:8px;margin-top:.5rem">
-      <div style="font-size:2rem;margin-bottom:.5rem">📈</div>
-      <strong>Coming soon</strong><br>
-      Prometheus stack deployment will appear here.
+
+    <div class="field-row" style="align-items:flex-start">
+      <label style="padding-top:6px">Chart version</label>
+      <div style="flex:1">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="monitoring-version-input"
+            placeholder="e.g. 65.1.0" style="max-width:160px"/>
+          <button class="btn btn-sm btn-ghost"
+            onclick="loadMonitoringVersions()">Show suggestions</button>
+        </div>
+        <div id="monitoring-version-suggestions" style="margin-top:.5rem"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
+      <button class="btn btn-primary" onclick="installMonitoring()">
+        Install Prometheus + Grafana
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~5 min)</span>
+      </button>
+      <span class="dot" id="dot-monitoring"></span>
+      <span id="monitoring-install-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Install log</h2>
+    <div class="log" id="monitoring-install-log">Waiting for installation...</div>
+  </div>
+
+  <div class="card" id="monitoring-access-card" style="display:none">
+    <h2>Access</h2>
+    <div class="info-box">
+      <strong>Grafana</strong> —
+      <a id="grafana-url" href="#" target="_blank" style="color:#1976d2"></a><br>
+      Default login: <span class="mono">admin</span> /
+      <span class="mono">prom-operator</span><br><br>
+      <strong>Prometheus</strong> —
+      <a id="prometheus-url" href="#" target="_blank" style="color:#1976d2"></a>
     </div>
   </div>
 
 </div>
+
+<script>
+async function loadMonitoringStatus() {
+  const badge = document.getElementById('monitoring-status-badge');
+  try {
+    const r = await fetch('/api/monitoring/status');
+    const d = await r.json();
+    if (d.status === 'installed') {
+      badge.className = 'badge b-ok';
+      badge.textContent = '✓ installed ' + (d.chart || '');
+      loadMonitoringAccess();
+    } else {
+      badge.className = 'badge b-warn';
+      badge.textContent = 'not installed';
+    }
+  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
+}
+
+async function loadMonitoringVersions() {
+  const el = document.getElementById('monitoring-version-suggestions');
+  el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
+  try {
+    const r = await fetch('/api/monitoring/versions');
+    const d = await r.json();
+    if (!d.versions || !d.versions.length) {
+      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
+      return;
+    }
+    el.innerHTML =
+      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
+        K8s in use: <strong>${d.k8s_version||'unknown'}</strong>.
+        ${d.recommended ? ' Recommended: <strong>'+d.recommended+'</strong>' : ''}
+       </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px">
+         ${d.versions.map(v =>
+           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
+              title="${v.notes||''}"
+              onclick="document.getElementById('monitoring-version-input').value='${v.version}'">
+              ${v.version}${v.version===d.recommended?' ★':''}
+            </button>`).join('')}
+       </div>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+}
+
+function installMonitoring() {
+  const version  = document.getElementById('monitoring-version-input').value.trim();
+  const logEl    = document.getElementById('monitoring-install-log');
+  const statusEl = document.getElementById('monitoring-install-status');
+  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
+  setDot('dot-monitoring', 'running');
+  const es = new EventSource('/api/monitoring/install/stream?version=' + encodeURIComponent(version));
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-monitoring','ok'); statusEl.textContent = 'Complete';
+      loadMonitoringStatus(); es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-monitoring','error'); statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data, logEl); es.close();
+    } else { makeLogLine(e.data, logEl); }
+  };
+  es.onerror = () => { setDot('dot-monitoring','error'); es.close(); };
+}
+
+async function loadMonitoringAccess() {
+  try {
+    const r = await fetch('/api/monitoring/access');
+    const d = await r.json();
+    if (d.grafana_url || d.prometheus_url) {
+      document.getElementById('monitoring-access-card').style.display = 'block';
+      const ga = document.getElementById('grafana-url');
+      const pa = document.getElementById('prometheus-url');
+      if (d.grafana_url)    { ga.href = d.grafana_url;    ga.textContent = d.grafana_url; }
+      if (d.prometheus_url) { pa.href = d.prometheus_url; pa.textContent = d.prometheus_url; }
+    }
+  } catch(e) {}
+}
+</script>

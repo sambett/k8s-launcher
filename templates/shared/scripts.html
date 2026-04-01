@@ -1,36 +1,48 @@
 <script>
+/* ── Tab order for the numbered setup flow ── */
 const STEP_ORDER = [
   'bootstrap','configure','kubernetes','gitlab','jupyterhub','admindashboard'
 ];
 
+/* ── Show a tab, hide all others ── */
 function showTab(name, btn) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
+  const panel = document.getElementById('tab-' + name);
+  if (panel) panel.classList.add('active');
   if (btn) btn.classList.add('active');
   const stepEl = document.getElementById('step-' + name);
   if (stepEl) stepEl.classList.add('active');
+  /* Tab-specific loaders */
   if (name === 'reset')      loadResetPreview();
-  if (name === 'workers')    { loadWorkerNodes(); }
-  if (name === 'extensions') { loadGpuStatus(); loadGpuNodes(); loadNodesForGpu(); }
   if (name === 'status')     refreshPlatformOverview();
-  if (name === 'gitlab')     loadGitLabOutputs();
-  if (name === 'jupyterhub') loadJhubPrefill();
+  if (name === 'gitlab')     { if (typeof loadGitLabOutputs   === 'function') loadGitLabOutputs(); }
+  if (name === 'jupyterhub') { if (typeof loadJhubPrefill     === 'function') loadJhubPrefill(); }
+  if (name === 'workers')    { if (typeof loadWorkerNodes     === 'function') loadWorkerNodes(); }
+  if (name === 'extensions') {
+    if (typeof loadGpuStatus   === 'function') loadGpuStatus();
+    if (typeof loadGpuNodes    === 'function') loadGpuNodes();
+    if (typeof loadNodesForGpu === 'function') loadNodesForGpu();
+  }
+  if (name === 'monitoring') { if (typeof loadMonitoringStatus === 'function') loadMonitoringStatus(); }
+  if (name === 'kyverno')    {
+    if (typeof loadKyvernoStatus === 'function') loadKyvernoStatus();
+    if (typeof loadKyvPolicies   === 'function') loadKyvPolicies();
+  }
   checkPrereqs(name);
 }
 
+/* ── Step state persistence ── */
 function markStepDone(name) {
   const el = document.getElementById('step-' + name);
   if (el) { el.classList.add('done'); el.classList.remove('error','active'); }
   localStorage.setItem('step-' + name, 'done');
 }
-
 function markStepError(name) {
   const el = document.getElementById('step-' + name);
   if (el) { el.classList.add('error'); el.classList.remove('done'); }
   localStorage.setItem('step-' + name, 'error');
 }
-
 function restoreStepStates() {
   STEP_ORDER.forEach(name => {
     const state = localStorage.getItem('step-' + name);
@@ -39,20 +51,20 @@ function restoreStepStates() {
   });
 }
 
+/* ── Prereq banner ── */
 async function checkPrereqs(tabName) {
   if (tabName === 'jupyterhub' || tabName === 'admindashboard') {
-    const bannerId = tabName === 'jupyterhub' ? 'prereq-jhub' : 'prereq-dash';
+    const id = tabName === 'jupyterhub' ? 'prereq-jhub' : 'prereq-dash';
     try {
       const r = await fetch('/api/gitlab/outputs');
       const d = await r.json();
-      showBanner(bannerId, d.status !== 'ok',
+      showBanner(id, d.status !== 'ok',
         '⚠ Complete the GitLab tab first — credentials not found. ' +
         '<a onclick="showTab(\'gitlab\',document.getElementById(\'step-gitlab\'))" ' +
         'style="color:#1565c0;cursor:pointer;text-decoration:underline">Go to GitLab tab →</a>');
     } catch(e) {}
   }
 }
-
 function showBanner(id, visible, html) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -60,13 +72,26 @@ function showBanner(id, visible, html) {
   el.style.display = visible ? 'flex' : 'none';
 }
 
+/* ── Button success flash ── */
+function btnSuccess(btn, label) {
+  label = label || '✓ Done';
+  const orig = btn.textContent;
+  btn.textContent = label;
+  btn.classList.add('btn-flash-ok');
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.classList.remove('btn-flash-ok');
+  }, 2000);
+}
+
+/* ── Log helpers ── */
 function makeLogLine(text, logEl) {
   const s = document.createElement('span');
   if (text.startsWith('PLAY'))               s.className = 'l-play';
-  else if (/ok:/.test(text))                s.className = 'l-ok';
-  else if (/changed:/.test(text))           s.className = 'l-changed';
-  else if (/FAILED|ERROR|fatal/.test(text)) s.className = 'l-err';
-  else if (/skipping/.test(text))           s.className = 'l-skip';
+  else if (/ok:/.test(text))                 s.className = 'l-ok';
+  else if (/changed:/.test(text))            s.className = 'l-changed';
+  else if (/FAILED|ERROR|fatal/.test(text))  s.className = 'l-err';
+  else if (/skipping/.test(text))            s.className = 'l-skip';
   s.textContent = text + '\n';
   logEl.appendChild(s);
   logEl.scrollTop = logEl.scrollHeight;
@@ -74,7 +99,7 @@ function makeLogLine(text, logEl) {
 
 function setDot(id, state) {
   const el = document.getElementById(id);
-  if (el) el.className = 'dot ' + state;
+  if (el) el.className = 'dot ' + (state || '');
 }
 
 function streamToLog(url, dotId, logElId) {
@@ -84,8 +109,7 @@ function streamToLog(url, dotId, logElId) {
   const es = new EventSource(url);
   es.onmessage = e => {
     if (e.data === '__DONE__') {
-      setDot(dotId, 'ok');
-      es.close();
+      setDot(dotId, 'ok'); es.close();
     } else if (e.data.startsWith('__ERROR__')) {
       setDot(dotId, 'error');
       makeLogLine('FAILED — exit code: ' + e.data.split(':')[1], logEl);
@@ -107,16 +131,6 @@ function renderChecks(elId, checks) {
   }).join('');
 }
 
-function btnSuccess(btn, label='Done') {
-  const orig = btn.textContent;
-  btn.classList.add('btn-flash-ok');
-  btn.textContent = label;
-  setTimeout(() => {
-    btn.classList.remove('btn-flash-ok');
-    btn.textContent = orig;
-  }, 2000);
-}
-
 function esc(str) {
   if (!str) return '';
   return String(str)
@@ -124,7 +138,11 @@ function esc(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-async function loadPlatformStatus() {
+/* ── Platform overview (Status tab) ── */
+async function refreshPlatformOverview() {
+  const el = document.getElementById('platform-overview');
+  if (!el) return;
+  el.innerHTML = '<span style="color:#888;font-size:13px">Checking...</span>';
   try {
     const r = await fetch('/api/platform/status');
     const d = await r.json();
@@ -132,21 +150,48 @@ async function loadPlatformStatus() {
     if (d.gitlab?.status     === 'ready') markStepDone('gitlab');
     if (d.jupyterhub?.status === 'ready') markStepDone('jupyterhub');
     if (d.dashboard?.status  === 'ready') markStepDone('admindashboard');
-    if (d.gitlab?.url)     populateUrl('gitlab-url-badge',    d.gitlab.url);
-    if (d.jupyterhub?.url) populateUrl('jhub-url-badge',      d.jupyterhub.url);
-  } catch(e) {}
+    const LABELS = {
+      cluster:    { label: 'Kubernetes Cluster', icon: '⎈' },
+      longhorn:   { label: 'Longhorn Storage',   icon: '💾' },
+      gitlab:     { label: 'GitLab',             icon: '🦊' },
+      jupyterhub: { label: 'JupyterHub',         icon: '📓' },
+      dashboard:  { label: 'Admin Dashboard',    icon: '⚙' },
+    };
+    const rows = Object.entries(LABELS).map(([key, meta]) => {
+      const comp    = d[key] || { status: 'unknown' };
+      const isReady = comp.status === 'ready';
+      const isError = comp.status === 'error';
+      const badge   = isReady ? 'b-ok' : (isError ? 'b-err' : 'b-warn');
+      const label   = isReady ? 'ready' : (isError ? 'error' : 'not deployed');
+      const urlPart = comp.url
+        ? `<a href="${comp.url}" target="_blank" style="color:#1976d2;font-size:12px;margin-left:8px">${comp.url}</a>`
+        : '';
+      let extra = '';
+      if (key === 'cluster' && comp.node_count > 0)
+        extra = `<span style="font-size:12px;color:#888;margin-left:8px">${comp.node_count} node(s)</span>`;
+      if ((key === 'longhorn' || key === 'jupyterhub') && comp.pods_running > 0)
+        extra = `<span style="font-size:12px;color:#888;margin-left:8px">${comp.pods_running} pod(s)</span>`;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:.6rem 0;border-bottom:1px solid #f0f0f0">
+        <span style="font-size:16px">${meta.icon}</span>
+        <span style="min-width:160px;font-size:13px;font-weight:500">${meta.label}</span>
+        <span class="badge ${badge}" style="min-width:80px;text-align:center">${label}</span>
+        ${urlPart}${extra}</div>`;
+    });
+    el.innerHTML = rows.join('');
+  } catch(e) {
+    el.innerHTML = '<span class="badge b-warn">Could not reach launcher API</span>';
+  }
 }
 
 function populateUrl(elId, url) {
   const el = document.getElementById(elId);
-  if (el && url) {
+  if (el && url)
     el.innerHTML = `<a href="${url}" target="_blank" style="color:#1976d2">${url}</a>`;
-  }
 }
 
+/* ── Boot ── */
 document.addEventListener('DOMContentLoaded', () => {
   restoreStepStates();
-  loadPlatformStatus();
   showTab('bootstrap', document.getElementById('step-bootstrap'));
 });
 </script>
