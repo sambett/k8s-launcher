@@ -10,22 +10,54 @@
   },
   "rules": [
     {
-      "if": { "kubernetes_gte": "1.32" },
+      "if": {
+        "kubernetes_gte": "1.32"
+      },
       "affects": "calico",
       "severity": "breaking",
       "message": "Calico 3.28 does not support Kubernetes 1.32+. Upgrade Calico to 3.30+."
     },
     {
-      "if": { "kubernetes_lt": "1.28" },
+      "if": {
+        "kubernetes_lt": "1.28"
+      },
       "affects": "longhorn",
       "severity": "breaking",
       "message": "Longhorn 1.7 requires Kubernetes 1.28 or higher."
     },
     {
-      "if": { "containerd_major": "2" },
+      "if": {
+        "containerd_major": "2"
+      },
       "affects": "containerd",
       "severity": "warning",
       "message": "containerd 2.x changes the CRI socket path. Verify kubeadm config."
+    }
+  ],
+  "nvidia_device_plugin": [
+    {
+      "version": "v0.17.0",
+      "k8s_min": "1.29",
+      "k8s_max": "1.31",
+      "notes": "Recommended for K8s 1.30.x \u2014 latest stable"
+    },
+    {
+      "version": "v0.16.2",
+      "k8s_min": "1.27",
+      "k8s_max": "1.29",
+      "notes": "Stable for K8s 1.27-1.28"
+    },
+    {
+      "version": "v0.15.1",
+      "k8s_min": "1.26",
+      "k8s_max": "1.28",
+      "notes": "For K8s 1.26-1.27"
+    },
+    {
+      "version": "v0.14.5",
+      "k8s_min": "1.24",
+      "k8s_max": "1.27",
+      "notes": "Legacy \u2014 K8s 1.24-1.26 only"
     }
   ]
 }

@@ -47,6 +47,14 @@
     <span class="step-num">6</span> Admin Dashboard
   </button>
   <span class="step-arrow" style="margin:0 4px">·</span>
+  <button class="step" id="step-workers"
+    onclick="showTab('workers',this)">
+    👷 Workers
+  </button>
+  <button class="step" id="step-extensions"
+    onclick="showTab('extensions',this)">
+    🔌 Extensions
+  </button>
   <button class="step" id="step-status"
     onclick="showTab('status',this)">
     📊 Status
@@ -64,6 +72,8 @@
 {% include "tabs/gitlab.html" %}
 {% include "tabs/jupyterhub.html" %}
 {% include "tabs/dashboard_deploy.html" %}
+{% include "tabs/workers.html" %}
+{% include "tabs/extensions.html" %}
 {% include "tabs/status.html" %}
 {% include "tabs/reset.html" %}
 

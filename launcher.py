@@ -10,7 +10,7 @@ from core.paths import TEMPLATES_DIR
 from routes import (
     bootstrap, preflight, configure,
     gitlab, k8s, longhorn, worker, reset, status,
-    jupyterhub, dashboard_deploy
+    jupyterhub, dashboard_deploy, extensions
 )
 
 app = FastAPI(title="k8s-launcher")
@@ -34,6 +34,7 @@ app.include_router(reset.router)
 app.include_router(gitlab.router)
 app.include_router(jupyterhub.router)
 app.include_router(dashboard_deploy.router)
+app.include_router(extensions.router)
 app.include_router(status.router)
 
 if __name__ == "__main__":

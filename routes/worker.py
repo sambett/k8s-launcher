@@ -50,7 +50,7 @@ def _add_worker_stream(node: NewWorker):
     k8s_version = _get_k8s_version()
     k8s_pkg     = f"{k8s_version}-1.1"
     k8s_repo    = "v" + ".".join(k8s_version.split(".")[:2])
-    TOTAL       = 7
+    TOTAL       = 8
 
     def _step(n, msg):  return f"data: PLAY [Step {n}/{TOTAL}] {msg}\n\n"
     def _ok(msg):       return f"data: ok: {msg}\n\n"
@@ -124,8 +124,51 @@ def _add_worker_stream(node: NewWorker):
         if "Removed" in line or "No cleanup" in line:
             yield _ok(line)
 
-    # ── Step 3 — Node prerequisites ──────────────────────────────────────────
-    yield _step(3, "Installing node prerequisites")
+    # ── Step 3 — Base packages + /etc/hosts ────────────────────────────
+    yield _step(3, "Installing base packages and updating /etc/hosts")
+
+    # Install socat and other base packages ansible-k8s common role provides
+    r = _ansible(
+        "apt-get update -qq && "
+        "apt-get install -y apt-transport-https ca-certificates curl gpg socat openssh-server && "
+        "echo base_packages_ok"
+    )
+    if r.returncode != 0:
+        yield _fail(f"Base packages failed:\n{r.stdout}\n{r.stderr}")
+        yield _err("base_packages")
+        return
+    yield _ok("Base packages installed (socat, curl, gpg, ca-certificates)")
+
+    # Populate /etc/hosts with cluster nodes from vars
+    hosts_entries = []
+    if VARS_PATH.exists():
+        in_hosts = False
+        for line in VARS_PATH.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("cluster_hosts:"):
+                in_hosts = True
+                continue
+            if in_hosts:
+                if stripped.startswith("-"):
+                    import re
+                    m = re.search(r"name:\s*(\S+).*ip:\s*[\"']?([\d.]+)", stripped)
+                    if m:
+                        hosts_entries.append(f"{m.group(2)} {m.group(1)}")
+                elif stripped and not stripped.startswith("#"):
+                    in_hosts = False
+    if hosts_entries:
+        for entry in hosts_entries:
+            ip, hostname = entry.split(" ", 1)
+            r = _ansible(
+                f"grep -q '{ip}' /etc/hosts || "
+                f"echo '{ip} {hostname}' >> /etc/hosts"
+            )
+        yield _ok(f"/etc/hosts updated with {len(hosts_entries)} cluster node(s)")
+    else:
+        yield _ok("/etc/hosts — no cluster_hosts in vars, skipped")
+
+    # ── Step 4 — Node prerequisites ──────────────────────────────────────────
+    yield _step(4, "Installing node prerequisites")
 
     prereq_steps = [
         (
@@ -162,7 +205,7 @@ def _add_worker_stream(node: NewWorker):
     yield _ok("Node prerequisites satisfied")
 
     # ── Step 4 — containerd ───────────────────────────────────────────────────
-    yield _step(4, "Installing containerd (pinned)")
+    yield _step(5, "Installing containerd (pinned)")
 
     containerd_steps = [
         (
@@ -230,7 +273,7 @@ def _add_worker_stream(node: NewWorker):
         yield _log("No registry host in vars — skipping insecure registry config")
 
     # ── Step 5 — Kubernetes packages ─────────────────────────────────────────
-    yield _step(5, f"Installing kubeadm + kubelet {k8s_version} (pinned)")
+    yield _step(6, f"Installing kubeadm + kubelet {k8s_version} (pinned)")
 
     k8s_steps = [
         (
@@ -263,7 +306,7 @@ def _add_worker_stream(node: NewWorker):
     yield _ok(f"kubeadm + kubelet {k8s_version} installed")
 
     # ── Step 6 — Join cluster ─────────────────────────────────────────────────
-    yield _step(6, "Joining the cluster")
+    yield _step(7, "Joining the cluster")
 
     out, rc = run_on_cp("cat ~/cluster-artifacts/join-command.txt 2>/dev/null")
     join_lines = [l.strip() for l in out.splitlines() if l.strip().startswith("kubeadm")]
@@ -286,7 +329,7 @@ def _add_worker_stream(node: NewWorker):
     yield _ok(f"{node.hostname} joined the cluster")
 
     # ── Step 7 — Label + inventory ────────────────────────────────────────────
-    yield _step(7, "Labelling node and updating inventory")
+    yield _step(8, "Labelling node and updating inventory")
 
     run_on_cp(
         f"kubectl label node {node.hostname.lower()} "
@@ -317,6 +360,110 @@ def _add_worker_stream(node: NewWorker):
 async def add_worker(node: NewWorker):
     return StreamingResponse(
         _add_worker_stream(node),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Remove worker ─────────────────────────────────────────────────────────────
+
+class RemoveWorkerRequest(BaseModel):
+    hostname: str
+    ip:       str
+    ssh_user: str
+    ssh_pass: str  = ""   # required only for full reset
+    mode:     str  = "soft"  # "soft" | "full"
+
+
+def _remove_worker_stream(req: RemoveWorkerRequest):
+    hostname = req.hostname.lower()
+    STEPS    = 4 if req.mode == "full" else 3
+
+    yield f"data: Starting {req.mode} removal of {hostname}...\n\n"
+
+    # Step 1 — Cordon
+    yield f"data: PLAY [Step 1/{STEPS}] Cordoning {hostname}...\n\n"
+    out, rc = run_on_cp(f"kubectl cordon {hostname} 2>&1")
+    for line in out.splitlines():
+        if line.strip():
+            yield f"data: {line}\n\n"
+
+    # Step 2 — Drain
+    yield f"data: PLAY [Step 2/{STEPS}] Draining all pods from {hostname}...\n\n"
+    out, rc = run_on_cp(
+        f"kubectl drain {hostname} "
+        f"--ignore-daemonsets --delete-emptydir-data --force --timeout=120s 2>&1"
+    )
+    for line in out.splitlines():
+        if line.strip():
+            yield f"data: {line}\n\n"
+
+    # Step 3 — Delete from cluster + update inventory
+    yield f"data: PLAY [Step 3/{STEPS}] Removing {hostname} from cluster...\n\n"
+    out, rc = run_on_cp(f"kubectl delete node {hostname} 2>&1")
+    for line in out.splitlines():
+        if line.strip():
+            yield f"data: {line}\n\n"
+
+    if INVENTORY_PATH.exists():
+        lines = [
+            l for l in INVENTORY_PATH.read_text().splitlines()
+            if not (hostname in l.lower() and req.ip in l)
+        ]
+        INVENTORY_PATH.write_text("\n".join(lines) + "\n")
+        yield f"data: ok: inventory updated — {hostname} removed\n\n"
+
+    if req.mode == "soft":
+        yield f"data: {hostname} removed from cluster. VM is still running.\n\n"
+        yield "data: Re-add it any time via the Add worker form above.\n\n"
+        yield "data: __DONE__\n\n"
+        return
+
+    # Step 4 — Full reset on VM
+    yield f"data: PLAY [Step 4/{STEPS}] Running full reset on {req.ip}...\n\n"
+    if not req.ssh_pass:
+        yield "data: ERROR: SSH password required for full reset.\n\n"
+        yield "data: __ERROR__:no_ssh_pass\n\n"
+        return
+
+    client = None
+    try:
+        client = get_client_with_password(req.ip, req.ssh_user, req.ssh_pass)
+        reset_steps = [
+            ("kubeadm reset",
+             "sudo kubeadm reset -f 2>/dev/null || true"),
+            ("stop services",
+             "sudo systemctl stop kubelet containerd 2>/dev/null || true"),
+            ("remove packages",
+             "sudo apt-get remove -y --allow-change-held-packages "
+             "kubeadm kubelet kubectl containerd.io 2>/dev/null || true"),
+            ("clean directories",
+             "sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet "
+             "/etc/cni /opt/cni /var/lib/containerd /etc/containerd"),
+            ("remove apt sources",
+             "sudo rm -f /etc/apt/sources.list.d/kubernetes.list "
+             "/etc/apt/sources.list.d/docker.list "
+             "/etc/apt/keyrings/kubernetes-apt-keyring.gpg "
+             "/etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc"),
+        ]
+        for label, cmd in reset_steps:
+            yield f"data: changed: [{label}]\n\n"
+            stdout, stderr, rc = run_command(client, cmd)
+        yield f"data: ok: {req.ip} fully reset — ready for fresh provisioning\n\n"
+    except Exception as exc:
+        yield f"data: WARNING: SSH failed for {req.ip}: {exc}\n\n"
+        yield "data: Node removed from cluster but VM cleanup failed — clean manually.\n\n"
+    finally:
+        if client:
+            client.close()
+
+    yield "data: __DONE__\n\n"
+
+
+@router.post("/api/cluster/remove-worker")
+async def remove_worker_endpoint(req: RemoveWorkerRequest):
+    return StreamingResponse(
+        _remove_worker_stream(req),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

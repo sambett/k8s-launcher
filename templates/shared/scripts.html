@@ -11,6 +11,8 @@ function showTab(name, btn) {
   const stepEl = document.getElementById('step-' + name);
   if (stepEl) stepEl.classList.add('active');
   if (name === 'reset')      loadResetPreview();
+  if (name === 'workers')    { loadWorkerNodes(); }
+  if (name === 'extensions') { loadGpuStatus(); loadGpuNodes(); loadNodesForGpu(); }
   if (name === 'status')     refreshPlatformOverview();
   if (name === 'gitlab')     loadGitLabOutputs();
   if (name === 'jupyterhub') loadJhubPrefill();
