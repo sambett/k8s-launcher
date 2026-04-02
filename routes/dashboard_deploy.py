@@ -23,7 +23,7 @@ router = APIRouter()
 class DashboardConfig(BaseModel):
     http_pass:   str
     port:        int = 8888
-    repo:        str = "https://github.com/sambett/k8s-launcher.git"
+    repo:        str = "https://gitkube.deslabcloud.com/AI-workbench/k8s-launcher.git"
 
 
 @router.get("/api/dashboard/status")

@@ -40,7 +40,7 @@ If the cluster has issues, the launcher stays available to redeploy or reset.
 ```bash
 ssh user@<controller-ip>
 
-git clone https://github.com/sambett/k8s-launcher
+git clone https://gitkube.deslabcloud.com/AI-workbench/k8s-launcher.git
 cd k8s-launcher
 
 pip3 install -r requirements.txt
