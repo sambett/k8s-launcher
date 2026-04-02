@@ -232,8 +232,9 @@ def _add_worker_stream(node: NewWorker):
         ),
         (
             "Add Docker apt repo",
-            "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] "
-            "https://download.docker.com/linux/ubuntu jammy stable' "
+            "CODENAME=$(. /etc/os-release && echo $VERSION_CODENAME) && "
+            "echo \"deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] "
+            "https://download.docker.com/linux/ubuntu $CODENAME stable\" "
             "> /etc/apt/sources.list.d/docker.list",
         ),
         (
