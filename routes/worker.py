@@ -46,8 +46,20 @@ def _get_k8s_version() -> str:
     return "1.30.5"
 
 
+def _get_containerd_version() -> str:
+    """Read containerd_version from generated/group_vars/all.yml (same source as the cluster)."""
+    try:
+        for line in VARS_PATH.read_text().splitlines():
+            if line.strip().startswith("containerd_version:"):
+                return line.split(":", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return "1.7.22"  # fallback matches validated stack
+
+
 def _add_worker_stream(node: NewWorker):
-    k8s_version = _get_k8s_version()
+    k8s_version        = _get_k8s_version()
+    containerd_version  = _get_containerd_version()
     k8s_pkg     = f"{k8s_version}-1.1"
     k8s_repo    = "v" + ".".join(k8s_version.split(".")[:2])
     TOTAL       = 8
@@ -227,14 +239,15 @@ def _add_worker_stream(node: NewWorker):
         (
             "Install containerd.io (pinned)",
             "apt-get update -qq && "
-            "apt-get install -y containerd.io && "
+            "apt-mark unhold containerd.io 2>/dev/null || true && "
+            f"apt-get install -y --allow-downgrades containerd.io={containerd_version}-1 && "
             "apt-mark hold containerd.io",
         ),
         (
             "Configure containerd (SystemdCgroup = true + config_path)",
             "containerd config default "
             "| sed 's/SystemdCgroup = false/SystemdCgroup = true/' "
-            "| sed 's|config_path = ...|config_path = /etc/containerd/certs.d|g' "
+            "| sed 's|config_path = \"\"|config_path = \"/etc/containerd/certs.d\"|g' "
             "> /etc/containerd/config.toml && "
             "systemctl restart containerd && "
             "systemctl enable containerd",
@@ -308,13 +321,14 @@ def _add_worker_stream(node: NewWorker):
     # ── Step 6 — Join cluster ─────────────────────────────────────────────────
     yield _step(7, "Joining the cluster")
 
-    out, rc = run_on_cp("cat ~/cluster-artifacts/join-command.txt 2>/dev/null")
+    # Always generate a fresh token — avoids 24h TTL expiry silently breaking joins
+    yield _log("changed: [Generating fresh join token (kubeadm token create)]")
+    out, rc = run_on_cp("kubeadm token create --print-join-command 2>/dev/null")
     join_lines = [l.strip() for l in out.splitlines() if l.strip().startswith("kubeadm")]
-    if not join_lines:
+    if not join_lines or rc != 0:
         yield _fail(
-            "Could not read join-command.txt from the control plane. "
-            "The token may have expired (24h TTL). "
-            "Regenerate it: kubeadm token create --print-join-command"
+            "Could not generate a join token from the control plane. "
+            f"rc={rc} output={out.strip()}"
         )
         yield _err("join_command")
         return

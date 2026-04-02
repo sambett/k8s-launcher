@@ -50,19 +50,17 @@ async def validate_k8s():
 
 @router.get("/api/deploy/k8s/jointoken")
 async def get_join_token():
-    out, rc = run_on_cp("cat ~/cluster-artifacts/join-command.txt 2>/dev/null || echo __NOT_FOUND__")
-    if "__NOT_FOUND__" in out or rc != 0:
-        return {
-            "status": "not_found",
-            "message": "Join command file not found on control plane.",
-            "regenerate": "kubeadm token create --print-join-command",
-            "ttl_note": "Tokens expire after 24h. CA hash never changes."
-        }
+    # Always generate a fresh token so the card never shows an expired command
+    out, rc = run_on_cp("kubeadm token create --print-join-command 2>/dev/null")
     lines = [l.strip() for l in out.splitlines() if l.strip().startswith("kubeadm")]
-    join_cmd = lines[0] if lines else "not found"
+    if not lines or rc != 0:
+        return {
+            "status": "error",
+            "message": "Could not generate join token — is the control plane reachable?",
+            "detail": out.strip()
+        }
     return {
         "status": "ok",
-        "join_command": join_cmd,
-        "location": "~/cluster-artifacts/join-command.txt",
-        "ttl_note": "Token expires after 24h. To regenerate: kubeadm token create --print-join-command"
+        "join_command": lines[0],
+        "ttl_note": "Fresh token — valid for 24h from now."
     }
