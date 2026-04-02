@@ -115,6 +115,25 @@ def _add_worker_stream(node: NewWorker):
         if client:
             client.close()
 
+    # ── Step 1b — OS version gate (mirrors preflight check) ─────────────────────
+    r_os = _ansible(". /etc/os-release && echo $VERSION_ID")
+    os_ver = ""
+    for line in r_os.stdout.splitlines():
+        line = line.strip()
+        if line in ("22.04", "24.04"):
+            os_ver = line
+            break
+    if not os_ver:
+        raw = r_os.stdout.strip().replace("\n", " ")
+        yield _fail(
+            f"Unsupported OS on {node.ip}. "
+            f"Need Ubuntu 22.04 or 24.04, got: {raw}. "
+            "Add-worker only supports the same OS versions as initial cluster deploy."
+        )
+        yield _err("os_check")
+        return
+    yield _ok(f"OS check passed: Ubuntu {os_ver}")
+
     # ── Step 2 — Repair stale apt state ──────────────────────────────────────
     yield _step(2, "Checking for stale apt state (idempotency repair)")
 
