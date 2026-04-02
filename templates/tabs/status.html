@@ -16,15 +16,18 @@
   <div class="card">
     <h2>Join token</h2>
     <p class="card-hint">
-      Used to join new worker nodes to this cluster. Saved at
+      Generates a fresh token valid for 24 hours and saves it to
       <span class="mono">~/cluster-artifacts/join-command.txt</span> on the control plane.
-      Tokens expire after 24 hours.
+      Each click creates a new token — previous tokens remain valid until they expire.
     </p>
-    <button class="btn btn-sm" onclick="fetchJoinToken()">Show join token</button>
-    <div id="st-token" style="margin-top:.5rem"></div>
-    <div class="info-box" style="margin-top:.5rem">
-      To regenerate: <span class="mono">kubeadm token create --print-join-command</span>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:.75rem">
+      <button class="btn btn-primary btn-sm" id="btn-get-token"
+        onclick="fetchJoinToken()">
+        🔑 Get fresh join token
+      </button>
+      <span id="token-status" style="font-size:12px;color:#666"></span>
     </div>
+    <div id="st-token"></div>
   </div>
 
   <div class="card">
@@ -43,21 +46,86 @@
 
 <script>
 async function fetchJoinToken() {
-  const r  = await fetch('/api/deploy/k8s/jointoken');
-  const d  = await r.json();
-  const el = document.getElementById('st-token');
-  if (d.status === 'ok') {
-    const cmd = d.join_command;
-    el.innerHTML =
-      '<div class="mono" style="margin:.5rem 0;padding:8px;background:#f5f5f5;' +
-      'border-radius:4px;word-break:break-all">' + cmd + '</div>' +
-      '<button class="btn btn-sm" id="btn-copy-token">Copy</button>';
-    document.getElementById('btn-copy-token').onclick = function() {
-      navigator.clipboard.writeText(cmd);
-      btnSuccess(this, '✓ Copied!');
-    };
-  } else {
-    el.innerHTML = '<span class="badge b-warn">' + d.message + '</span>';
+  const el     = document.getElementById('st-token');
+  const btn    = document.getElementById('btn-get-token');
+  const statEl = document.getElementById('token-status');
+
+  btn.disabled        = true;
+  btn.textContent     = 'Generating…';
+  statEl.textContent  = 'Talking to control plane…';
+  el.innerHTML        = '';
+
+  try {
+    const r = await fetch('/api/deploy/k8s/jointoken');
+    const d = await r.json();
+
+    if (d.status === 'ok') {
+      const cmd = d.join_command;
+      const now = new Date().toLocaleTimeString();
+      statEl.textContent = '✓ Generated at ' + now + ' — valid for 24 hours';
+      statEl.style.color = '#2e7d32';
+
+      el.innerHTML =
+        '<div class="mono token-box">' +
+          cmd.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-top:.5rem">' +
+        '  <button class="btn btn-sm" id="btn-copy-token">📋 Copy</button>' +
+        '  <span style="font-size:11px;color:#888">' +
+        '    The CA hash never changes — only the token rotates each time.' +
+        '  </span>' +
+        '</div>';
+
+      document.getElementById('btn-copy-token').onclick = function() {
+        const btn = this;
+        // navigator.clipboard requires HTTPS — use execCommand fallback for HTTP
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(cmd).then(() => {
+            btn.textContent = '✓ Copied!';
+            setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+          });
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = cmd;
+          ta.style.position = 'fixed';
+          ta.style.opacity  = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          btn.textContent = '✓ Copied!';
+          setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+        }
+      };
+
+    } else {
+      statEl.textContent = '✗ Failed';
+      statEl.style.color = '#c62828';
+      el.innerHTML = '<span class="badge b-err">' +
+        (d.message || d.detail || 'Unknown error') + '</span>';
+    }
+  } catch(e) {
+    statEl.textContent = '✗ Request failed';
+    statEl.style.color = '#c62828';
+    el.innerHTML = '<span class="badge b-err">Could not reach backend: ' + e + '</span>';
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '🔑 Get fresh join token';
   }
 }
 </script>
+
+<style>
+.token-box {
+  margin: .5rem 0;
+  padding: 10px 12px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  word-break: break-all;
+  font-size: 12.5px;
+  line-height: 1.6;
+  user-select: all;
+}
+</style>
