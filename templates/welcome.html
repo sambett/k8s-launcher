@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NebulaBench — AI Workbench</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #f0f6ff;
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    #net {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+    }
+
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .orb1 {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(29,158,117,.09) 0%, transparent 70%);
+      top: -150px; left: -120px;
+    }
+    .orb2 {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(56,130,221,.07) 0%, transparent 70%);
+      bottom: -100px; right: -80px;
+    }
+
+    .card {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 0 2rem;
+      max-width: 700px;
+      width: 90%;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    @keyframes shine {
+      0%   { left: -100%; }
+      30%  { left: 120%; }
+      100% { left: 120%; }
+    }
+
+    .lab-label {
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #1D9E75;
+      margin-bottom: 1rem;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 0.3s forwards;
+    }
+
+    .platform-name {
+      font-size: 86px;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      color: #0d1b2e;
+      line-height: 1;
+      margin-bottom: 1.2rem;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 0.5s forwards;
+    }
+    .platform-name .accent { color: #1D9E75; }
+
+    .cursor {
+      display: inline-block;
+      width: 4px; height: 0.82em;
+      background: #1D9E75;
+      margin-left: 3px;
+      vertical-align: middle;
+      animation: blink 1s step-end infinite;
+      animation-delay: 2s;
+    }
+
+    .tagline {
+      font-size: 18px;
+      color: #6b7d94;
+      letter-spacing: 0.01em;
+      margin-bottom: 3rem;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 0.7s forwards;
+    }
+
+    .divider {
+      width: 48px; height: 2px;
+      background: linear-gradient(90deg, transparent, #1D9E75, transparent);
+      margin-bottom: 2.5rem;
+      opacity: 0;
+      animation: fadeUp 0.4s ease 0.85s forwards;
+    }
+
+    .author-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 2.8rem;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 1.0s forwards;
+    }
+    .avatar {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1D9E75, #185FA5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .author-text { font-size: 15px; color: #8a96aa; }
+    .author-text strong { color: #3d4e63; font-weight: 500; }
+
+    .launch-btn {
+      position: relative;
+      overflow: hidden;
+      display: inline-block;
+      padding: 18px 64px;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg, #1D9E75, #169165);
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      text-decoration: none;
+      box-shadow: 0 4px 18px rgba(29,158,117,.38);
+      transition: box-shadow 0.2s, transform 0.15s;
+      opacity: 0;
+      animation: fadeUp 0.5s ease 1.15s forwards;
+    }
+    .launch-btn:hover {
+      box-shadow: 0 8px 28px rgba(29,158,117,.52);
+      transform: translateY(-2px);
+    }
+    .launch-btn .shine {
+      position: absolute;
+      top: 0; left: -100%;
+      width: 55%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.22), transparent);
+      animation: shine 3.5s ease 2.5s infinite;
+    }
+
+    .version-tag {
+      margin-top: 2rem;
+      font-size: 13px;
+      color: #aab4c4;
+      opacity: 0;
+      animation: fadeUp 0.4s ease 1.3s forwards;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="net"></canvas>
+  <div class="orb orb1"></div>
+  <div class="orb orb2"></div>
+
+  <div class="card">
+
+    <p class="lab-label">DES Research Unit &nbsp;·&nbsp; University of Sfax</p>
+
+    <h1 class="platform-name">
+      <span class="accent" id="pt1"></span><span id="pt2"></span><span class="cursor"></span>
+    </h1>
+
+    <p class="tagline">AI Workbench as a Service &nbsp;·&nbsp; Kubernetes-native</p>
+
+    <div class="divider"></div>
+
+    <div class="author-row">
+      <div class="avatar">SB</div>
+      <p class="author-text">A thesis project by <strong>Selma Bettaieb</strong></p>
+    </div>
+
+    <a href="/app" class="launch-btn">
+      <span class="shine"></span>
+      Launch workbench &nbsp;→
+    </a>
+
+    <p class="version-tag">v1.0.0 &nbsp;·&nbsp; PFE 2026 &nbsp;·&nbsp; University of Sfax</p>
+
+  </div>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById('net');
+      const ctx    = canvas.getContext('2d');
+      let W, H, nodes;
+
+      function init() {
+        W = canvas.width  = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+        nodes = Array.from({ length: 50 }, () => ({
+          x:  Math.random() * W,
+          y:  Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.32,
+          vy: (Math.random() - 0.5) * 0.32,
+          r:  Math.random() * 2 + 0.8
+        }));
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, W, H);
+        for (let i = 0; i < nodes.length; i++) {
+          const a = nodes[i];
+          a.x += a.vx; a.y += a.vy;
+          if (a.x < 0 || a.x > W) a.vx *= -1;
+          if (a.y < 0 || a.y > H) a.vy *= -1;
+          for (let j = i + 1; j < nodes.length; j++) {
+            const b  = nodes[j];
+            const dx = a.x - b.x, dy = a.y - b.y;
+            const d  = Math.sqrt(dx * dx + dy * dy);
+            if (d < 140) {
+              ctx.beginPath();
+              ctx.strokeStyle = `rgba(29,158,117,${(1 - d / 140) * 0.13})`;
+              ctx.lineWidth   = 0.7;
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+              ctx.stroke();
+            }
+          }
+          ctx.beginPath();
+          ctx.arc(a.x, a.y, a.r, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(29,158,117,.38)';
+          ctx.fill();
+        }
+        requestAnimationFrame(draw);
+      }
+
+      init(); draw();
+      window.addEventListener('resize', init);
+    })();
+
+    (function () {
+      const words = ['Nebula', 'Bench'];
+      let phase = 0, idx = 0;
+      const el1 = document.getElementById('pt1');
+      const el2 = document.getElementById('pt2');
+      function type() {
+        if (phase === 0) {
+          el1.textContent = words[0].slice(0, ++idx);
+          if (idx < words[0].length) setTimeout(type, 80);
+          else { idx = 0; phase = 1; setTimeout(type, 110); }
+        } else {
+          el2.textContent = words[1].slice(0, ++idx);
+          if (idx < words[1].length) setTimeout(type, 80);
+        }
+      }
+      setTimeout(type, 800);
+    })();
+  </script>
+
+</body>
+</html>
