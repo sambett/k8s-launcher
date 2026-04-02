@@ -1,5 +1,43 @@
 <div id="tab-bootstrap" class="panel active">
 
+  <!-- ── Platform requirements — shown before anything else ─────────────────── -->
+  <div class="platform-req-banner">
+    <div class="platform-req-header">
+      <span class="platform-req-icon">⚠️</span>
+      <strong>Read before you start — Platform requirements</strong>
+    </div>
+    <div class="platform-req-body">
+      <div class="platform-req-row">
+        <span class="platform-req-label">Supported OS</span>
+        <span class="platform-req-value">
+          <strong>Ubuntu 22.04 LTS</strong> or <strong>Ubuntu 24.04 LTS</strong>
+          — all nodes (control plane + workers) must run the <em>same</em> version.
+        </span>
+      </div>
+      <div class="platform-req-row">
+        <span class="platform-req-label">Architecture</span>
+        <span class="platform-req-value"><strong>amd64 (x86-64)</strong> only.</span>
+      </div>
+      <div class="platform-req-row">
+        <span class="platform-req-label">Why same OS?</span>
+        <span class="platform-req-value">
+          Longhorn (the distributed storage layer) relies on kernel modules — iSCSI,
+          device-mapper — that differ between Ubuntu LTS generations. A mixed-OS cluster
+          will deploy successfully but produce subtle, hard-to-diagnose storage failures
+          under load. Kubernetes itself does not care, but Longhorn does.
+        </span>
+      </div>
+      <div class="platform-req-row">
+        <span class="platform-req-label">Is this normal?</span>
+        <span class="platform-req-value">
+          Yes. AWS EKS, Google GKE, and NVIDIA AI Workbench all enforce OS constraints
+          on cluster nodes for the same reason. Pinning the OS is what makes the
+          platform reproducible.
+        </span>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Phase 0 — Install Ansible on the controller</h2>
     <div class="card-hint">
@@ -177,3 +215,42 @@ async function runPreflight() {
   }).join('');
 }
 </script>
+
+<style>
+.platform-req-banner {
+  background: #fffbf0;
+  border: 1px solid #f59e0b;
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 1.25rem;
+}
+.platform-req-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #92400e;
+}
+.platform-req-icon { font-size: 18px; }
+.platform-req-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.platform-req-row {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.platform-req-label {
+  flex-shrink: 0;
+  width: 110px;
+  font-weight: 600;
+  color: #78350f;
+  padding-top: 1px;
+}
+.platform-req-value { color: #1a1a2e; }
+</style>
