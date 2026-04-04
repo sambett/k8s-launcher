@@ -40,7 +40,6 @@ class ClusterConfig(BaseModel):
     pod_cidr: str           = "192.168.0.0/16"
     service_cidr: str       = "10.96.0.0/12"
     cluster_name: str       = "k8s-cluster"
-    deploy_longhorn: bool   = True
 
 
 # ── Replica logic ──────────────────────────────────────────────────────────────

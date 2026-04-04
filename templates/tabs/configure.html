@@ -37,21 +37,32 @@
   </div>
 
   <div class="card">
-    <h2>Network</h2>
-    <div class="field-row"><label>Pod CIDR</label>
-      <input type="text" id="pod-cidr" value="192.168.0.0/16"></div>
-    <div class="field-row"><label>Service CIDR</label>
-      <input type="text" id="svc-cidr" value="10.96.0.0/12"></div>
-    <div class="field-row"><label>Cluster name</label>
-      <input type="text" id="cluster-name" value="k8s-cluster"></div>
+    <h2>Network
+      <span style="font-size:11px;font-weight:400;color:#888;margin-left:6px">must not overlap your lab network</span>
+    </h2>
+    <div class="field-row">
+      <label>Pod CIDR</label>
+      <div style="display:flex;flex-direction:column;flex:1;gap:3px">
+        <input type="text" id="pod-cidr" value="192.168.0.0/16">
+        <span style="font-size:11px;color:#9e9e9e">Private range assigned to pods — never routed outside the cluster</span>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Service CIDR</label>
+      <div style="display:flex;flex-direction:column;flex:1;gap:3px">
+        <input type="text" id="svc-cidr" value="10.96.0.0/12">
+        <span style="font-size:11px;color:#9e9e9e">Virtual IPs for Kubernetes services — not tied to any physical interface</span>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>Cluster name</label>
+      <div style="display:flex;flex-direction:column;flex:1;gap:3px">
+        <input type="text" id="cluster-name" value="k8s-cluster">
+        <span style="font-size:11px;color:#9e9e9e">Embedded in TLS certificates and kubeconfig — use a short lowercase identifier</span>
+      </div>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>Components</h2>
-    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px">
-      <input type="checkbox" id="cb-longhorn" checked> Deploy Longhorn storage
-    </label>
-  </div>
 
   <button class="btn btn-primary" onclick="generateConfig()">Generate configuration</button>
   <div id="r-config" style="margin-top:.75rem"></div>
@@ -139,7 +150,6 @@ async function generateConfig() {
     pod_cidr:           document.getElementById('pod-cidr').value,
     service_cidr:       document.getElementById('svc-cidr').value,
     cluster_name:       document.getElementById('cluster-name').value,
-    deploy_longhorn:    document.getElementById('cb-longhorn').checked,
   };
   const el = document.getElementById('r-config');
   el.innerHTML = '<span class="badge b-run">Generating...</span>';
