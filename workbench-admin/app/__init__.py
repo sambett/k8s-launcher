@@ -1,8 +1,6 @@
 """
-app/__init__.py — Application factory.
-Adding a new feature = import its blueprint and register it here.
+app/__init__.py - Application factory.
 """
-
 from flask import Flask, render_template
 from app.auth import require_auth
 
