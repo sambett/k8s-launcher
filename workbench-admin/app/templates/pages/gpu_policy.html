@@ -1,0 +1,234 @@
+<div id="page-gpu-policy" class="page" style="display:none">
+<!-- GPU Policies page — per-GitLab-group GPU quota management via Kyverno -->
+
+<div class="card" style="border-left:3px solid #f59e0b;padding-left:1.2rem">
+  <h3 style="margin-top:0;color:#92400e;font-size:.9rem">
+    One-time prerequisite — JupyterHub must label pods with their group
+  </h3>
+  <p style="font-size:13px;color:#666;margin:.3rem 0">
+    Add this line inside <code>build_profile()</code> in
+    <code>config.yaml</code> (inside <code>extraConfig.dynamic-profiles</code>),
+    then run <code>helm upgrade</code> once:
+  </p>
+  <pre style="font-size:12px;background:#f8f8f8;padding:.6rem .8rem;border-radius:6px;overflow-x:auto;margin:.4rem 0">kubespawner["extra_labels"] = {"jupyterhub.io/gitlab-group": str(p.get("gitlab_group", ""))}</pre>
+  <p style="font-size:12px;color:#888;margin:.3rem 0 0">
+    After this one upgrade, every notebook pod carries its group as a label.
+    Kyverno reads that label and enforces the rules below.
+  </p>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <h2 style="margin:0">Kyverno ClusterPolicy status</h2>
+    <span id="kv-badge" class="badge">checking…</span>
+    <button class="btn btn-sm" onclick="loadKvStatus()" style="margin-left:auto">↺</button>
+  </div>
+  <p style="font-size:13px;color:#666;margin:.4rem 0 0">
+    Policy name: <code>jupyterhub-gpu-group-policy</code> — generated from
+    the table below and applied when you click Save &amp; Apply.
+  </p>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:.75rem;flex-wrap:wrap">
+    <h2 style="margin:0;flex:1">Group GPU rules</h2>
+    <button class="btn btn-sm" onclick="loadAvailGroups()">↺ load groups</button>
+    <button class="btn btn-sm btn-primary" onclick="addRow()">+ Add rule</button>
+  </div>
+
+  <p style="font-size:13px;color:#666;margin:0 0 .75rem">
+    Each rule maps a GitLab group to a maximum GPU count.
+    <strong>Max GPUs = 0</strong> blocks all GPU use for that group.
+    Groups without a rule here have no Kyverno restriction
+    (the profile system still gates visibility).
+  </p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead>
+      <tr style="border-bottom:1px solid #e5e7eb">
+        <th style="text-align:left;padding:.4rem .5rem;color:#6b7280;font-weight:500">GitLab group</th>
+        <th style="text-align:left;padding:.4rem .5rem;color:#6b7280;font-weight:500">GPU resource type</th>
+        <th style="text-align:left;padding:.4rem .5rem;color:#6b7280;font-weight:500">Max GPUs per pod</th>
+        <th style="width:40px"></th>
+      </tr>
+    </thead>
+    <tbody id="policy-rows">
+      <tr id="empty-row">
+        <td colspan="4" style="padding:.8rem .5rem;color:#9ca3af;font-size:13px">
+          No rules defined. Click "+ Add rule" or "↺ load groups" to populate from your profiles.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <button class="btn btn-primary" onclick="savePolicy()">Save &amp; Apply to cluster</button>
+    <span id="save-msg" style="font-size:13px"></span>
+  </div>
+  <pre id="save-detail" style="display:none;margin-top:.6rem;font-size:12px;
+       background:#f8f8f8;padding:.5rem .7rem;border-radius:6px;
+       white-space:pre-wrap;max-height:160px;overflow-y:auto"></pre>
+</div>
+
+<script>
+(function() {
+  var _groups = [];
+
+  function init() {
+    loadKvStatus();
+    loadPolicy();
+    loadAvailGroups();
+  }
+
+  window.loadKvStatus = async function() {
+    var b = document.getElementById('kv-badge');
+    b.textContent = 'checking…';
+    b.className = 'badge';
+    try {
+      var d = await (await fetch('/api/gpu-policy/status')).json();
+      if (d.status === 'not_applied') {
+        b.className = 'badge badge-warn'; b.textContent = 'not applied';
+      } else if (d.ready) {
+        b.className = 'badge badge-ok'; b.textContent = '✓ applied';
+      } else {
+        b.className = 'badge badge-warn'; b.textContent = 'applied (syncing…)';
+      }
+    } catch(e) { b.className = 'badge badge-err'; b.textContent = 'error'; }
+  };
+
+  window.loadAvailGroups = async function() {
+    try {
+      var d = await (await fetch('/api/gpu-policy/available-groups')).json();
+      _groups = d.groups || [];
+      document.querySelectorAll('.grp-sel').forEach(function(s) {
+        rebuildOpts(s, s.value);
+      });
+    } catch(e) {}
+  };
+
+  async function loadPolicy() {
+    try {
+      var d = await (await fetch('/api/gpu-policy')).json();
+      clearRows();
+      (d.groups || []).forEach(function(g) { addRow(g); });
+    } catch(e) {}
+  }
+
+  function clearRows() {
+    document.getElementById('policy-rows').innerHTML =
+      '<tr id="empty-row"><td colspan="4" style="padding:.8rem .5rem;color:#9ca3af;font-size:13px">' +
+      'No rules defined.' + '</td></tr>';
+  }
+
+  function rebuildOpts(sel, cur) {
+    sel.innerHTML = '<option value="">— select group —</option>' +
+      _groups.map(function(g) {
+        return '<option value="' + esc(g) + '"' + (g === cur ? ' selected' : '') + '>' + esc(g) + '</option>';
+      }).join('') +
+      (cur && !_groups.includes(cur)
+        ? '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>' : '');
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  window.addRow = function(data) {
+    var empty = document.getElementById('empty-row');
+    if (empty) empty.remove();
+
+    var grp  = data && data.gitlab_group ? data.gitlab_group : '';
+    var type = data && data.gpu_type     ? data.gpu_type     : 'nvidia.com/gpu';
+    var max  = data && data.max_gpus !== undefined ? data.max_gpus : 1;
+
+    var tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f3f4f6';
+    tr.innerHTML =
+      '<td style="padding:.35rem .5rem">' +
+        '<select class="grp-sel" style="width:100%;border:1px solid #d1d5db;border-radius:4px;' +
+        'padding:4px 6px;font-size:13px"></select>' +
+      '</td>' +
+      '<td style="padding:.35rem .5rem">' +
+        '<select class="type-sel" style="width:100%;border:1px solid #d1d5db;border-radius:4px;' +
+        'padding:4px 6px;font-size:13px">' +
+        '<option value="nvidia.com/gpu"' + (type==='nvidia.com/gpu'?' selected':'') +
+          '>nvidia.com/gpu (standard)</option>' +
+        '<option value="nvidia.com/mig-1g.5gb"' + (type==='nvidia.com/mig-1g.5gb'?' selected':'') +
+          '>nvidia.com/mig-1g.5gb (MIG)</option>' +
+        '</select>' +
+      '</td>' +
+      '<td style="padding:.35rem .5rem">' +
+        '<input type="number" class="max-inp" min="0" max="16" value="' + max + '" ' +
+        'style="width:70px;border:1px solid #d1d5db;border-radius:4px;padding:4px 6px;font-size:13px">' +
+      '</td>' +
+      '<td style="padding:.35rem .5rem;text-align:center">' +
+        '<button onclick="this.closest(\'tr\').remove();checkEmpty()" ' +
+        'style="background:#fee2e2;border:none;border-radius:4px;padding:2px 8px;' +
+        'font-size:12px;cursor:pointer;color:#991b1b">×</button>' +
+      '</td>';
+
+    document.getElementById('policy-rows').appendChild(tr);
+    rebuildOpts(tr.querySelector('.grp-sel'), grp);
+  };
+
+  window.checkEmpty = function() {
+    var tbody = document.getElementById('policy-rows');
+    if (!tbody.querySelector('tr:not(#empty-row)')) {
+      tbody.innerHTML = '<tr id="empty-row"><td colspan="4" style="padding:.8rem .5rem;' +
+        'color:#9ca3af;font-size:13px">No rules defined.</td></tr>';
+    }
+  };
+
+  window.savePolicy = async function() {
+    var msg  = document.getElementById('save-msg');
+    var det  = document.getElementById('save-detail');
+    var rows = document.querySelectorAll('#policy-rows tr:not(#empty-row)');
+    var groups = [];
+
+    rows.forEach(function(tr) {
+      var grp  = tr.querySelector('.grp-sel').value.trim();
+      var type = tr.querySelector('.type-sel').value.trim();
+      var max  = parseInt(tr.querySelector('.max-inp').value, 10);
+      if (grp) groups.push({gitlab_group: grp, gpu_type: type || 'nvidia.com/gpu', max_gpus: isNaN(max)?0:max});
+    });
+
+    msg.textContent = 'Applying…';
+    msg.style.color = '#6b7280';
+    det.style.display = 'none';
+
+    try {
+      var resp = await fetch('/api/gpu-policy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({groups: groups}),
+      });
+      var d = await resp.json();
+
+      if (d.success) {
+        msg.textContent = '✓ ' + d.message;
+        msg.style.color = '#16a34a';
+      } else if (d.warning) {
+        msg.textContent = '⚠ ' + d.warning;
+        msg.style.color = '#d97706';
+      } else {
+        msg.textContent = '✗ ' + (d.error || 'Failed');
+        msg.style.color = '#dc2626';
+      }
+      if (d.detail) { det.textContent = d.detail; det.style.display = 'block'; }
+      loadKvStatus();
+    } catch(e) {
+      msg.textContent = '✗ Network error';
+      msg.style.color = '#dc2626';
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', function() {
+    // Only init if the GPU policy section is visible
+    if (document.getElementById('policy-rows')) init();
+  });
+})();
+</script>
+
+</div>

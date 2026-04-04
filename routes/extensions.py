@@ -11,6 +11,10 @@ Design notes
   the manifest itself is invalid.
 - Node labels are applied/removed via kubectl label — this is a live cluster
   operation, not a provisioning step, so Ansible is not involved.
+- Role detection uses node-role.kubernetes.io/control-plane (the kubeadm
+  standard label).  Workers have no role label by default on kubeadm clusters,
+  so the correct test is: if the cp label is present → control-plane, else →
+  worker.  The previous logic was inverted.
 """
 
 import json
@@ -28,7 +32,6 @@ router = APIRouter()
 # Constants
 # ---------------------------------------------------------------------------
 
-# Valid version tag: vMAJOR.MINOR.PATCH — no trailing dot, no spaces
 _VERSION_RE = re.compile(r'^v\d+\.\d+\.\d+$')
 
 _MANIFEST_URL_TEMPLATE = (
@@ -126,7 +129,7 @@ def _gpu_install_stream(version: str):
             yield f"data:   {line}\n\n"
 
     if dl_rc != 0 or "__DL_OK__" not in dl_out:
-        yield f"data: ERROR — could not download manifest from:\n\n"
+        yield  "data: ERROR — could not download manifest from:\n\n"
         yield f"data:   {manifest_url}\n\n"
         yield f"data: Check that tag {version} exists in the NVIDIA GitHub repo.\n\n"
         yield  "data: __ERROR__:download_failed\n\n"
@@ -215,51 +218,88 @@ async def gpu_install_stream(version: str = ""):
 
 @router.get("/api/extensions/nodes")
 async def list_nodes():
-    """List all cluster nodes with role labels (used to populate the label dropdown)."""
+    """
+    List worker nodes only (for the label selector dropdown).
+
+    Role detection: on kubeadm clusters the control plane carries the label
+    node-role.kubernetes.io/control-plane=<anything>.  Worker nodes have no
+    role label by default.  We therefore identify the control plane by the
+    PRESENCE of that label, not by the absence of a worker label.
+    """
     out, rc = run_on_cp(
         "kubectl get nodes --no-headers "
         "-o custom-columns='"
         "NAME:.metadata.name,"
-        "ROLE:.metadata.labels.node-role\\.kubernetes\\.io/worker' 2>/dev/null"
+        "CP:.metadata.labels.node-role\\.kubernetes\\.io/control-plane' 2>/dev/null"
     )
     nodes = []
     if rc == 0 and out.strip():
         for line in out.strip().splitlines():
             parts = line.split()
-            if parts:
-                role = "worker" if len(parts) > 1 and parts[1] != "<none>" else "control-plane"
-                nodes.append({"name": parts[0], "role": role})
+            if not parts:
+                continue
+            name = parts[0]
+            # If the CP label is present the value is "" or "true"; absent = "<none>"
+            is_control_plane = len(parts) > 1 and parts[1] != "<none>"
+            if not is_control_plane:
+                nodes.append({"name": name, "role": "worker"})
     return {"nodes": nodes}
 
 
 @router.get("/api/extensions/gpu/nodes")
 async def gpu_nodes():
-    """List nodes currently carrying the accelerator=nvidia label."""
+    """
+    List nodes currently carrying accelerator=nvidia, excluding the control plane.
+
+    The control plane must never appear here even if it was accidentally labeled.
+    We exclude it by checking for the node-role.kubernetes.io/control-plane label.
+    """
     out, rc = run_on_cp(
-        "kubectl get nodes -l accelerator=nvidia --no-headers "
+        "kubectl get nodes -l accelerator=nvidia "
+        "--no-headers "
         "-o custom-columns='"
         "NAME:.metadata.name,"
         "STATUS:.status.conditions[-1].type,"
-        "GPU:.status.allocatable.nvidia\\.io/gpu' 2>/dev/null"
+        "GPU:.status.allocatable.nvidia\\.io/gpu,"
+        "CP:.metadata.labels.node-role\\.kubernetes\\.io/control-plane' 2>/dev/null"
     )
     nodes = []
     if rc == 0 and out.strip():
         for line in out.strip().splitlines():
             parts = line.split()
-            if parts:
-                nodes.append({
-                    "name":      parts[0],
-                    "status":    parts[1] if len(parts) > 1 else "unknown",
-                    "gpu_count": parts[2] if len(parts) > 2 else "<none>",
-                })
+            if not parts:
+                continue
+            # Skip the control plane even if it carries the accelerator label
+            is_control_plane = len(parts) > 3 and parts[3] != "<none>"
+            if is_control_plane:
+                continue
+            nodes.append({
+                "name":      parts[0],
+                "status":    parts[1] if len(parts) > 1 else "unknown",
+                "gpu_count": parts[2] if len(parts) > 2 else "<none>",
+            })
     return {"nodes": nodes}
 
 
 @router.post("/api/extensions/gpu/label-node")
 async def label_gpu_node(req: GPULabelRequest):
-    """Apply the accelerator=nvidia label to the specified node."""
+    """
+    Apply the accelerator=nvidia label to the specified node.
+    Refuses to label the control plane.
+    """
     if not req.node_name or not req.node_name.strip():
         return JSONResponse(status_code=400, content={"error": "node_name is required"})
+
+    # Guard: refuse to label the control plane
+    cp_check, _ = run_on_cp(
+        f"kubectl get node {req.node_name} "
+        f"-o jsonpath='{{.metadata.labels.node-role\\.kubernetes\\.io/control-plane}}' 2>/dev/null"
+    )
+    if cp_check.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"'{req.node_name}' is the control plane. GPU labels must only be applied to worker nodes."}
+        )
 
     out, rc = run_on_cp(
         f"kubectl label node {req.node_name} accelerator=nvidia --overwrite 2>&1"

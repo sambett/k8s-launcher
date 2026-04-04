@@ -23,6 +23,8 @@
     <a onclick="nav('images',this)">Import Image</a>
     <div class="nav-section">System</div>
     <a onclick="nav('settings',this)">Settings</a>
+    <div class="nav-section">Policies</div>
+    <a onclick="nav('gpu-policy',this)">GPU Policies</a>
   </nav>
   <main>
     {% include "pages/profiles.html" %}
@@ -31,6 +33,7 @@
     {% include "pages/groups.html" %}
     {% include "pages/images.html" %}
     {% include "pages/settings.html" %}
+    {% include "pages/gpu_policy.html" %}
   </main>
 </div>
 {% include "shared/scripts.html" %}
