@@ -1,4 +1,5 @@
 """
+<<<<<<< HEAD
 routes/gpu_policy.py — GPU group policy management.
 
 Manages a Kyverno ClusterPolicy that enforces per-GitLab-group GPU quotas.
@@ -15,6 +16,11 @@ Flow:
 Prerequisite (one-time, shown in the UI):
   JupyterHub's KubeSpawner callable must add
   jupyterhub.io/gitlab-group: <group> to every spawned pod.
+=======
+routes/gpu_policy.py — GPU quota policy management via Kyverno ClusterPolicies.
+Exposes CRUD for per-group GPU rules and applies them as Kyverno ClusterPolicy YAML.
+Each group gets one rule: max N GPUs of type T per pod.
+>>>>>>> fb33aed (feat: GPU Policies tab — per-group Kyverno quota management)
 """
 
 import json
@@ -22,6 +28,7 @@ import os
 import subprocess
 import tempfile
 
+<<<<<<< HEAD
 from flask import Blueprint, jsonify, request
 from app.auth import require_auth
 
@@ -291,3 +298,230 @@ def policy_status():
 def available_groups():
     """List GitLab groups that have at least one profile defined."""
     return jsonify({"groups": _read_available_groups()})
+=======
+import yaml
+from flask import Blueprint, jsonify, request
+from app.auth import require_auth
+import app.config as config
+
+bp = Blueprint("gpu_policy", __name__)
+
+POLICY_CM_NAME      = "gpu-group-policy"
+POLICY_CM_NS        = config.CONFIGMAP_NS   # single source of truth
+KYVERNO_POLICY_NAME = "jupyterhub-gpu-group-policy"
+
+
+def _run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _read_policy():
+    """Read GPU policy rules from the gpu-group-policy ConfigMap."""
+    r = _run([
+        "kubectl", "get", "configmap", POLICY_CM_NAME,
+        "-n", POLICY_CM_NS,
+        "-o", "jsonpath={.data.policy}"
+    ])
+    if r.returncode != 0:
+        return {"groups": []}
+    try:
+        return json.loads(r.stdout.strip())
+    except Exception:
+        return {"groups": []}
+
+
+def _write_policy(data):
+    """Save GPU policy rules to ConfigMap, creating it if it does not exist."""
+    json_str = json.dumps(data, indent=2)
+
+    # Check if ConfigMap already exists
+    check = _run(["kubectl", "get", "configmap", POLICY_CM_NAME, "-n", POLICY_CM_NS])
+    if check.returncode != 0:
+        r = _run([
+            "kubectl", "create", "configmap", POLICY_CM_NAME,
+            "-n", POLICY_CM_NS,
+            "--from-literal", f"policy={json_str}"
+        ])
+        return r.returncode == 0, r.stdout + r.stderr
+
+    # ConfigMap exists — patch it using a temp file (avoids shell escaping issues)
+    patch = {"data": {"policy": json_str}}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(patch, f)
+        patch_file = f.name
+
+    r = _run([
+        "kubectl", "patch", "configmap", POLICY_CM_NAME,
+        "-n", POLICY_CM_NS,
+        "--type=merge",
+        "--patch-file", patch_file
+    ])
+    os.unlink(patch_file)
+    return r.returncode == 0, r.stdout + r.stderr
+
+
+def _build_cluster_policy(groups):
+    """
+    Generate a Kyverno ClusterPolicy YAML from the group rules list.
+    Each rule blocks pod creation when the requested GPU count exceeds max_gpus.
+    Kyverno reads the jupyterhub.io/gitlab-group label that JupyterHub stamps on every pod.
+    """
+    rules = []
+    for i, g in enumerate(groups):
+        group_name = g["gitlab_group"]
+        gpu_type   = g.get("gpu_type", "nvidia.com/gpu")
+        max_gpus   = g.get("max_gpus", 0)
+        safe_name  = group_name.replace("/", "-").replace("_", "-").lower()
+        rules.append({
+            "name": f"limit-gpu-{safe_name}-{i}",
+            "match": {
+                "any": [{
+                    "resources": {
+                        "kinds":      ["Pod"],
+                        "namespaces": [POLICY_CM_NS],
+                        "selector": {
+                            "matchLabels": {
+                                "jupyterhub.io/gitlab-group": group_name
+                            }
+                        }
+                    }
+                }]
+            },
+            "validate": {
+                "message": (
+                    f"Group '{group_name}' may use at most {max_gpus} "
+                    f"GPU(s) of type {gpu_type}."
+                ),
+                "deny": {
+                    "conditions": {
+                        "any": [{
+                            "key": (
+                                f'{{{{ request.object.spec.containers[0]'
+                                f'.resources.limits."{gpu_type}" || \'0\' }}}}'
+                            ),
+                            "operator": "GreaterThan",
+                            "value": str(max_gpus)
+                        }]
+                    }
+                }
+            }
+        })
+
+    policy = {
+        "apiVersion": "kyverno.io/v1",
+        "kind": "ClusterPolicy",
+        "metadata": {
+            "name": KYVERNO_POLICY_NAME,
+            "annotations": {
+                "policies.kyverno.io/title": "JupyterHub GPU Group Quota",
+                "policies.kyverno.io/description":
+                    "Enforces per-GitLab-group GPU limits on JupyterHub pods."
+            }
+        },
+        "spec": {
+            "validationFailureAction": "Enforce",
+            "background": False,
+            "rules": rules
+        }
+    }
+    return yaml.dump(policy, default_flow_style=False, allow_unicode=True)
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+
+@bp.route("/api/gpu-policy")
+@require_auth
+def api_get_policy():
+    """Return current GPU policy rules from the ConfigMap."""
+    return jsonify(_read_policy())
+
+
+@bp.route("/api/gpu-policy", methods=["POST"])
+@require_auth
+def api_set_policy():
+    """
+    Validate rules, save to ConfigMap, generate ClusterPolicy YAML, apply via kubectl.
+    Sending an empty groups list clears the policy and removes the ClusterPolicy.
+    """
+    data   = request.json or {}
+    groups = data.get("groups", [])
+
+    for g in groups:
+        if not g.get("gitlab_group", "").strip():
+            return jsonify({"success": False, "error": "Each rule must have a gitlab_group"}), 400
+        max_gpus = g.get("max_gpus", 0)
+        if not isinstance(max_gpus, int) or max_gpus < 0:
+            return jsonify({"success": False, "error": "max_gpus must be a non-negative integer"}), 400
+
+    # Save rules to ConfigMap
+    ok, out = _write_policy({"groups": groups})
+    if not ok:
+        return jsonify({"success": False, "error": "Failed to save to ConfigMap", "detail": out}), 500
+
+    # No rules → delete the ClusterPolicy (no enforcement)
+    if not groups:
+        r = _run(["kubectl", "delete", "clusterpolicy", KYVERNO_POLICY_NAME, "--ignore-not-found"])
+        return jsonify({
+            "success": True,
+            "message": "Policy cleared — ClusterPolicy removed (no rules to enforce)",
+            "detail": r.stdout
+        })
+
+    # Build and apply the Kyverno ClusterPolicy
+    policy_yaml = _build_cluster_policy(groups)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(policy_yaml)
+        policy_file = f.name
+
+    r = _run(["kubectl", "apply", "-f", policy_file])
+    os.unlink(policy_file)
+
+    if r.returncode == 0:
+        return jsonify({
+            "success": True,
+            "message": f"ClusterPolicy applied ({len(groups)} rule(s))",
+            "detail": r.stdout
+        })
+    return jsonify({
+        "success": False,
+        "error": "kubectl apply failed",
+        "detail": r.stderr
+    }), 500
+
+
+@bp.route("/api/gpu-policy/status")
+@require_auth
+def api_policy_status():
+    """Check whether the Kyverno ClusterPolicy exists and is Ready."""
+    r = _run([
+        "kubectl", "get", "clusterpolicy", KYVERNO_POLICY_NAME,
+        "-o", "jsonpath={.status.conditions[?(@.type==\"Ready\")].status}"
+    ])
+    if r.returncode != 0:
+        return jsonify({"status": "not_applied", "ready": False})
+    ready = r.stdout.strip().lower() == "true"
+    return jsonify({"status": "applied", "ready": ready})
+
+
+@bp.route("/api/gpu-policy/available-groups")
+@require_auth
+def api_available_groups():
+    """Return the list of GitLab groups referenced in JupyterHub profiles ConfigMap."""
+    r = _run([
+        "kubectl", "get", "configmap", config.CONFIGMAP_NAME,
+        "-n", config.CONFIGMAP_NS,
+        "-o", "jsonpath={.data.profiles\\.json}"
+    ])
+    if r.returncode != 0:
+        return jsonify({"groups": []})
+    try:
+        profiles = json.loads(r.stdout.strip())
+        seen = []
+        for p in profiles:
+            g = p.get("gitlab_group", "").strip()
+            if g and g not in seen:
+                seen.append(g)
+        return jsonify({"groups": seen})
+    except Exception:
+        return jsonify({"groups": []})
+>>>>>>> fb33aed (feat: GPU Policies tab — per-group Kyverno quota management)

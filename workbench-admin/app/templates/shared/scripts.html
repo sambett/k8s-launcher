@@ -10,6 +10,8 @@ function nav(name, el) {
   if (name === 'new')      { loadGroups(); loadRepos(); }
   if (name === 'settings') { loadTokenStatus(); loadSettingsInfo(); }
   if (name === 'images')   { loadImportRepos(); loadRegistryImages(); }
+  if (name === 'gpu-policy') { loadKvStatus(); loadPolicy(); loadAvailGroups(); }
+  // PLACEHOLDER_REMOVE loadImportRepos(); loadRegistryImages(); }
 }
 
 function showMsg(el, text, ok) {
