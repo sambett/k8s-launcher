@@ -1,324 +1,206 @@
 """
-routes/extensions.py — GPU tab: NVIDIA device plugin install + node labeling.
+routes/extensions.py — GPU node management and NVIDIA Device Plugin.
 
-Design notes
-------------
-- Version strings are validated with a regex before reaching any URL or kubectl
-  call.  This is the root cause fix for the v0.17. trailing-dot 404 bug.
-- The plugin manifest is downloaded to a temp file on the control plane first,
-  then applied locally.  This separates the network-fetch step from the
-  kubectl-apply step, giving clearer errors when GitHub is unreachable vs when
-  the manifest itself is invalid.
-- Node labels are applied/removed via kubectl label — this is a live cluster
-  operation, not a provisioning step, so Ansible is not involved.
-- Role detection uses node-role.kubernetes.io/control-plane (the kubeadm
-  standard label).  Workers have no role label by default on kubeadm clusters,
-  so the correct test is: if the cp label is present → control-plane, else →
-  worker.  The previous logic was inverted.
+Uses run_on_cp() for all kubectl calls — ansiblectl has no local kubeconfig.
+kubectl runs on ansiblecplane (the test cluster control plane) via SSH.
 """
 
-import json
+import os
 import re
+import subprocess
+import tempfile
+
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from core.ansible import run_on_cp
-from core.paths import COMPAT_MATRIX_PATH, INVENTORY_PATH, VARS_PATH
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-_VERSION_RE = re.compile(r'^v\d+\.\d+\.\d+$')
-
-_MANIFEST_URL_TEMPLATE = (
-    "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin"
-    "/{version}/deployments/static/nvidia-device-plugin.yml"
-)
+VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
-# ---------------------------------------------------------------------------
-# Request schemas
-# ---------------------------------------------------------------------------
+def _strip(out):
+    """Remove Ansible ad-hoc metadata lines before parsing kubectl output.
 
-class GPULabelRequest(BaseModel):
-    node_name: str
+    run_on_cp() prepends:  'hostname | CHANGED | rc=0 >>'
+    That line must be removed before any line-by-line kubectl parsing.
+    """
+    clean = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip ansible metadata lines
+        if "| CHANGED |" in stripped or "| SUCCESS |" in stripped or "| rc=" in stripped:
+            continue
+        # Skip kubectl column header line
+        if stripped.startswith("NAME") and "STATUS" in stripped:
+            continue
+        clean.append(line)
+    return "\n".join(clean)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _validate_version(version: str) -> str | None:
-    """Return None if version is valid, or an error message string if not."""
-    if not version or not version.strip():
-        return "Version is required."
-    if not _VERSION_RE.match(version.strip()):
-        return (
-            f"Invalid version format: '{version}'. "
-            "Expected vMAJOR.MINOR.PATCH (e.g. v0.17.4)."
+def _validate_version(version):
+    if not VERSION_RE.match(version):
+        raise ValueError(
+            f"Invalid version {version!r}. Expected vX.Y.Z (e.g. v0.17.4)"
         )
-    return None
 
 
-def _read_k8s_version() -> str:
-    if VARS_PATH.exists():
-        for line in VARS_PATH.read_text().splitlines():
-            if line.strip().startswith("kubernetes_version:"):
-                return line.split(":", 1)[1].strip().strip('"')
-    return ""
-
-
-def _match_version(entries: list, k8s_version: str) -> str | None:
-    if not k8s_version or not entries:
-        return None
-    try:
-        minor = int(k8s_version.split(".")[1])
-        for entry in entries:
-            lo = int(entry.get("k8s_min", "0").split(".")[1])
-            hi = int(entry.get("k8s_max", "99").split(".")[1])
-            if lo <= minor <= hi:
-                return entry["version"]
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Install stream
-# ---------------------------------------------------------------------------
-
-def _gpu_install_stream(version: str):
-    """
-    SSE generator for the install log.
-
-    Steps:
-      1. Guard checks (inventory exists, version is valid).
-      2. curl download manifest → /tmp/nvidia-device-plugin-<version>.yml on CP.
-      3. kubectl apply -f /tmp/...
-      4. kubectl rollout status (60 s timeout).
-      5. rm temp file.
-    """
-    if not INVENTORY_PATH.exists():
-        yield "data: ERROR — inventory not found. Run Configure first.\n\n"
-        yield "data: __ERROR__:no_inventory\n\n"
-        return
-
-    version = version.strip()
-    err = _validate_version(version)
-    if err:
-        yield f"data: ERROR — {err}\n\n"
-        yield "data: __ERROR__:bad_version\n\n"
-        return
-
-    manifest_url = _MANIFEST_URL_TEMPLATE.format(version=version)
-    tmp_path     = f"/tmp/nvidia-device-plugin-{version}.yml"
-
-    yield f"data: Installing NVIDIA Device Plugin {version}...\n\n"
-    yield  "data: Step 1/3 — Downloading manifest from GitHub...\n\n"
-
-    dl_out, dl_rc = run_on_cp(
-        f"curl -fsSL --retry 3 --retry-delay 2 "
-        f"-o {tmp_path} '{manifest_url}' 2>&1 && echo '__DL_OK__'"
+def _is_control_plane(node_name):
+    out, _ = run_on_cp(
+        f"kubectl get node {node_name} -o "
+        f"jsonpath=\'{{.metadata.labels.node-role\\.kubernetes\\.io/control-plane}}\'"
     )
-    for line in dl_out.splitlines():
-        if line.strip():
-            yield f"data:   {line}\n\n"
-
-    if dl_rc != 0 or "__DL_OK__" not in dl_out:
-        yield  "data: ERROR — could not download manifest from:\n\n"
-        yield f"data:   {manifest_url}\n\n"
-        yield f"data: Check that tag {version} exists in the NVIDIA GitHub repo.\n\n"
-        yield  "data: __ERROR__:download_failed\n\n"
-        return
-
-    yield f"data: Manifest saved to {tmp_path}\n\n"
-    yield  "data: Step 2/3 — Applying manifest...\n\n"
-
-    apply_out, apply_rc = run_on_cp(f"kubectl apply -f {tmp_path} 2>&1")
-    for line in apply_out.splitlines():
-        if line.strip():
-            yield f"data:   {line}\n\n"
-
-    if apply_rc != 0:
-        yield "data: ERROR — kubectl apply failed. See log above.\n\n"
-        yield f"data: __ERROR__:{apply_rc}\n\n"
-        run_on_cp(f"rm -f {tmp_path} 2>/dev/null || true")
-        return
-
-    yield "data: Step 3/3 — Waiting for DaemonSet rollout (60 s timeout)...\n\n"
-    rollout_out, _ = run_on_cp(
-        "kubectl rollout status daemonset/nvidia-device-plugin-daemonset "
-        "-n kube-system --timeout=60s 2>&1"
-    )
-    for line in rollout_out.splitlines():
-        if line.strip():
-            yield f"data:   {line}\n\n"
-
-    run_on_cp(f"rm -f {tmp_path} 2>/dev/null || true")
-
-    yield f"data: ✓ NVIDIA Device Plugin {version} installed successfully.\n\n"
-    yield  "data: __DONE__\n\n"
+    return bool(out.strip())
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@router.get("/api/extensions/gpu/status")
-async def gpu_status():
-    """Return install status and current version of the device plugin DaemonSet."""
-    out, rc = run_on_cp(
-        "kubectl get daemonset nvidia-device-plugin-daemonset "
-        "-n kube-system --no-headers 2>/dev/null"
-    )
-    if rc != 0 or not out.strip():
-        return {"status": "not_installed"}
-
-    img_out, _ = run_on_cp(
-        "kubectl get daemonset nvidia-device-plugin-daemonset -n kube-system "
-        "-o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null"
-    )
-    version = img_out.split(":")[-1].strip("'") if ":" in img_out else "unknown"
-    return {"status": "installed", "version": version}
+class NodeAction(BaseModel):
+    node: str
 
 
-@router.get("/api/extensions/gpu/versions")
-async def gpu_versions():
-    """Return version list from compat_matrix.json with the recommended version highlighted."""
-    if not COMPAT_MATRIX_PATH.exists():
-        return {"versions": [], "recommended": None, "k8s_version": ""}
-
-    matrix  = json.loads(COMPAT_MATRIX_PATH.read_text())
-    entries = matrix.get("nvidia_device_plugin", [])
-    k8s_ver = _read_k8s_version()
-    return {
-        "versions":    entries,
-        "recommended": _match_version(entries, k8s_ver),
-        "k8s_version": k8s_ver,
-    }
-
-
-@router.get("/api/extensions/gpu/install/stream")
-async def gpu_install_stream(version: str = ""):
-    """SSE endpoint — streams install progress for the given plugin version."""
-    err = _validate_version(version)
-    if err:
-        return JSONResponse(status_code=400, content={"error": err})
-
-    return StreamingResponse(
-        _gpu_install_stream(version.strip()),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+class PluginAction(BaseModel):
+    version: str
 
 
 @router.get("/api/extensions/nodes")
 async def list_nodes():
-    """
-    List worker nodes only (for the label selector dropdown).
-
-    Role detection: on kubeadm clusters the control plane carries the label
-    node-role.kubernetes.io/control-plane=<anything>.  Worker nodes have no
-    role label by default.  We therefore identify the control plane by the
-    PRESENCE of that label, not by the absence of a worker label.
-    """
+    """Return worker nodes only — control-plane always excluded."""
     out, rc = run_on_cp(
-        "kubectl get nodes --no-headers "
-        "-o custom-columns='"
-        "NAME:.metadata.name,"
-        "CP:.metadata.labels.node-role\\.kubernetes\\.io/control-plane' 2>/dev/null"
-    )
-    nodes = []
-    if rc == 0 and out.strip():
-        for line in out.strip().splitlines():
-            parts = line.split()
-            if not parts:
-                continue
-            name = parts[0]
-            # If the CP label is present the value is "" or "true"; absent = "<none>"
-            is_control_plane = len(parts) > 1 and parts[1] != "<none>"
-            if not is_control_plane:
-                nodes.append({"name": name, "role": "worker"})
-    return {"nodes": nodes}
-
-
-@router.get("/api/extensions/gpu/nodes")
-async def gpu_nodes():
-    """
-    List nodes currently carrying accelerator=nvidia, excluding the control plane.
-
-    The control plane must never appear here even if it was accidentally labeled.
-    We exclude it by checking for the node-role.kubernetes.io/control-plane label.
-    """
-    out, rc = run_on_cp(
-        "kubectl get nodes -l accelerator=nvidia "
-        "--no-headers "
-        "-o custom-columns='"
-        "NAME:.metadata.name,"
-        "STATUS:.status.conditions[-1].type,"
-        "GPU:.status.allocatable.nvidia\\.io/gpu,"
-        "CP:.metadata.labels.node-role\\.kubernetes\\.io/control-plane' 2>/dev/null"
-    )
-    nodes = []
-    if rc == 0 and out.strip():
-        for line in out.strip().splitlines():
-            parts = line.split()
-            if not parts:
-                continue
-            # Skip the control plane even if it carries the accelerator label
-            is_control_plane = len(parts) > 3 and parts[3] != "<none>"
-            if is_control_plane:
-                continue
-            nodes.append({
-                "name":      parts[0],
-                "status":    parts[1] if len(parts) > 1 else "unknown",
-                "gpu_count": parts[2] if len(parts) > 2 else "<none>",
-            })
-    return {"nodes": nodes}
-
-
-@router.post("/api/extensions/gpu/label-node")
-async def label_gpu_node(req: GPULabelRequest):
-    """
-    Apply the accelerator=nvidia label to the specified node.
-    Refuses to label the control plane.
-    """
-    if not req.node_name or not req.node_name.strip():
-        return JSONResponse(status_code=400, content={"error": "node_name is required"})
-
-    # Guard: refuse to label the control plane
-    cp_check, _ = run_on_cp(
-        f"kubectl get node {req.node_name} "
-        f"-o jsonpath='{{.metadata.labels.node-role\\.kubernetes\\.io/control-plane}}' 2>/dev/null"
-    )
-    if cp_check.strip():
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"'{req.node_name}' is the control plane. GPU labels must only be applied to worker nodes."}
-        )
-
-    out, rc = run_on_cp(
-        f"kubectl label node {req.node_name} accelerator=nvidia --overwrite 2>&1"
+        "kubectl get nodes -o "
+        "jsonpath=\'{range .items[*]}{.metadata.name}{\"\\t\"}"
+        "{.metadata.labels.node-role\\.kubernetes\\.io/control-plane}{\"\\t\"}"
+        "{.metadata.labels.accelerator}{\"\\n\"}{end}\'"
     )
     if rc != 0:
-        return {"status": "error", "message": out}
-    return {"status": "ok", "message": f"Node '{req.node_name}' labeled accelerator=nvidia."}
+        return {"error": out}
+    nodes = []
+    for line in _strip(out).splitlines():
+        parts = line.split("\t")
+        if not parts[0]:
+            continue
+        cp_label = parts[1] if len(parts) > 1 else ""
+        if cp_label:
+            continue
+        gpu_lbl = parts[2].strip() if len(parts) > 2 else ""
+        nodes.append({
+            "name":      parts[0],
+            "is_gpu":    gpu_lbl == "nvidia",
+            "gpu_label": gpu_lbl or ""
+        })
+    return nodes
 
 
-@router.post("/api/extensions/gpu/unlabel-node")
-async def unlabel_gpu_node(req: GPULabelRequest):
-    """Remove the accelerator=nvidia label from the specified node."""
-    if not req.node_name or not req.node_name.strip():
-        return JSONResponse(status_code=400, content={"error": "node_name is required"})
+@router.get("/api/extensions/gpu-nodes")
+async def gpu_nodes():
+    """Return all worker nodes with GPU label status."""
+    out, rc = run_on_cp("kubectl get nodes --show-labels")
+    if rc != 0:
+        return {"error": out}
+    rows = []
+    for line in _strip(out).splitlines():
+        cols = line.split()
+        if len(cols) < 5:
+            continue
+        labels = {}
+        for kv in cols[-1].split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                labels[k] = v
+        if "node-role.kubernetes.io/control-plane" in labels:
+            continue
+        rows.append({
+            "name":      cols[0],
+            "status":    cols[1],
+            "gpu_label": labels.get("accelerator", ""),
+            "is_gpu":    labels.get("accelerator") == "nvidia"
+        })
+    return rows
 
-    out, rc = run_on_cp(
-        f"kubectl label node {req.node_name} accelerator- 2>&1"
+
+@router.post("/api/extensions/label-gpu")
+async def label_gpu_node(body: NodeAction):
+    node = body.node.strip()
+    if not node:
+        return {"success": False, "message": "node name is required"}
+    if _is_control_plane(node):
+        return {"success": False, "message": f"Refused: {node!r} is the control-plane node"}
+    out, rc = run_on_cp(f"kubectl label node {node} accelerator=nvidia --overwrite")
+    if rc == 0:
+        return {"success": True, "message": f"Node {node!r} labeled as GPU node"}
+    return {"success": False, "message": out}
+
+
+@router.post("/api/extensions/unlabel-gpu")
+async def unlabel_gpu_node(body: NodeAction):
+    node = body.node.strip()
+    if not node:
+        return {"success": False, "message": "node name is required"}
+    if _is_control_plane(node):
+        return {"success": False, "message": f"Refused: {node!r} is the control-plane node"}
+    out, rc = run_on_cp(f"kubectl label node {node} accelerator-")
+    if rc == 0:
+        return {"success": True, "message": f"GPU label removed from {node!r}"}
+    if "not found" in out.lower() or "not labeled" in out.lower():
+        return {"success": True, "message": f"Node {node!r} had no GPU label"}
+    return {"success": False, "message": out}
+
+
+@router.post("/api/extensions/install-gpu-plugin")
+async def install_gpu_plugin(body: PluginAction):
+    try:
+        _validate_version(body.version)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    version = body.version
+    url = (f"https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/"
+           f"{version}/deployments/static/nvidia-device-plugin.yml")
+    tmp = f"/tmp/nvidia-device-plugin-{version}.yml"
+    # Download on ansiblectl, then copy to CP and apply
+    dl = subprocess.run(["curl", "-fsSL", "-o", tmp, url], capture_output=True, text=True)
+    if dl.returncode != 0:
+        return {"success": False,
+                "message": f"Download failed for {version}",
+                "detail": dl.stderr}
+    # scp the manifest to the CP then kubectl apply
+    scp_out, scp_rc = run_on_cp(f"test -d /tmp && echo ok")
+    if scp_rc != 0:
+        return {"success": False, "message": "Cannot reach control plane"}
+    # Copy file via run_on_cp cat trick
+    with open(tmp) as f:
+        manifest = f.read()
+    remote_tmp = f"/tmp/nvidia-device-plugin-{version}.yml"
+    # Write to CP using heredoc via run_on_cp
+    write_out, write_rc = run_on_cp(
+        f"cat > {remote_tmp} << \'MANIFEST_EOF\'\n{manifest}\nMANIFEST_EOF"
     )
-    # rc=1 with "not found" means label was already absent — treat as success
-    if rc != 0 and "not found" not in out.lower():
-        return {"status": "error", "message": out}
-    return {"status": "ok", "message": f"Label removed from node '{req.node_name}'."}
+    ap_out, ap_rc = run_on_cp(f"kubectl apply -f {remote_tmp}")
+    if ap_rc == 0:
+        return {"success": True,
+                "message": f"NVIDIA Device Plugin {version} installed",
+                "detail": ap_out}
+    return {"success": False, "message": "kubectl apply failed", "detail": ap_out}
+
+
+@router.post("/api/extensions/uninstall-gpu-plugin")
+async def uninstall_gpu_plugin(body: PluginAction):
+    try:
+        _validate_version(body.version)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    version = body.version
+    remote_tmp = f"/tmp/nvidia-device-plugin-{version}.yml"
+    # Check if manifest exists on CP
+    check_out, check_rc = run_on_cp(f"test -f {remote_tmp} && echo exists || echo missing")
+    if "missing" in check_out:
+        # Re-download to CP directly
+        url = (f"https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/"
+               f"{version}/deployments/static/nvidia-device-plugin.yml")
+        dl_out, dl_rc = run_on_cp(f"curl -fsSL -o {remote_tmp} {url}")
+        if dl_rc != 0:
+            return {"success": False, "message": "Could not download manifest on CP", "detail": dl_out}
+    out, rc = run_on_cp(f"kubectl delete -f {remote_tmp} --ignore-not-found")
+    if rc == 0:
+        return {"success": True, "message": f"NVIDIA Device Plugin {version} removed"}
+    return {"success": False, "message": out}
