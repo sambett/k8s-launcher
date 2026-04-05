@@ -29,6 +29,9 @@
       <button class="btn btn-primary" onclick="installGpuPlugin()">
         Install Device Plugin
       </button>
+      <button class="btn btn-danger" onclick="uninstallGpuPlugin()">
+        Uninstall
+      </button>
       <span class="dot" id="dot-gpu-install"></span>
       <span id="gpu-install-status" style="font-size:12px;color:#666"></span>
     </div>
@@ -133,6 +136,37 @@ function installGpuPlugin() {
   es.onerror = () => { setDot('dot-gpu-install','error'); es.close(); };
 }
 
+async function uninstallGpuPlugin() {
+  const version  = document.getElementById('gpu-version-input').value.trim();
+  const logEl    = document.getElementById('gpu-install-log');
+  const statusEl = document.getElementById('gpu-install-status');
+  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+  if (!confirm(`Uninstall NVIDIA Device Plugin ${version}?\nGPU pods will stop scheduling.`)) return;
+  logEl.innerHTML = ''; statusEl.textContent = 'Uninstalling…';
+  setDot('dot-gpu-install', 'running');
+  try {
+    const r = await fetch('/api/extensions/uninstall-gpu-plugin', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ version })
+    });
+    const d = await r.json();
+    if (d.success) {
+      setDot('dot-gpu-install', 'ok');
+      statusEl.textContent = 'Uninstalled';
+      logEl.innerHTML += `<div style="color:#68d391">✓ ${d.message}</div>`;
+      loadGpuStatus();
+    } else {
+      setDot('dot-gpu-install', 'error');
+      statusEl.textContent = 'Failed';
+      logEl.innerHTML += `<div style="color:#fc8181">✗ ${d.message}</div>`;
+    }
+  } catch(e) {
+    setDot('dot-gpu-install', 'error');
+    statusEl.textContent = 'Error';
+    logEl.innerHTML += `<div style="color:#fc8181">Network error: ${e}</div>`;
+  }
+}
+
 async function loadNodesForGpu() {
   const sel = document.getElementById('gpu-node-select');
   sel.innerHTML = '<option value="">Loading...</option>';
@@ -166,6 +200,7 @@ async function unlabelGpuNode() {
   const node = document.getElementById('gpu-node-select').value;
   const el   = document.getElementById('r-gpu-label');
   if (!node) { el.innerHTML = '<span class="badge b-warn">Select a node first.</span>'; return; }
+  if (!confirm(`Remove GPU label from ${node}?\nIt will no longer receive GPU workloads.`)) return;
   el.innerHTML = '<span class="badge b-run">Removing label...</span>';
   const r = await fetch('/api/extensions/gpu/unlabel-node', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -188,12 +223,15 @@ async function loadGpuNodes() {
       return;
     }
     el.innerHTML = `<table class="data-table">
-      <thead><tr><th>Node</th><th>Status</th><th>nvidia.com/gpu</th></tr></thead>
+      <thead><tr><th>Node</th><th>Status</th><th>GPU availability</th></tr></thead>
       <tbody>${d.nodes.map(n => `
         <tr>
           <td><span class="mono">${n.name}</span></td>
           <td><span class="badge ${n.status==='Ready'?'b-ok':'b-warn'}">${n.status}</span></td>
-          <td><span class="mono">${n.gpu_count}</span></td>
+          <td>${parseInt(n.gpu_count) > 0
+            ? `<span class="badge b-ok">${n.gpu_count} GPU${parseInt(n.gpu_count)>1?'s':''} available</span>`
+            : `<span class="badge b-warn" title="Node labeled but NVIDIA driver not active yet">no driver</span>`
+          }</td>
         </tr>`).join('')}
       </tbody></table>`;
   } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
