@@ -1,18 +1,18 @@
 <div id="page-gpu-policy" class="page">
 
-  <!-- Status bar -->
+  <!-- ── Status bar ──────────────────────────────────────────────────────────── -->
   <div class="pc" style="margin-bottom:.75rem;padding:.75rem 1.25rem">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span class="dot" id="kv-dot"></span>
       <span style="font-size:.85rem;font-weight:600;color:#e2e8f0">GPU Group Policy</span>
       <span class="mono" style="font-size:.7rem;color:#64748b">jupyterhub-gpu-group-policy</span>
-      <span id="kv-badge" class="badge b-warn" style="font-size:.72rem">checking...</span>
+      <span id="kv-badge" class="badge b-warn" style="font-size:.72rem">checking…</span>
       <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()"
         style="margin-left:auto;padding:2px 8px;font-size:.72rem">↺ refresh</button>
     </div>
   </div>
 
-  <!-- Rules table -->
+  <!-- ── Rules table ─────────────────────────────────────────────────────────── -->
   <div class="pc" style="margin-bottom:.75rem;padding:1rem 1.25rem">
 
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:.6rem">
@@ -41,14 +41,14 @@
       <tbody id="policy-rows">
         <tr id="empty-row">
           <td colspan="4" style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">
-            No rules yet — click &ldquo;load groups&rdquo; to auto-populate from your profiles.
+            No rules defined — click &quot;+ Add rule&quot; or &quot;↺ load groups&quot; to start.
           </td>
         </tr>
       </tbody>
     </table>
   </div>
 
-  <!-- Save -->
+  <!-- ── Save ────────────────────────────────────────────────────────────────── -->
   <div class="pc" style="padding:.85rem 1.25rem">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="savePolicy()"
@@ -59,161 +59,346 @@
       style="display:none;margin-top:.65rem;min-height:50px;max-height:110px;font-size:.72rem"></div>
   </div>
 
+</div>
+
 <script>
+/**
+ * GPU Policies tab — JavaScript module.
+ *
+ * Design principles
+ * ─────────────────
+ * • _fetchGroups()  : private — fetches + caches groups, rebuilds ALL existing selects.
+ * • _appendRow()    : private — pure DOM append, zero business logic, no duplicate checks.
+ * • loadPolicy()    : public  — renders rows from ConfigMap, then calls _fetchGroups so
+ *                               dropdowns are always populated after the call resolves.
+ * • loadAvailGroups(): public — "↺ load groups" button: fetches groups, adds rows only for
+ *                               groups that do NOT yet have a rule. Never calls alert().
+ * • addRow()        : public  — "+" button: ensures groups are cached, then appends a blank row.
+ * • initGpuPolicyTab(): public — single entry point for nav(). Sequences everything correctly.
+ *
+ * Public functions are exported to window so HTML onclick attributes can reach them.
+ * All async sequencing is handled internally — callers never need to await or coordinate.
+ */
 (function () {
+  'use strict';
+
+  // ── Module state ─────────────────────────────────────────────────────────────
+  /**
+   * Cached list of group names from the profiles ConfigMap.
+   * Populated by _fetchGroups(); read by _rebuildSelect() and loadAvailGroups().
+   */
   var _groups = [];
 
-  var SEL_STYLE = 'background:#0f1117;color:#e2e8f0;border:1px solid #2d3148;' +
-    'border-radius:4px;padding:3px 7px;font-size:.78rem;width:100%';
-  var INP_STYLE = 'width:58px;background:#0f1117;color:#e2e8f0;border:1px solid #2d3148;' +
-    'border-radius:4px;padding:3px 7px;font-size:.78rem;text-align:center';
+  // ── Style constants ───────────────────────────────────────────────────────────
+  var SELECT_STYLE = [
+    'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
+    'border-radius:4px',  'padding:3px 7px', 'font-size:.78rem', 'width:100%'
+  ].join(';');
 
-  function esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  var NUMBER_STYLE = [
+    'width:58px',         'background:#0f1117', 'color:#e2e8f0',
+    'border:1px solid #2d3148', 'border-radius:4px',
+    'padding:3px 7px',    'font-size:.78rem',   'text-align:center'
+  ].join(';');
+
+  // ── Private helpers ───────────────────────────────────────────────────────────
+
+  function _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function rebuildOpts(sel, cur) {
-    sel.innerHTML = '<option value="">— pick group —</option>' +
-      _groups.map(function(g) {
-        return '<option value="'+esc(g)+'"'+(g===cur?' selected':'')+'>'+esc(g)+'</option>';
-      }).join('') +
-      (cur && !_groups.includes(cur)
-        ? '<option value="'+esc(cur)+'" selected>'+esc(cur)+'</option>' : '');
+  /**
+   * Rebuild one group <select>'s option list using the current _groups cache.
+   * The currently selected value is preserved. If the selected value is no longer
+   * in _groups (e.g. the profile was deleted), it is kept as a visually distinct
+   * "stale" option so the row is not silently broken.
+   */
+  function _rebuildSelect(sel, selectedValue) {
+    var opts = ['<option value="">— pick group —</option>'];
+
+    _groups.forEach(function (g) {
+      opts.push(
+        '<option value="' + _esc(g) + '"' +
+        (g === selectedValue ? ' selected' : '') +
+        '>' + _esc(g) + '</option>'
+      );
+    });
+
+    if (selectedValue && _groups.indexOf(selectedValue) === -1) {
+      // Preserve a stale selection so the admin can see and fix it
+      opts.push(
+        '<option value="' + _esc(selectedValue) + '" selected>' +
+        _esc(selectedValue) + ' ⚠</option>'
+      );
+    }
+
+    sel.innerHTML = opts.join('');
   }
 
-  window.loadKvStatus = async function() {
-    var b = document.getElementById('kv-badge');
-    var dot = document.getElementById('kv-dot');
-    b.textContent = '...'; b.className = 'badge b-info';
+  /** Rebuild every group select currently in the table. */
+  function _rebuildAllSelects() {
+    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (sel) {
+      _rebuildSelect(sel, sel.value);
+    });
+  }
+
+  /** Replace the table body with the "no rules" placeholder row. */
+  function _clearRows() {
+    document.getElementById('policy-rows').innerHTML =
+      '<tr id="empty-row"><td colspan="4" ' +
+      'style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">' +
+      'No rules defined &mdash; click &quot;+ Add rule&quot; or ' +
+      '&quot;&#x21ba; load groups&quot; to start.</td></tr>';
+  }
+
+  /**
+   * Append one rule row.
+   * Pure DOM operation — performs no duplicate checking and calls no alerts.
+   * All callers are responsible for deciding whether a row should be added.
+   */
+  function _appendRow(data) {
+    var empty = document.getElementById('empty-row');
+    if (empty) empty.remove();
+
+    var grp  = (data && data.gitlab_group != null) ? String(data.gitlab_group) : '';
+    var type = (data && data.gpu_type)             ? String(data.gpu_type)     : 'nvidia.com/gpu';
+    var max  = (data && data.max_gpus  != null)    ? Number(data.max_gpus)     : 1;
+
+    var tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #1e2235';
+    tr.innerHTML =
+      '<td style="padding:.3rem .4rem">' +
+        '<select class="grp-sel" style="' + SELECT_STYLE + '"></select>' +
+      '</td>' +
+      '<td style="padding:.3rem .4rem">' +
+        '<select class="type-sel" style="' + SELECT_STYLE + '">' +
+          '<option value="nvidia.com/gpu"'        + (type === 'nvidia.com/gpu'        ? ' selected' : '') + '>nvidia.com/gpu</option>' +
+          '<option value="nvidia.com/mig-1g.5gb"' + (type === 'nvidia.com/mig-1g.5gb' ? ' selected' : '') + '>mig-1g.5gb</option>' +
+        '</select>' +
+      '</td>' +
+      '<td style="padding:.3rem .4rem">' +
+        '<input type="number" class="max-inp" min="0" max="16" value="' + max + '" style="' + NUMBER_STYLE + '">' +
+      '</td>' +
+      '<td style="padding:.3rem .4rem;text-align:center">' +
+        '<button onclick="this.closest(\'tr\').remove(); checkEmpty()" ' +
+        'style="background:none;border:none;color:#4a5568;font-size:1rem;cursor:pointer;' +
+        'line-height:1;padding:2px 5px;border-radius:3px" ' +
+        'onmouseover="this.style.color=\'#fc8181\'" ' +
+        'onmouseout="this.style.color=\'#4a5568\'">&#xd7;</button>' +
+      '</td>';
+
+    document.getElementById('policy-rows').appendChild(tr);
+    // Populate the new row's dropdown immediately using the current cache
+    _rebuildSelect(tr.querySelector('.grp-sel'), grp);
+  }
+
+  /**
+   * Fetch available groups from the backend, update _groups, and rebuild
+   * all existing selects.
+   *
+   * This is always safe to call: on error it leaves _groups unchanged and
+   * silently continues so a network hiccup does not break the whole tab.
+   *
+   * Returns the (possibly unchanged) _groups array.
+   */
+  async function _fetchGroups() {
+    try {
+      var res = await fetch('/api/gpu-policy/available-groups');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var d = await res.json();
+      _groups = Array.isArray(d.groups) ? d.groups : [];
+    } catch (e) {
+      // Non-fatal: log for debugging but do not surface to the user
+      console.warn('GPU Policy: could not fetch available groups —', e);
+    }
+    _rebuildAllSelects();
+    return _groups;
+  }
+
+  // ── Public API ────────────────────────────────────────────────────────────────
+
+  /**
+   * Refresh the Kyverno ClusterPolicy status badge.
+   * Called on tab open (fire-and-forget) and after Save & Apply.
+   */
+  window.loadKvStatus = async function () {
+    var badge = document.getElementById('kv-badge');
+    var dot   = document.getElementById('kv-dot');
+    badge.textContent = '…'; badge.className = 'badge b-info';
     dot.className = 'dot running';
     try {
       var d = await (await fetch('/api/gpu-policy/status')).json();
       if (d.status === 'not_applied') {
-        b.className = 'badge b-warn'; b.textContent = 'not applied';
-        dot.className = 'dot';
+        badge.className = 'badge b-warn'; badge.textContent = 'not applied';
+        dot.className   = 'dot';
       } else if (d.ready) {
-        b.className = 'badge b-ok'; b.textContent = '✓ active';
-        dot.className = 'dot ok';
+        badge.className = 'badge b-ok'; badge.textContent = '✓ active';
+        dot.className   = 'dot ok';
       } else {
-        b.className = 'badge b-run'; b.textContent = 'syncing...';
-        dot.className = 'dot running';
+        badge.className = 'badge b-run'; badge.textContent = 'syncing…';
+        dot.className   = 'dot running';
       }
-    } catch(e) {
-      b.className = 'badge b-err'; b.textContent = 'error';
-      dot.className = 'dot error';
+    } catch (e) {
+      badge.className = 'badge b-err'; badge.textContent = 'error';
+      dot.className   = 'dot error';
     }
   };
 
-  window.loadAvailGroups = async function() {
+  /**
+   * Load current policy rules from the gpu-group-policy ConfigMap and render them.
+   * After the rows are rendered, _fetchGroups() is called so every dropdown is
+   * populated. This guarantees that on return the table is fully ready.
+   *
+   * Safe to call multiple times (idempotent — clears and re-renders each time).
+   */
+  window.loadPolicy = async function () {
+    try {
+      var res = await fetch('/api/gpu-policy');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var d = await res.json();
+      _clearRows();
+      (d.groups || []).forEach(function (g) { _appendRow(g); });
+    } catch (e) {
+      console.error('GPU Policy: could not load policy —', e);
+    }
+    // Always fetch groups after rendering rows so dropdowns are ready
+    await _fetchGroups();
+  };
+
+  /**
+   * "↺ load groups" button handler.
+   *
+   * 1. Fetches the latest group list from the backend.
+   * 2. Rebuilds all existing row dropdowns (so any new profiles show up).
+   * 3. Adds a default row for every group that does NOT already have a rule.
+   *    Groups that already have a row are silently skipped — no alerts.
+   */
+  window.loadAvailGroups = async function () {
     var msg = document.getElementById('save-msg');
-    try {
-      var d = await (await fetch('/api/gpu-policy/available-groups')).json();
-      _groups = d.groups || [];
-      if (_groups.length === 0) {
-        msg.textContent = 'No groups found — create profiles first.';
-        msg.style.color = '#fbbf24'; return;
-      }
-      var hasRows = document.querySelector('#policy-rows tr:not(#empty-row)');
-      if (!hasRows) {
-        clearRows();
-        _groups.forEach(function(g) {
-          addRow({ gitlab_group: g, gpu_type: 'nvidia.com/gpu', max_gpus: 1 });
-        });
-      } else {
-        document.querySelectorAll('.grp-sel').forEach(function(s) { rebuildOpts(s, s.value); });
-      }
-      msg.textContent = _groups.length + ' group(s) loaded.';
-      msg.style.color = '#68d391';
-      setTimeout(function() { msg.textContent = ''; }, 3000);
-    } catch(e) { msg.textContent = 'Failed to load groups.'; msg.style.color = '#fc8181'; }
-  };
+    msg.textContent = 'Loading groups…'; msg.style.color = '#94a3b8';
 
-  async function loadPolicy() {
-    try {
-      var d = await (await fetch('/api/gpu-policy')).json();
-      clearRows();
-      (d.groups || []).forEach(function(g) { addRow(g); });
-    } catch(e) {}
-  }
+    var groups = await _fetchGroups();
 
-  function clearRows() {
-    document.getElementById('policy-rows').innerHTML =
-      '<tr id="empty-row"><td colspan="4" style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">No rules defined.</td></tr>';
-  }
-
-  window.addRow = function(data) {
-    // Block duplicate groups — one row per group only
-    var incoming = data && data.gitlab_group ? data.gitlab_group : '';
-    if (incoming) {
-      var existing = [];
-      document.querySelectorAll('.grp-sel').forEach(function(sel) {
-        existing.push(sel.value);
-      });
-      if (existing.indexOf(incoming) !== -1) {
-        alert('Group '' + incoming + '' already has a rule. Edit the existing row instead.');
-        return;
-      }
+    if (groups.length === 0) {
+      msg.textContent = 'No groups found — create profiles first.';
+      msg.style.color = '#fbbf24';
+      return;
     }
-    var empty = document.getElementById('empty-row');
-    if (empty) empty.remove();
-    var grp  = data && data.gitlab_group ? data.gitlab_group : '';
-    var type = data && data.gpu_type     ? data.gpu_type     : 'nvidia.com/gpu';
-    var max  = (data && data.max_gpus !== undefined) ? data.max_gpus : 1;
-    var tr   = document.createElement('tr');
-    tr.style.borderBottom = '1px solid #1e2235';
-    tr.innerHTML =
-      '<td style="padding:.3rem .4rem"><select class="grp-sel" style="'+SEL_STYLE+'"></select></td>' +
-      '<td style="padding:.3rem .4rem"><select class="type-sel" style="'+SEL_STYLE+'">' +
-        '<option value="nvidia.com/gpu"'+(type==='nvidia.com/gpu'?' selected':'')+'>nvidia.com/gpu</option>' +
-        '<option value="nvidia.com/mig-1g.5gb"'+(type==='nvidia.com/mig-1g.5gb'?' selected':'')+'>mig-1g.5gb</option>' +
-      '</select></td>' +
-      '<td style="padding:.3rem .4rem"><input type="number" class="max-inp" min="0" max="16" value="'+max+'" style="'+INP_STYLE+'"></td>' +
-      '<td style="padding:.3rem .4rem;text-align:center">' +
-        '<button onclick="this.closest(\'tr\').remove();checkEmpty()" ' +
-        'style="background:none;border:none;color:#4a5568;font-size:1rem;cursor:pointer;' +
-        'line-height:1;padding:2px 5px;border-radius:3px" ' +
-        'onmouseover="this.style.color=\'#fc8181\'" onmouseout="this.style.color=\'#4a5568\'">×</button>' +
-      '</td>';
-    document.getElementById('policy-rows').appendChild(tr);
-    rebuildOpts(tr.querySelector('.grp-sel'), grp);
+
+    // Collect which groups already have a row (non-empty select value)
+    var alreadyHaveRow = [];
+    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (sel) {
+      if (sel.value) alreadyHaveRow.push(sel.value);
+    });
+
+    var added = 0;
+    groups.forEach(function (g) {
+      if (alreadyHaveRow.indexOf(g) === -1) {
+        _appendRow({ gitlab_group: g, gpu_type: 'nvidia.com/gpu', max_gpus: 1 });
+        added++;
+      }
+    });
+
+    if (added > 0) {
+      msg.textContent = groups.length + ' group(s) found — ' + added + ' row(s) added.';
+    } else {
+      msg.textContent = groups.length + ' group(s) found — all groups already have rules.';
+    }
+    msg.style.color = '#68d391';
+    setTimeout(function () { msg.textContent = ''; }, 4000);
   };
 
-  window.checkEmpty = function() {
+  /**
+   * "+ Add rule" button handler.
+   * Ensures the group cache is populated before appending the blank row so the
+   * dropdown is immediately usable (no "— pick group —" with no options).
+   */
+  window.addRow = async function () {
+    if (_groups.length === 0) await _fetchGroups();
+    _appendRow({});
+  };
+
+  /**
+   * Called by the × delete button in each row.
+   * Shows the placeholder when the last rule row is removed.
+   */
+  window.checkEmpty = function () {
     var tbody = document.getElementById('policy-rows');
-    if (!tbody.querySelector('tr:not(#empty-row)'))
-      tbody.innerHTML = '<tr id="empty-row"><td colspan="4" style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">No rules defined.</td></tr>';
+    if (!tbody.querySelector('tr:not(#empty-row)')) _clearRows();
   };
 
-  window.savePolicy = async function() {
+  /**
+   * "Save & Apply" button handler.
+   * Reads the current table state, POSTs to the backend, and refreshes the
+   * status badge once Kyverno has had time to reflect the update.
+   */
+  window.savePolicy = async function () {
     var msg = document.getElementById('save-msg');
     var det = document.getElementById('save-detail');
+
+    // Collect rules, skip rows with no group selected
     var groups = [];
-    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function(tr) {
+    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
       var grp  = tr.querySelector('.grp-sel').value.trim();
-      var type = tr.querySelector('.type-sel').value.trim();
+      var type = tr.querySelector('.type-sel').value.trim() || 'nvidia.com/gpu';
       var max  = parseInt(tr.querySelector('.max-inp').value, 10);
-      if (grp) groups.push({ gitlab_group: grp, gpu_type: type || 'nvidia.com/gpu', max_gpus: isNaN(max) ? 0 : max });
+      if (grp) {
+        groups.push({ gitlab_group: grp, gpu_type: type, max_gpus: isNaN(max) ? 0 : max });
+      }
     });
-    msg.textContent = 'Applying...'; msg.style.color = '#94a3b8';
+
+    msg.textContent = 'Applying…'; msg.style.color = '#94a3b8';
     det.style.display = 'none';
+
     try {
-      var d = await (await fetch('/api/gpu-policy', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ groups: groups })
-      })).json();
-      if (d.success) { msg.textContent = '✓ ' + d.message; msg.style.color = '#68d391'; }
-      else           { msg.textContent = '✗ ' + (d.error || 'Failed'); msg.style.color = '#fc8181'; }
-      if (d.detail)  { det.textContent = d.detail; det.style.display = 'block'; }
-      setTimeout(loadKvStatus, 2000);
-    } catch(e) { msg.textContent = '✗ Network error'; msg.style.color = '#fc8181'; }
+      var resp = await fetch('/api/gpu-policy', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ groups: groups })
+      });
+      var d = await resp.json();
+
+      if (d.success) {
+        msg.textContent = '✓ ' + d.message;
+        msg.style.color = '#68d391';
+        // Allow Kyverno ~2 s to pick up the change before refreshing the badge
+        setTimeout(window.loadKvStatus, 2000);
+      } else {
+        msg.textContent = '✗ ' + (d.error || 'Failed — see detail below');
+        msg.style.color = '#fc8181';
+      }
+      if (d.detail) { det.textContent = d.detail; det.style.display = 'block'; }
+
+    } catch (e) {
+      msg.textContent = '✗ Network error: ' + String(e);
+      msg.style.color = '#fc8181';
+    }
   };
 
-  window.loadPolicy      = loadPolicy;
-  window.loadAvailGroups = window.loadAvailGroups;
+  /**
+   * Single entry point called by nav() in scripts.html when this tab is opened.
+   *
+   * Correct sequence:
+   *   1. loadKvStatus()  — fire-and-forget; updates the badge in the background.
+   *   2. await loadPolicy() — renders rows AND populates all dropdowns before returning.
+   *
+   * No race conditions: groups are always fetched inside loadPolicy() after the rows
+   * exist, so every dropdown is ready when the user sees the tab.
+   */
+  window.initGpuPolicyTab = async function () {
+    window.loadKvStatus();     // non-blocking — badge update is cosmetic
+    await window.loadPolicy(); // blocking — table must be ready before user interacts
+  };
 
-  document.addEventListener('DOMContentLoaded', function() {
-    if (document.getElementById('policy-rows')) { loadKvStatus(); loadPolicy(); }
+  // ── DOM ready ─────────────────────────────────────────────────────────────────
+  // Handles a browser refresh while the admin is on this tab.
+  document.addEventListener('DOMContentLoaded', function () {
+    if (document.getElementById('policy-rows')) {
+      window.initGpuPolicyTab();
+    }
   });
-})();
+
+}());
 </script>
-</div>

@@ -4,14 +4,14 @@ function nav(name, el) {
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   el.classList.add('active');
-  if (name === 'groups') onGroupsPageShow();
-  if (name === 'users')  onUsersPageShow();
-  if (name === 'profiles') loadProfiles();
-  if (name === 'new')      { loadGroups(); loadRepos(); }
-  if (name === 'settings') { loadTokenStatus(); loadSettingsInfo(); }
-  if (name === 'images')   { loadImportRepos(); loadRegistryImages(); }
-  if (name === 'gpu-policy') { loadKvStatus(); loadPolicy(); loadAvailGroups(); }
-  // PLACEHOLDER_REMOVE loadImportRepos(); loadRegistryImages(); }
+  if (name === 'groups')     onGroupsPageShow();
+  if (name === 'users')      onUsersPageShow();
+  if (name === 'profiles')   loadProfiles();
+  if (name === 'new')        { loadGroups(); loadRepos(); }
+  if (name === 'settings')   { loadTokenStatus(); loadSettingsInfo(); }
+  if (name === 'images')     { loadImportRepos(); loadRegistryImages(); }
+  // gpu-policy: use the single entry-point that sequences status + policy + groups correctly
+  if (name === 'gpu-policy') { if (typeof initGpuPolicyTab === 'function') initGpuPolicyTab(); }
 }
 
 function showMsg(el, text, ok) {
