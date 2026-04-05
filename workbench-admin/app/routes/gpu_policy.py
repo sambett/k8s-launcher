@@ -87,13 +87,8 @@ def _build_cluster_policy(groups):
     """
     Build a Kyverno ClusterPolicy dict and serialise it as YAML.
 
-    One rule is generated per entry in groups. Multiple rules for the same
-    group are intentional and valid — each targets a different GPU type
-    or enforces a different limit. Kyverno evaluates all matching rules;
-    the most restrictive one wins.
-
-    Rule names use the enumerate index so they are always unique even when
-    the same group appears multiple times.
+    Each (gitlab_group, gpu_type) pair produces exactly one rule.
+    Rule names use the enumerate index so they are always unique.
     """
     rules = []
     for i, g in enumerate(groups):
@@ -102,9 +97,6 @@ def _build_cluster_policy(groups):
         max_gpus = g.get("max_gpus", 0)
         safe     = gname.replace("/", "-").replace("_", "-").lower()
 
-        # JMESPath: gpu_type key contains a dot so it must be double-quoted.
-        # PyYAML serialises Python strings containing both " and ' using
-        # double-quoted YAML scalar style, which kubectl handles correctly.
         key_expr = (
             "{{ request.object.spec.containers[0]"
             ".resources.limits." + '"' + gpu_type + '"' + " || '0' }}"
@@ -178,13 +170,18 @@ def api_set_policy():
     """
     Save and apply GPU quota rules.
 
-    Multiple rules for the same gitlab_group are intentionally allowed so an
-    admin can set different limits for different GPU types (e.g. nvidia.com/gpu
-    vs nvidia.com/mig-1g.5gb). No server-side deduplication is performed.
+    Rules with the same (gitlab_group, gpu_type) pair are duplicates and
+    are rejected — having two limits for the same group + GPU type is
+    contradictory (which one wins?).
+
+    Rules with the same group but DIFFERENT gpu_type values are allowed —
+    an admin may set nvidia.com/gpu=2 AND nvidia.com/mig-1g.5gb=4 for the
+    same group without contradiction.
     """
     data   = request.json or {}
     groups = data.get("groups", [])
 
+    # ── Basic field validation ────────────────────────────────────────────────
     for g in groups:
         if not str(g.get("gitlab_group", "")).strip():
             return jsonify({"success": False,
@@ -193,10 +190,24 @@ def api_set_policy():
             return jsonify({"success": False,
                             "error": "max_gpus must be a non-negative integer"}), 400
 
-    # Strip whitespace from group names but do NOT deduplicate —
-    # multiple rules per group with different gpu_type values are valid.
+    # Strip whitespace
     for g in groups:
         g["gitlab_group"] = g["gitlab_group"].strip()
+        g.setdefault("gpu_type", "nvidia.com/gpu")
+
+    # ── Duplicate (group, gpu_type) check ─────────────────────────────────────
+    seen_pairs = set()
+    for g in groups:
+        pair = (g["gitlab_group"], g["gpu_type"])
+        if pair in seen_pairs:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Duplicate rule: group '{}' already has a limit for GPU type '{}'. "
+                    "Each (group, GPU type) combination must be unique."
+                ).format(g["gitlab_group"], g["gpu_type"])
+            }), 400
+        seen_pairs.add(pair)
 
     ok, detail = _write_policy({"groups": groups})
     if not ok:
@@ -243,12 +254,9 @@ def api_set_policy():
 @require_auth
 def api_policy_status():
     """
-    Two-step status check.
+    Two-step status check — avoids unreliable jsonpath filter predicates.
     Step 1: does the ClusterPolicy exist?
     Step 2: is its .status.ready field true?
-
-    Avoids the jsonpath filter predicate [?(@.type=='Ready')] which is not
-    reliably supported across all kubectl patch versions.
     """
     exists = _run([
         "kubectl", "get", "clusterpolicy", KYVERNO_POLICY_NAME, "--no-headers"
@@ -271,8 +279,6 @@ def api_policy_status():
 def api_available_groups():
     """
     Return unique group paths from the jupyterhub-profiles ConfigMap.
-    These are the only groups that should have GPU quota rules — every group
-    that has at least one profile is a valid rule candidate.
     """
     r = _run([
         "kubectl", "get", "configmap", config.CONFIGMAP_NAME,

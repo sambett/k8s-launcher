@@ -1,6 +1,5 @@
 <div id="page-gpu-policy" class="page">
 
-  <!-- ── Page header ──────────────────────────────────────────────────────── -->
   <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem">
     <div>
       <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Quota Policies</h2>
@@ -17,10 +16,7 @@
     </div>
   </div>
 
-  <!-- ── Rules table card ──────────────────────────────────────────────────── -->
   <div class="card" style="margin-bottom:1.25rem">
-
-    <!-- Card toolbar -->
     <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem;flex-wrap:wrap">
       <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#e2e8f0;flex:1">Quota Rules</h3>
       <button class="btn btn-ghost" onclick="loadAvailGroups()"
@@ -33,16 +29,17 @@
       </button>
     </div>
 
-    <!-- Info banner -->
     <div style="background:#0f1117;border-left:3px solid #7c6af7;border-radius:0 5px 5px 0;
                 padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
       Each rule sets the maximum GPUs a pod from that group can request.
       <span style="color:#fc8181;font-weight:600">Max&nbsp;=&nbsp;0</span> blocks the group entirely.
-      Multiple rules for the <em>same group</em> are allowed when you need limits per GPU type.
+      You may add multiple rules for the <em>same group</em> only when each uses a
+      <strong style="color:#e2e8f0">different GPU type</strong> (e.g. one for
+      <code style="font-size:.78rem">nvidia.com/gpu</code> and one for
+      <code style="font-size:.78rem">mig-1g.5gb</code>).
       Groups with no rule here are <strong style="color:#68d391">unrestricted</strong>.
     </div>
 
-    <!-- Table -->
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;min-width:480px">
         <thead>
@@ -78,7 +75,6 @@
     </div>
   </div>
 
-  <!-- ── Save card ─────────────────────────────────────────────────────────── -->
   <div class="card">
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="savePolicy()"
@@ -91,7 +87,7 @@
       style="display:none;margin-top:.75rem;max-height:140px;font-size:.78rem"></div>
   </div>
 
-  <!-- ── Delete confirmation modal ─────────────────────────────────────────── -->
+  <!-- Delete confirmation modal -->
   <div id="del-modal"
     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
            z-index:500;align-items:center;justify-content:center">
@@ -112,39 +108,22 @@
 </div>
 
 <script>
-/**
- * GPU Policies tab — self-contained module.
- *
- * Fixes vs. previous version
- * ──────────────────────────
- * 1. _fetchGroups() is private, always awaited, rebuilds ALL existing selects.
- * 2. loadPolicy() calls _fetchGroups() after rendering rows — no race possible.
- * 3. initGpuPolicyTab() is the single entry point called by nav(); correct sequence.
- * 4. addRow() has NO duplicate-group check — multiple rules per group are allowed.
- * 5. Delete uses a custom confirmation modal, not browser confirm().
- * 6. loadAvailGroups() adds rows for groups WITHOUT a rule; skips ones that already
- *    have at least one rule (silently, no alert).
- */
 (function () {
   'use strict';
 
-  // ── State ───────────────────────────────────────────────────────────────────
-  var _groups          = [];   // cached group names from profiles ConfigMap
-  var _pendingDeleteTr = null; // row waiting for delete confirmation
+  var _groups          = [];
+  var _pendingDeleteTr = null;
 
-  // ── Inline styles for dynamically created row elements ──────────────────────
   var S_SEL = [
     'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
-    'border-radius:5px',  'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
+    'border-radius:5px', 'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
   ].join(';');
 
   var S_NUM = [
-    'width:80px',        'background:#0f1117', 'color:#e2e8f0',
+    'width:80px', 'background:#0f1117', 'color:#e2e8f0',
     'border:1px solid #2d3148', 'border-radius:5px',
     'padding:.45rem .6rem', 'font-size:.875rem', 'text-align:center'
   ].join(';');
-
-  // ── Private helpers ─────────────────────────────────────────────────────────
 
   function _esc(s) {
     return String(s)
@@ -152,11 +131,6 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  /**
-   * Rebuild one group <select> preserving its current selection.
-   * If the current value is no longer in _groups it is kept as a visually
-   * flagged stale option so the row is not silently broken.
-   */
   function _rebuildSelect(sel, cur) {
     var opts = ['<option value="">— select group —</option>'];
     _groups.forEach(function (g) {
@@ -174,14 +148,12 @@
     sel.innerHTML = opts.join('');
   }
 
-  /** Rebuild every group select currently visible in the table. */
   function _rebuildAllSelects() {
     document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
       _rebuildSelect(s, s.value);
     });
   }
 
-  /** Replace the table body with the empty-state placeholder row. */
   function _clearRows() {
     document.getElementById('policy-rows').innerHTML =
       '<tr id="empty-row"><td colspan="4" ' +
@@ -193,9 +165,21 @@
   }
 
   /**
-   * Append one rule row. Pure DOM operation — no validation, no duplicate checks.
-   * Populates the group select immediately using the current _groups cache.
+   * Return all existing (group, gpu_type) pairs currently in the table.
+   * Used to block duplicate combinations before adding a new row.
+   * Optionally excludes a specific <tr> element (for change-event validation).
    */
+  function _existingPairs(excludeTr) {
+    var pairs = [];
+    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
+      if (tr === excludeTr) return;
+      var grp  = tr.querySelector('.grp-sel')  ? tr.querySelector('.grp-sel').value  : '';
+      var type = tr.querySelector('.type-sel') ? tr.querySelector('.type-sel').value : '';
+      if (grp && type) pairs.push(grp + '||' + type);
+    });
+    return pairs;
+  }
+
   function _appendRow(data) {
     var empty = document.getElementById('empty-row');
     if (empty) empty.remove();
@@ -208,10 +192,10 @@
     tr.style.borderBottom = '1px solid #1e2235';
     tr.innerHTML =
       '<td style="padding:.6rem 1rem">' +
-        '<select class="grp-sel" style="' + S_SEL + '"></select>' +
+        '<select class="grp-sel" style="' + S_SEL + '" onchange="onRowChange(this)"></select>' +
       '</td>' +
       '<td style="padding:.6rem 1rem">' +
-        '<select class="type-sel" style="' + S_SEL + '">' +
+        '<select class="type-sel" style="' + S_SEL + '" onchange="onRowChange(this)">' +
           '<option value="nvidia.com/gpu"'        + (type === 'nvidia.com/gpu'        ? ' selected' : '') + '>nvidia.com/gpu</option>' +
           '<option value="nvidia.com/mig-1g.5gb"' + (type === 'nvidia.com/mig-1g.5gb' ? ' selected' : '') + '>mig-1g.5gb</option>' +
         '</select>' +
@@ -232,20 +216,13 @@
     _rebuildSelect(tr.querySelector('.grp-sel'), grp);
   }
 
-  /**
-   * Fetch available groups from the backend, update _groups cache, and
-   * rebuild all group selects.  Returns the group array ([] on error).
-   * Always safe to call — logs warnings but never throws.
-   */
   async function _fetchGroups() {
     try {
       var res = await fetch('/api/gpu-policy/available-groups');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       var d = await res.json();
       _groups = Array.isArray(d.groups) ? d.groups : [];
-      if (d.error) {
-        console.warn('GPU Policy: available-groups warning:', d.error);
-      }
+      if (d.error) console.warn('GPU Policy: available-groups warning:', d.error);
     } catch (e) {
       console.warn('GPU Policy: could not fetch groups —', String(e));
     }
@@ -253,9 +230,33 @@
     return _groups;
   }
 
+  // ── onRowChange — highlight duplicate pairs in real time ───────────────────
+
+  window.onRowChange = function (changedEl) {
+    var tr    = changedEl.closest('tr');
+    var grp   = tr.querySelector('.grp-sel').value;
+    var type  = tr.querySelector('.type-sel').value;
+    var grpSel = tr.querySelector('.grp-sel');
+
+    // Clear any previous duplicate highlight on this row
+    grpSel.style.borderColor = '#2d3148';
+
+    if (!grp || !type) return;
+
+    var others = _existingPairs(tr);
+    if (others.indexOf(grp + '||' + type) !== -1) {
+      grpSel.style.borderColor = '#e53e3e';
+      var msg = document.getElementById('save-msg');
+      msg.textContent = '\u26a0 Duplicate: ' + grp + ' + ' + type + ' already exists.';
+      msg.style.color = '#fc8181';
+      setTimeout(function () {
+        if (msg.textContent.indexOf('Duplicate') !== -1) msg.textContent = '';
+      }, 4000);
+    }
+  };
+
   // ── Delete modal ────────────────────────────────────────────────────────────
 
-  /** Called by the Delete button in each row. Shows the confirmation modal. */
   window.askDeleteRow = function (btn) {
     _pendingDeleteTr = btn.closest('tr');
     var grp  = _pendingDeleteTr.querySelector('.grp-sel').value  || '(no group selected)';
@@ -272,25 +273,20 @@
       '</span><br><br>' +
       '<span style="font-size:.8rem;color:#4a5568">' +
       'This removes the row. The cluster policy updates when you click ' +
-      '<em>Save &amp; Apply</em>.' +
-      '</span>';
+      '<em>Save &amp; Apply</em>.</span>';
 
     document.getElementById('del-modal').style.display = 'flex';
   };
 
-  /** Confirm — remove the row and close the modal. */
   window.confirmDelete = function () {
     if (_pendingDeleteTr) {
       _pendingDeleteTr.remove();
       _pendingDeleteTr = null;
-      if (!document.querySelector('#policy-rows tr:not(#empty-row)')) {
-        _clearRows();
-      }
+      if (!document.querySelector('#policy-rows tr:not(#empty-row)')) _clearRows();
     }
     document.getElementById('del-modal').style.display = 'none';
   };
 
-  /** Cancel — close the modal without touching the row. */
   window.cancelDelete = function () {
     _pendingDeleteTr = null;
     document.getElementById('del-modal').style.display = 'none';
@@ -298,7 +294,6 @@
 
   // ── Public API ───────────────────────────────────────────────────────────────
 
-  /** Refresh the Kyverno ClusterPolicy status badge. */
   window.loadKvStatus = async function () {
     var badge = document.getElementById('kv-badge');
     var dot   = document.getElementById('kv-dot');
@@ -322,11 +317,6 @@
     }
   };
 
-  /**
-   * Load current policy rules from the gpu-group-policy ConfigMap and render them.
-   * After rows are rendered, _fetchGroups() is awaited so every dropdown is
-   * populated before this function returns — no race condition possible.
-   */
   window.loadPolicy = async function () {
     try {
       var res = await fetch('/api/gpu-policy');
@@ -337,16 +327,9 @@
     } catch (e) {
       console.error('GPU Policy: could not load policy —', String(e));
     }
-    // Always fetch groups after rendering rows — guarantees dropdowns are filled
     await _fetchGroups();
   };
 
-  /**
-   * "↺ Load groups from profiles" button.
-   * Fetches all available groups, rebuilds existing dropdowns, then adds a
-   * default row for every group that does NOT already have at least one rule.
-   * Groups that already have a row are silently skipped — no alerts.
-   */
   window.loadAvailGroups = async function () {
     var msg = document.getElementById('save-msg');
     msg.textContent = 'Loading groups\u2026'; msg.style.color = '#94a3b8';
@@ -359,7 +342,6 @@
       return;
     }
 
-    // Groups that already have at least one rule row
     var hasRule = [];
     document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
       if (s.value && hasRule.indexOf(s.value) === -1) hasRule.push(s.value);
@@ -384,28 +366,43 @@
 
   /**
    * "+ Add rule" button.
-   * Ensures the group cache is populated so the dropdown is immediately usable.
-   * No duplicate checking — multiple rules for the same group are allowed.
+   * Blocks adding if a (group, gpu_type) pair would immediately duplicate
+   * the first existing row — but since the group select starts empty, the
+   * real duplicate check fires on onRowChange when the user picks a group.
    */
   window.addRow = async function () {
     if (_groups.length === 0) await _fetchGroups();
     _appendRow({});
   };
 
-  /** "Save & Apply" button. */
   window.savePolicy = async function () {
     var msg = document.getElementById('save-msg');
     var det = document.getElementById('save-detail');
 
     var groups = [];
+    var seen   = {};
+    var dupErr = null;
+
     document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
       var grp  = tr.querySelector('.grp-sel').value.trim();
       var type = tr.querySelector('.type-sel').value.trim() || 'nvidia.com/gpu';
       var max  = parseInt(tr.querySelector('.max-inp').value, 10);
-      if (grp) {
-        groups.push({ gitlab_group: grp, gpu_type: type, max_gpus: isNaN(max) ? 0 : max });
+      if (!grp) return;
+
+      var key = grp + '||' + type;
+      if (seen[key]) {
+        dupErr = 'Duplicate rule: group "' + grp + '" already has a limit for ' + type +
+                 '. Remove one before saving.';
       }
+      seen[key] = true;
+      groups.push({ gitlab_group: grp, gpu_type: type, max_gpus: isNaN(max) ? 0 : max });
     });
+
+    if (dupErr) {
+      msg.textContent = '\u2717 ' + dupErr;
+      msg.style.color = '#fc8181';
+      return;
+    }
 
     msg.textContent = 'Applying to cluster\u2026'; msg.style.color = '#94a3b8';
     det.style.display = 'none';
@@ -433,19 +430,11 @@
     }
   };
 
-  /**
-   * Single entry point called by nav() when this tab is opened.
-   * Sequence:
-   *   1. loadKvStatus() — fire-and-forget, updates badge in background
-   *   2. await loadPolicy() — renders rows AND populates all dropdowns
-   *      (loadPolicy calls _fetchGroups internally, no separate call needed)
-   */
   window.initGpuPolicyTab = async function () {
     window.loadKvStatus();
     await window.loadPolicy();
   };
 
-  // Handle browser refresh while on this tab
   document.addEventListener('DOMContentLoaded', function () {
     if (document.getElementById('policy-rows')) {
       window.initGpuPolicyTab();
