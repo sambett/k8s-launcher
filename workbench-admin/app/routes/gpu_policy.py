@@ -61,7 +61,7 @@ def _build_cluster_policy(groups):
             "name": f"limit-gpu-{safe}-{i}",
             "match": {"any": [{"resources": {
                 "kinds": ["Pod"], "namespaces": [POLICY_CM_NS],
-                "selector": {"matchLabels": {"jupyterhub.io/gitlab-group": gname}}
+                "selector": {"matchLabels": {"workbench/gitlab-group": gname}}
             }}]},
             "validate": {
                 "message": f"Group {gname!r} may use at most {max_gpus} GPU(s) of type {gpu_type}.",
