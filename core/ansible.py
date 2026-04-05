@@ -7,13 +7,28 @@ from pathlib import Path
 from core.paths import INVENTORY_PATH, VARS_PATH
 
 
-def ansible_stream(playbook_dir: Path):
+
+def _build_cmd(extra_vars: dict = None) -> list:
+    """Build the ansible-playbook command list, appending any extra vars."""
+    cmd = [
+        "ansible-playbook",
+        "-i", str(INVENTORY_PATH),
+        "site.yml",
+        "--extra-vars", f"@{VARS_PATH}",
+    ]
+    if extra_vars:
+        for k, v in extra_vars.items():
+            cmd += ["--extra-vars", f"{k}={v}"]
+    return cmd
+
+
+def ansible_stream(playbook_dir: Path, extra_vars: dict = None):
     if not INVENTORY_PATH.exists():
         yield "data: __ERROR__:no_inventory\n\n"
         return
 
     process = subprocess.Popen(
-        ["ansible-playbook", "-i", str(INVENTORY_PATH), "site.yml", "--extra-vars", f"@{VARS_PATH}"],
+        _build_cmd(extra_vars),
         cwd=str(playbook_dir),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

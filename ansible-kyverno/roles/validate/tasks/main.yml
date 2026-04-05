@@ -1,0 +1,28 @@
+---
+- name: Get Kyverno pod list
+  command: kubectl get pods -n {{ kyverno_namespace }} -o wide
+  register: pod_list
+  changed_when: false
+
+- name: Print Kyverno pod status
+  debug:
+    msg: "{{ pod_list.stdout_lines }}"
+
+- name: Confirm admission controller has ready replicas
+  command: >
+    kubectl get deployment kyverno-admission-controller
+    -n {{ kyverno_namespace }}
+    -o jsonpath='{.status.readyReplicas}'
+  register: ready_replicas
+  changed_when: false
+  failed_when: (ready_replicas.stdout | default('0')) | int < 1
+
+- name: Show active ClusterPolicies (should be empty after fresh install)
+  command: kubectl get clusterpolicies --no-headers
+  register: policies
+  changed_when: false
+  failed_when: false
+
+- name: Print ClusterPolicies
+  debug:
+    msg: "{{ policies.stdout_lines | default(['none — clean install state']) }}"

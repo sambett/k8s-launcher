@@ -1,167 +1,149 @@
 """
-routes/kyverno.py — Kyverno policy engine tab.
+routes/kyverno.py — Kyverno policy engine: version selection, install, status.
+
+Follows the same pattern as routes/extensions.py (GPU Device Plugin):
+  GET /api/kyverno/versions          — read compat_matrix, filter by k8s version
+  GET /api/kyverno/install/stream    — SSE: install via Ansible, version as query param
+  GET /api/kyverno/status            — pod-level health check
+  GET /api/kyverno/policies          — list active ClusterPolicies (read-only)
+
+Policy CRUD lives in workbench-admin (Day-2). This file is Day-0 only.
 """
 import json
-import os
-import subprocess
-import tempfile
+import re
+
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
-from core.ansible import run_on_cp
-from core.paths import COMPAT_MATRIX_PATH, INVENTORY_PATH, VARS_PATH
+from fastapi.responses import StreamingResponse
+
+from core.ansible import ansible_stream, run_on_cp
+from core.paths import BASE_DIR, ANSIBLE_KYVERNO_DIR
 
 router = APIRouter()
 
-JHUB_POLICY = """\
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
-metadata:
-  name: require-jhub-resource-limits
-  annotations:
-    policies.kyverno.io/title: Require JupyterHub Resource Limits
-    policies.kyverno.io/description: >
-      Ensures all JupyterHub user pods have CPU and memory limits defined.
-spec:
-  validationFailureAction: Audit
-  background: true
-  rules:
-    - name: check-resource-limits
-      match:
-        any:
-        - resources:
-            kinds: [Pod]
-            namespaces: [jhub]
-      validate:
-        message: "JupyterHub pods must have CPU and memory limits defined."
-        pattern:
-          spec:
-            containers:
-              - resources:
-                  limits:
-                    memory: "?*"
-                    cpu: "?*"
-"""
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")   # Helm chart versions: X.Y.Z (no v prefix)
 
 
-@router.get("/api/kyverno/status")
-async def kyverno_status():
-    out, rc = run_on_cp("helm list -n kyverno --no-headers 2>/dev/null | grep kyverno")
-    if rc != 0 or not out.strip():
-        return {"status": "not_installed"}
-    parts = out.strip().split()
-    return {"status": "installed", "chart": parts[8] if len(parts) > 8 else "unknown"}
+def _get_k8s_minor() -> str:
+    """Return current cluster minor version as '1.30' string."""
+    out, _ = run_on_cp(
+        "kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'"
+    )
+    m = re.search(r"v?(\d+\.\d+)", out)
+    return m.group(1) if m else ""
 
+
+# ── Versions ───────────────────────────────────────────────────────────────────
 
 @router.get("/api/kyverno/versions")
 async def kyverno_versions():
-    if not COMPAT_MATRIX_PATH.exists():
-        return {"versions": [], "recommended": None, "k8s_version": ""}
-    matrix  = json.loads(COMPAT_MATRIX_PATH.read_text())
-    entries = matrix.get("kyverno", [])
-    k8s_ver = _read_k8s_version()
-    return {"versions": entries, "recommended": _match_version(entries, k8s_ver), "k8s_version": k8s_ver}
-
-
-@router.get("/api/kyverno/policies")
-async def kyverno_policies():
-    out, rc = run_on_cp(
-        "kubectl get clusterpolicy --no-headers 2>/dev/null "
-        "-o custom-columns='NAME:.metadata.name,"
-        "READY:.status.ready,"
-        "BACKGROUND:.spec.background'"
-    )
-    policies = []
-    if rc == 0 and out.strip():
-        for line in out.strip().splitlines():
-            parts = line.split()
-            if parts:
-                policies.append({
-                    "name":       parts[0],
-                    "ready":      parts[1] if len(parts) > 1 else "unknown",
-                    "background": parts[2] if len(parts) > 2 else "unknown",
-                })
-    return {"policies": policies}
-
-
-@router.post("/api/kyverno/apply-jhub-policy")
-async def apply_jhub_policy():
-    tmp = tempfile.mktemp(suffix=".yaml")
+    """
+    Return Kyverno chart versions compatible with the current cluster.
+    Reads compat_matrix.json → filters by k8s_min/k8s_max → marks recommended.
+    Same pattern as GET /api/extensions/gpu/versions.
+    """
     try:
-        with open(tmp, "w") as f:
-            f.write(JHUB_POLICY)
-        result = subprocess.run(
-            ["ansible", "control_plane", "-i", str(INVENTORY_PATH),
-             "-m", "copy", "-a", f"src={tmp} dest=/tmp/jhub-kyverno-policy.yaml",
-             "--extra-vars", f"@{VARS_PATH}"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return {"status": "error", "message": result.stderr}
-        out, rc = run_on_cp("kubectl apply -f /tmp/jhub-kyverno-policy.yaml 2>&1")
-        if rc != 0:
-            return {"status": "error", "message": out}
-        return {"status": "ok", "message": "Policy applied in Audit mode"}
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        matrix = json.loads((BASE_DIR / "compat_matrix.json").read_text())
+    except Exception as e:
+        return {"versions": [], "k8s_version": "", "recommended": None, "error": str(e)}
+
+    k8s_version = _get_k8s_minor()          # e.g. "1.30"
+    all_versions = matrix.get("kyverno", [])
+
+    compatible = []
+    recommended = None
+
+    for v in all_versions:
+        if k8s_version:
+            try:
+                kv = tuple(int(x) for x in k8s_version.split("."))
+                mn = tuple(int(x) for x in v.get("k8s_min", "0.0").split("."))
+                mx = tuple(int(x) for x in v.get("k8s_max", "99.99").split("."))
+                if kv < mn or kv > mx:
+                    continue
+            except Exception:
+                pass
+        compatible.append(v)
+        if recommended is None:
+            recommended = v["version"]   # first match is recommended
+
+    return {
+        "versions":    compatible,
+        "k8s_version": k8s_version,
+        "recommended": recommended,
+    }
 
 
-def _kyverno_install_stream(version: str):
-    if not INVENTORY_PATH.exists():
-        yield "data: __ERROR__:no_inventory — run Configure first\n\n"
-        return
-    yield f"data: Installing Kyverno {version}...\n\n"
-    run_on_cp("kubectl create namespace kyverno --dry-run=client -o yaml | kubectl apply -f - 2>&1")
-    yield "data: Namespace kyverno ready\n\n"
-    out, _ = run_on_cp(
-        "helm repo add kyverno https://kyverno.github.io/kyverno/ && helm repo update 2>&1"
-    )
-    for line in out.splitlines():
-        if line.strip():
-            yield f"data: {line}\n\n"
-    out, rc = run_on_cp(
-        f"helm upgrade --install kyverno kyverno/kyverno "
-        f"--namespace kyverno --version {version} --timeout 5m --wait 2>&1"
-    )
-    for line in out.splitlines():
-        if line.strip():
-            yield f"data: {line}\n\n"
-    if rc != 0:
-        yield f"data: __ERROR__:{rc}\n\n"
-        return
-    yield "data: ✓ Kyverno installed. Apply policies from the Policies section.\n\n"
-    yield "data: __DONE__\n\n"
-
+# ── Install ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/kyverno/install/stream")
-async def kyverno_install_stream(version: str = ""):
-    if not version:
-        return JSONResponse(status_code=400, content={"error": "version required"})
+async def kyverno_install_stream(version: str):
+    """
+    SSE endpoint: install Kyverno via ansible-kyverno playbook.
+    version is passed as a query param (e.g. ?version=3.2.6).
+    Ansible receives it as --extra-vars "kyverno_version=3.2.6".
+    Emits __DONE__ on success, __ERROR__:<rc> on failure.
+    """
+    async def _stream():
+        if not VERSION_RE.match(version):
+            yield f"data: __ERROR__ Invalid version '{version}' — expected X.Y.Z (e.g. 3.2.6)\n\n"
+            return
+        yield f"data: Installing Kyverno {version}...\n\n"
+        for chunk in ansible_stream(
+            ANSIBLE_KYVERNO_DIR,
+            extra_vars={"kyverno_version": version}
+        ):
+            yield chunk
+
     return StreamingResponse(
-        _kyverno_install_stream(version),
+        _stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-def _read_k8s_version() -> str:
-    if VARS_PATH.exists():
-        for line in VARS_PATH.read_text().splitlines():
-            if line.strip().startswith("kubernetes_version:"):
-                return line.split(":", 1)[1].strip().strip('"')
-    return ""
+# ── Status ─────────────────────────────────────────────────────────────────────
+
+@router.get("/api/kyverno/status")
+async def kyverno_status():
+    """
+    Return running state of all Kyverno pods.
+    Used by the launcher dashboard to show an install status badge.
+    """
+    out, rc = run_on_cp("kubectl get pods -n kyverno --no-headers 2>&1")
+
+    if rc != 0 or not out.strip() or "No resources found" in out:
+        return {"installed": False, "running": False, "pods": []}
+
+    pods = []
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            pods.append({"name": parts[0], "ready": parts[1], "status": parts[2]})
+
+    all_running = all(p["status"] == "Running" for p in pods) if pods else False
+    return {"installed": len(pods) > 0, "running": all_running, "pods": pods}
 
 
-def _match_version(entries: list, k8s_version: str):
-    if not k8s_version or not entries:
-        return None
-    try:
-        minor = int(k8s_version.split(".")[1])
-        for entry in entries:
-            lo = int(entry.get("k8s_min", "0").split(".")[1])
-            hi = int(entry.get("k8s_max", "99").split(".")[1])
-            if lo <= minor <= hi:
-                return entry["version"]
-    except (ValueError, IndexError):
-        pass
-    return None
+# ── Policies ───────────────────────────────────────────────────────────────────
+
+@router.get("/api/kyverno/policies")
+async def list_policies():
+    """
+    List ClusterPolicies active in the cluster (read-only).
+    Policies are created/managed by workbench-admin GPU Policies tab.
+    """
+    out, rc = run_on_cp("kubectl get clusterpolicies --no-headers 2>&1")
+
+    if rc != 0 or not out.strip() or "No resources found" in out:
+        return {"policies": []}
+
+    policies = []
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if parts:
+            policies.append({
+                "name":  parts[0],
+                "ready": parts[1] if len(parts) > 1 else "unknown",
+                "age":   parts[-1] if len(parts) > 2 else "unknown",
+            })
+    return {"policies": policies}

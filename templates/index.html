@@ -42,11 +42,11 @@
   </button>
   <!-- Visual separator between setup flow and utility tabs -->
   <span class="stepper-divider">│</span>
+  <button class="step" id="step-kyverno"    onclick="showTab('kyverno',this)">🛡 Kyverno</button>
   <button class="step" id="step-status"     onclick="showTab('status',this)">📊 Status</button>
   <button class="step" id="step-workers"    onclick="showTab('workers',this)">👷 Workers</button>
   <button class="step" id="step-extensions" onclick="showTab('extensions',this)">🖥 GPU</button>
   <button class="step" id="step-monitoring" onclick="showTab('monitoring',this)">📈 Monitoring</button>
-  <button class="step" id="step-kyverno"    onclick="showTab('kyverno',this)">🛡 Kyverno</button>
   <button class="step" id="step-reset"      onclick="showTab('reset',this)"
     style="color:#c62828;margin-left:4px">🗑 Reset</button>
 </div>
@@ -64,7 +64,7 @@
 {% include "tabs/workers.html" %}
 {% include "tabs/extensions.html" %}
 {% include "tabs/monitoring.html" %}
-{% include "tabs/kyverno.html" %}
+  {% include "tabs/kyverno.html" %}
 {% include "tabs/reset.html" %}
 
 {% include "shared/scripts.html" %}

@@ -1,0 +1,5 @@
+# ansible-kyverno variables
+# kyverno_version is intentionally left empty here — it is always
+# passed at runtime by the launcher via --extra-vars "kyverno_version=X.Y.Z"
+# This file only sets the namespace, which never changes.
+kyverno_namespace: "kyverno"

@@ -135,6 +135,12 @@ hub:
                   "mem_limit":     p.get("mem_limit", "4G"),
                   "mem_guarantee": p.get("mem_guarantee", "1G"),
                   "image_pull_secrets": ["gitlab-registry-secret"],
+                  # Pod label — read by Kyverno to enforce per-group GPU quotas.
+                  # Kyverno matches on workbench/gitlab-group to find the right policy.
+                  "extra_labels": {
+                      "workbench/gitlab-group": p.get("gitlab_group", "unknown"),
+                      "workbench/profile-slug":  p.get("slug", "unknown"),
+                  },
               }
               if gpu_count > 0:
                   kubespawner["extra_resource_limits"] = {"nvidia.com/gpu": str(gpu_count)}

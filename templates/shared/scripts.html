@@ -26,9 +26,9 @@ function showTab(name, btn) {
     if (typeof loadGpuVersions  === 'function') loadGpuVersions();
   }
   if (name === 'monitoring') { if (typeof loadMonitoringStatus === 'function') loadMonitoringStatus(); }
-  if (name === 'kyverno')    {
-    if (typeof loadKyvernoStatus === 'function') loadKyvernoStatus();
-    if (typeof loadKyvPolicies   === 'function') loadKyvPolicies();
+  if (name === 'kyverno') {
+    if (typeof loadKyvernoStatus   === 'function') loadKyvernoStatus();
+    if (typeof loadKyvernoVersions === 'function') loadKyvernoVersions();
   }
   checkPrereqs(name);
 }

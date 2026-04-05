@@ -9,6 +9,7 @@ ANSIBLE_LONGHORN_DIR    = BASE_DIR / "ansible-longhorn"
 ANSIBLE_GITLAB_DIR      = BASE_DIR / "ansible-gitlab"
 ANSIBLE_JUPYTERHUB_DIR  = BASE_DIR / "ansible-jupyterhub"
 ANSIBLE_DASHBOARD_DIR   = BASE_DIR / "ansible-dashboard"
+ANSIBLE_KYVERNO_DIR    = BASE_DIR / "ansible-kyverno"
 
 COMPAT_MATRIX_PATH   = BASE_DIR / "compat_matrix.json"
 SSH_KEY_PATH         = Path.home() / ".ssh" / "id_ed25519"

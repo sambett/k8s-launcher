@@ -1,0 +1,46 @@
+---
+# Install Kyverno via Helm
+# kyverno_version comes from --extra-vars at runtime (set by the launcher API)
+
+- name: Validate kyverno_version is defined
+  fail:
+    msg: "kyverno_version must be passed as --extra-vars. Example: --extra-vars 'kyverno_version=3.2.6'"
+  when: kyverno_version is not defined or kyverno_version == ""
+
+- name: Add Kyverno Helm repository
+  command: helm repo add kyverno https://kyverno.github.io/kyverno/
+  register: repo_add
+  changed_when: "'already exists' not in repo_add.stdout"
+  failed_when: repo_add.rc != 0 and 'already exists' not in repo_add.stdout
+
+- name: Update Helm repositories
+  command: helm repo update
+  changed_when: true
+
+- name: Create kyverno namespace (idempotent)
+  shell: >
+    kubectl create namespace {{ kyverno_namespace }}
+    --dry-run=client -o yaml | kubectl apply -f -
+  changed_when: false
+
+- name: Install Kyverno {{ kyverno_version }} via Helm
+  command: >
+    helm upgrade --install kyverno kyverno/kyverno
+    --namespace {{ kyverno_namespace }}
+    --version {{ kyverno_version }}
+    --timeout 5m
+    --wait
+  register: helm_result
+  changed_when: true
+
+- name: Wait for admission controller to be ready
+  command: >
+    kubectl rollout status deployment kyverno-admission-controller
+    -n {{ kyverno_namespace }} --timeout=180s
+  changed_when: false
+
+- name: Wait for background controller to be ready
+  command: >
+    kubectl rollout status deployment kyverno-background-controller
+    -n {{ kyverno_namespace }} --timeout=180s
+  changed_when: false

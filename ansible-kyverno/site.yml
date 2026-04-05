@@ -1,0 +1,17 @@
+---
+# ansible-kyverno/site.yml
+# Installs Kyverno policy engine on an existing K8s cluster.
+# kyverno_version is passed at runtime via --extra-vars from the launcher.
+# Prereqs: ansible-k8s, ansible-longhorn, ansible-jupyterhub already complete.
+
+- name: Install Kyverno policy engine
+  hosts: control_plane
+  become: no
+  roles:
+    - kyverno
+
+- name: Validate Kyverno deployment
+  hosts: control_plane
+  become: no
+  roles:
+    - validate
