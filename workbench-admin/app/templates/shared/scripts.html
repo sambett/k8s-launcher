@@ -10,7 +10,7 @@ function nav(name, el) {
   if (name === 'new')        { loadGroups(); loadRepos(); }
   if (name === 'settings')   { loadTokenStatus(); loadSettingsInfo(); }
   if (name === 'images')     { loadImportRepos(); loadRegistryImages(); }
-  // gpu-policy: use the single entry-point that sequences status + policy + groups correctly
+  // Single entry point — sequences status + policy + groups with no race condition
   if (name === 'gpu-policy') { if (typeof initGpuPolicyTab === 'function') initGpuPolicyTab(); }
 }
 

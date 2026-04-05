@@ -1,107 +1,150 @@
 <div id="page-gpu-policy" class="page">
 
-  <!-- ── Status bar ──────────────────────────────────────────────────────────── -->
-  <div class="pc" style="margin-bottom:.75rem;padding:.75rem 1.25rem">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <!-- ── Page header ──────────────────────────────────────────────────────── -->
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem">
+    <div>
+      <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Quota Policies</h2>
+      <p style="margin:0;color:#64748b;font-size:.85rem;line-height:1.6">
+        Hard per-group GPU limits enforced by Kyverno at the Kubernetes API level.<br>
+        ClusterPolicy applied to namespace:
+        <code style="color:#a78bfa;background:#1a1d2e;padding:1px 6px;border-radius:3px;font-size:.8rem">jhub</code>
+      </p>
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0;padding-top:.2rem">
       <span class="dot" id="kv-dot"></span>
-      <span style="font-size:.85rem;font-weight:600;color:#e2e8f0">GPU Group Policy</span>
-      <span class="mono" style="font-size:.7rem;color:#64748b">jupyterhub-gpu-group-policy</span>
-      <span id="kv-badge" class="badge b-warn" style="font-size:.72rem">checking…</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()"
-        style="margin-left:auto;padding:2px 8px;font-size:.72rem">↺ refresh</button>
+      <span id="kv-badge" class="badge b-warn" style="min-width:80px;text-align:center">checking…</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()" title="Refresh Kyverno status">↺</button>
     </div>
   </div>
 
-  <!-- ── Rules table ─────────────────────────────────────────────────────────── -->
-  <div class="pc" style="margin-bottom:.75rem;padding:1rem 1.25rem">
+  <!-- ── Rules table card ──────────────────────────────────────────────────── -->
+  <div class="card" style="margin-bottom:1.25rem">
 
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:.6rem">
-      <span style="font-size:.85rem;font-weight:600;color:#e2e8f0;flex:1">Group GPU rules</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadAvailGroups()"
-        style="font-size:.75rem">↺ load groups</button>
-      <button class="btn btn-primary btn-sm" onclick="addRow()"
-        style="font-size:.75rem">+ Add rule</button>
+    <!-- Card toolbar -->
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem;flex-wrap:wrap">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#e2e8f0;flex:1">Quota Rules</h3>
+      <button class="btn btn-ghost" onclick="loadAvailGroups()"
+        style="font-size:.82rem;padding:.35rem .9rem">
+        ↺ Load groups from profiles
+      </button>
+      <button class="btn btn-primary" onclick="addRow()"
+        style="font-size:.82rem;padding:.35rem .9rem">
+        + Add rule
+      </button>
     </div>
 
-    <p style="font-size:.73rem;color:#64748b;margin:0 0 .75rem;line-height:1.5">
-      Each row enforces a GPU limit for one GitLab group.
-      <span style="color:#fc8181;font-weight:500">Max = 0</span> blocks all GPU requests from that group.
-      Groups with no row here are unrestricted.
-    </p>
+    <!-- Info banner -->
+    <div style="background:#0f1117;border-left:3px solid #7c6af7;border-radius:0 5px 5px 0;
+                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
+      Each rule sets the maximum GPUs a pod from that group can request.
+      <span style="color:#fc8181;font-weight:600">Max&nbsp;=&nbsp;0</span> blocks the group entirely.
+      Multiple rules for the <em>same group</em> are allowed when you need limits per GPU type.
+      Groups with no rule here are <strong style="color:#68d391">unrestricted</strong>.
+    </div>
 
-    <table style="width:100%;border-collapse:collapse;font-size:.8rem">
-      <thead>
-        <tr style="border-bottom:1px solid #2d3148">
-          <th style="text-align:left;padding:.35rem .5rem;color:#64748b;font-weight:500;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">GitLab group</th>
-          <th style="text-align:left;padding:.35rem .5rem;color:#64748b;font-weight:500;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">GPU type</th>
-          <th style="text-align:left;padding:.35rem .5rem;color:#64748b;font-weight:500;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;width:100px">Max / pod</th>
-          <th style="width:32px"></th>
-        </tr>
-      </thead>
-      <tbody id="policy-rows">
-        <tr id="empty-row">
-          <td colspan="4" style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">
-            No rules defined — click &quot;+ Add rule&quot; or &quot;↺ load groups&quot; to start.
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <!-- Table -->
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;min-width:480px">
+        <thead>
+          <tr style="background:#13151f;border-bottom:2px solid #2d3148">
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+              GitLab Group
+            </th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+              GPU Type
+            </th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em;width:150px">
+              Max per pod
+            </th>
+            <th style="padding:.65rem 1rem;width:90px;text-align:center"></th>
+          </tr>
+        </thead>
+        <tbody id="policy-rows">
+          <tr id="empty-row">
+            <td colspan="4" style="padding:2.5rem;text-align:center;color:#4a5568;font-size:.875rem;line-height:2">
+              No rules defined yet.<br>
+              <span style="font-size:.8rem">
+                Click <strong style="color:#7c6af7">↺ Load groups from profiles</strong> to
+                auto-populate, or <strong style="color:#7c6af7">+ Add rule</strong> to create
+                one manually.
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- ── Save ────────────────────────────────────────────────────────────────── -->
-  <div class="pc" style="padding:.85rem 1.25rem">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+  <!-- ── Save card ─────────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="savePolicy()"
-        style="font-size:.82rem;padding:.4rem 1.1rem">Save &amp; Apply</button>
-      <span id="save-msg" style="font-size:.78rem"></span>
+        style="padding:.5rem 1.5rem;font-size:.9rem;font-weight:600">
+        Save &amp; Apply to Cluster
+      </button>
+      <span id="save-msg" style="font-size:.85rem"></span>
     </div>
     <div id="save-detail" class="log-box"
-      style="display:none;margin-top:.65rem;min-height:50px;max-height:110px;font-size:.72rem"></div>
+      style="display:none;margin-top:.75rem;max-height:140px;font-size:.78rem"></div>
+  </div>
+
+  <!-- ── Delete confirmation modal ─────────────────────────────────────────── -->
+  <div id="del-modal"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
+           z-index:500;align-items:center;justify-content:center">
+    <div style="background:#1a1d2e;border:2px solid #e53e3e;border-radius:10px;
+                padding:1.75rem 2rem;max-width:420px;width:90%;
+                box-shadow:0 25px 60px rgba(0,0,0,.6)">
+      <h3 style="margin:0 0 .6rem;color:#fc8181;font-size:1.05rem">Delete Rule?</h3>
+      <p id="del-msg" style="margin:0 0 1.5rem;color:#94a3b8;font-size:.875rem;line-height:1.7"></p>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="cancelDelete()"
+          style="font-size:.875rem;padding:.4rem 1.1rem">Cancel</button>
+        <button class="btn btn-danger" onclick="confirmDelete()"
+          style="font-size:.875rem;padding:.4rem 1.1rem">Yes, delete</button>
+      </div>
+    </div>
   </div>
 
 </div>
 
 <script>
 /**
- * GPU Policies tab — JavaScript module.
+ * GPU Policies tab — self-contained module.
  *
- * Design principles
- * ─────────────────
- * • _fetchGroups()  : private — fetches + caches groups, rebuilds ALL existing selects.
- * • _appendRow()    : private — pure DOM append, zero business logic, no duplicate checks.
- * • loadPolicy()    : public  — renders rows from ConfigMap, then calls _fetchGroups so
- *                               dropdowns are always populated after the call resolves.
- * • loadAvailGroups(): public — "↺ load groups" button: fetches groups, adds rows only for
- *                               groups that do NOT yet have a rule. Never calls alert().
- * • addRow()        : public  — "+" button: ensures groups are cached, then appends a blank row.
- * • initGpuPolicyTab(): public — single entry point for nav(). Sequences everything correctly.
- *
- * Public functions are exported to window so HTML onclick attributes can reach them.
- * All async sequencing is handled internally — callers never need to await or coordinate.
+ * Fixes vs. previous version
+ * ──────────────────────────
+ * 1. _fetchGroups() is private, always awaited, rebuilds ALL existing selects.
+ * 2. loadPolicy() calls _fetchGroups() after rendering rows — no race possible.
+ * 3. initGpuPolicyTab() is the single entry point called by nav(); correct sequence.
+ * 4. addRow() has NO duplicate-group check — multiple rules per group are allowed.
+ * 5. Delete uses a custom confirmation modal, not browser confirm().
+ * 6. loadAvailGroups() adds rows for groups WITHOUT a rule; skips ones that already
+ *    have at least one rule (silently, no alert).
  */
 (function () {
   'use strict';
 
-  // ── Module state ─────────────────────────────────────────────────────────────
-  /**
-   * Cached list of group names from the profiles ConfigMap.
-   * Populated by _fetchGroups(); read by _rebuildSelect() and loadAvailGroups().
-   */
-  var _groups = [];
+  // ── State ───────────────────────────────────────────────────────────────────
+  var _groups          = [];   // cached group names from profiles ConfigMap
+  var _pendingDeleteTr = null; // row waiting for delete confirmation
 
-  // ── Style constants ───────────────────────────────────────────────────────────
-  var SELECT_STYLE = [
+  // ── Inline styles for dynamically created row elements ──────────────────────
+  var S_SEL = [
     'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
-    'border-radius:4px',  'padding:3px 7px', 'font-size:.78rem', 'width:100%'
+    'border-radius:5px',  'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
   ].join(';');
 
-  var NUMBER_STYLE = [
-    'width:58px',         'background:#0f1117', 'color:#e2e8f0',
-    'border:1px solid #2d3148', 'border-radius:4px',
-    'padding:3px 7px',    'font-size:.78rem',   'text-align:center'
+  var S_NUM = [
+    'width:80px',        'background:#0f1117', 'color:#e2e8f0',
+    'border:1px solid #2d3148', 'border-radius:5px',
+    'padding:.45rem .6rem', 'font-size:.875rem', 'text-align:center'
   ].join(';');
 
-  // ── Private helpers ───────────────────────────────────────────────────────────
+  // ── Private helpers ─────────────────────────────────────────────────────────
 
   function _esc(s) {
     return String(s)
@@ -110,53 +153,48 @@
   }
 
   /**
-   * Rebuild one group <select>'s option list using the current _groups cache.
-   * The currently selected value is preserved. If the selected value is no longer
-   * in _groups (e.g. the profile was deleted), it is kept as a visually distinct
-   * "stale" option so the row is not silently broken.
+   * Rebuild one group <select> preserving its current selection.
+   * If the current value is no longer in _groups it is kept as a visually
+   * flagged stale option so the row is not silently broken.
    */
-  function _rebuildSelect(sel, selectedValue) {
-    var opts = ['<option value="">— pick group —</option>'];
-
+  function _rebuildSelect(sel, cur) {
+    var opts = ['<option value="">— select group —</option>'];
     _groups.forEach(function (g) {
       opts.push(
-        '<option value="' + _esc(g) + '"' +
-        (g === selectedValue ? ' selected' : '') +
+        '<option value="' + _esc(g) + '"' + (g === cur ? ' selected' : '') +
         '>' + _esc(g) + '</option>'
       );
     });
-
-    if (selectedValue && _groups.indexOf(selectedValue) === -1) {
-      // Preserve a stale selection so the admin can see and fix it
+    if (cur && cur !== '' && _groups.indexOf(cur) === -1) {
       opts.push(
-        '<option value="' + _esc(selectedValue) + '" selected>' +
-        _esc(selectedValue) + ' ⚠</option>'
+        '<option value="' + _esc(cur) + '" selected>' +
+        _esc(cur) + ' (no profile)</option>'
       );
     }
-
     sel.innerHTML = opts.join('');
   }
 
-  /** Rebuild every group select currently in the table. */
+  /** Rebuild every group select currently visible in the table. */
   function _rebuildAllSelects() {
-    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (sel) {
-      _rebuildSelect(sel, sel.value);
+    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
+      _rebuildSelect(s, s.value);
     });
   }
 
-  /** Replace the table body with the "no rules" placeholder row. */
+  /** Replace the table body with the empty-state placeholder row. */
   function _clearRows() {
     document.getElementById('policy-rows').innerHTML =
       '<tr id="empty-row"><td colspan="4" ' +
-      'style="padding:.9rem .5rem;color:#4a5568;font-size:.78rem;font-style:italic">' +
-      'No rules defined &mdash; click &quot;+ Add rule&quot; or ' +
-      '&quot;&#x21ba; load groups&quot; to start.</td></tr>';
+      'style="padding:2.5rem;text-align:center;color:#4a5568;font-size:.875rem;line-height:2">' +
+      'No rules defined yet.<br>' +
+      '<span style="font-size:.8rem">Click <strong style="color:#7c6af7">+ Add rule</strong> ' +
+      'or <strong style="color:#7c6af7">\u21ba Load groups</strong> to start.</span>' +
+      '</td></tr>';
   }
 
   /**
-   * Append one rule row.
-   * Pure DOM operation — performs no duplicate checking and calls no alerts.
-   * All callers are responsible for deciding whether a row should be added.
+   * Append one rule row. Pure DOM operation — no validation, no duplicate checks.
+   * Populates the group select immediately using the current _groups cache.
    */
   function _appendRow(data) {
     var empty = document.getElementById('empty-row');
@@ -169,39 +207,35 @@
     var tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #1e2235';
     tr.innerHTML =
-      '<td style="padding:.3rem .4rem">' +
-        '<select class="grp-sel" style="' + SELECT_STYLE + '"></select>' +
+      '<td style="padding:.6rem 1rem">' +
+        '<select class="grp-sel" style="' + S_SEL + '"></select>' +
       '</td>' +
-      '<td style="padding:.3rem .4rem">' +
-        '<select class="type-sel" style="' + SELECT_STYLE + '">' +
+      '<td style="padding:.6rem 1rem">' +
+        '<select class="type-sel" style="' + S_SEL + '">' +
           '<option value="nvidia.com/gpu"'        + (type === 'nvidia.com/gpu'        ? ' selected' : '') + '>nvidia.com/gpu</option>' +
           '<option value="nvidia.com/mig-1g.5gb"' + (type === 'nvidia.com/mig-1g.5gb' ? ' selected' : '') + '>mig-1g.5gb</option>' +
         '</select>' +
       '</td>' +
-      '<td style="padding:.3rem .4rem">' +
-        '<input type="number" class="max-inp" min="0" max="16" value="' + max + '" style="' + NUMBER_STYLE + '">' +
+      '<td style="padding:.6rem 1rem">' +
+        '<input type="number" class="max-inp" min="0" max="16" value="' + max + '" style="' + S_NUM + '">' +
       '</td>' +
-      '<td style="padding:.3rem .4rem;text-align:center">' +
-        '<button onclick="this.closest(\'tr\').remove(); checkEmpty()" ' +
-        'style="background:none;border:none;color:#4a5568;font-size:1rem;cursor:pointer;' +
-        'line-height:1;padding:2px 5px;border-radius:3px" ' +
-        'onmouseover="this.style.color=\'#fc8181\'" ' +
-        'onmouseout="this.style.color=\'#4a5568\'">&#xd7;</button>' +
+      '<td style="padding:.6rem 1rem;text-align:center">' +
+        '<button onclick="askDeleteRow(this)" ' +
+        'style="background:none;border:1px solid #374151;color:#9ca3af;border-radius:5px;' +
+        'padding:4px 12px;cursor:pointer;font-size:.8rem;transition:all .15s" ' +
+        'onmouseover="this.style.borderColor=\'#ef4444\';this.style.color=\'#ef4444\'" ' +
+        'onmouseout="this.style.borderColor=\'#374151\';this.style.color=\'#9ca3af\'">' +
+        'Delete</button>' +
       '</td>';
 
     document.getElementById('policy-rows').appendChild(tr);
-    // Populate the new row's dropdown immediately using the current cache
     _rebuildSelect(tr.querySelector('.grp-sel'), grp);
   }
 
   /**
-   * Fetch available groups from the backend, update _groups, and rebuild
-   * all existing selects.
-   *
-   * This is always safe to call: on error it leaves _groups unchanged and
-   * silently continues so a network hiccup does not break the whole tab.
-   *
-   * Returns the (possibly unchanged) _groups array.
+   * Fetch available groups from the backend, update _groups cache, and
+   * rebuild all group selects.  Returns the group array ([] on error).
+   * Always safe to call — logs warnings but never throws.
    */
   async function _fetchGroups() {
     try {
@@ -209,20 +243,62 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       var d = await res.json();
       _groups = Array.isArray(d.groups) ? d.groups : [];
+      if (d.error) {
+        console.warn('GPU Policy: available-groups warning:', d.error);
+      }
     } catch (e) {
-      // Non-fatal: log for debugging but do not surface to the user
-      console.warn('GPU Policy: could not fetch available groups —', e);
+      console.warn('GPU Policy: could not fetch groups —', String(e));
     }
     _rebuildAllSelects();
     return _groups;
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────────
+  // ── Delete modal ────────────────────────────────────────────────────────────
 
-  /**
-   * Refresh the Kyverno ClusterPolicy status badge.
-   * Called on tab open (fire-and-forget) and after Save & Apply.
-   */
+  /** Called by the Delete button in each row. Shows the confirmation modal. */
+  window.askDeleteRow = function (btn) {
+    _pendingDeleteTr = btn.closest('tr');
+    var grp  = _pendingDeleteTr.querySelector('.grp-sel').value  || '(no group selected)';
+    var type = _pendingDeleteTr.querySelector('.type-sel').value || 'nvidia.com/gpu';
+    var max  = _pendingDeleteTr.querySelector('.max-inp').value;
+
+    document.getElementById('del-msg').innerHTML =
+      'Remove the rule for group ' +
+      '<strong style="color:#e2e8f0">' + _esc(grp) + '</strong>?<br>' +
+      '<span style="font-size:.82rem;color:#64748b">' +
+      'GPU type: ' + _esc(type) + ' &nbsp;|&nbsp; ' +
+      'Max per pod: <strong style="color:' +
+      (parseInt(max, 10) === 0 ? '#fc8181' : '#68d391') + '">' + _esc(max) + '</strong>' +
+      '</span><br><br>' +
+      '<span style="font-size:.8rem;color:#4a5568">' +
+      'This removes the row. The cluster policy updates when you click ' +
+      '<em>Save &amp; Apply</em>.' +
+      '</span>';
+
+    document.getElementById('del-modal').style.display = 'flex';
+  };
+
+  /** Confirm — remove the row and close the modal. */
+  window.confirmDelete = function () {
+    if (_pendingDeleteTr) {
+      _pendingDeleteTr.remove();
+      _pendingDeleteTr = null;
+      if (!document.querySelector('#policy-rows tr:not(#empty-row)')) {
+        _clearRows();
+      }
+    }
+    document.getElementById('del-modal').style.display = 'none';
+  };
+
+  /** Cancel — close the modal without touching the row. */
+  window.cancelDelete = function () {
+    _pendingDeleteTr = null;
+    document.getElementById('del-modal').style.display = 'none';
+  };
+
+  // ── Public API ───────────────────────────────────────────────────────────────
+
+  /** Refresh the Kyverno ClusterPolicy status badge. */
   window.loadKvStatus = async function () {
     var badge = document.getElementById('kv-badge');
     var dot   = document.getElementById('kv-dot');
@@ -234,10 +310,10 @@
         badge.className = 'badge b-warn'; badge.textContent = 'not applied';
         dot.className   = 'dot';
       } else if (d.ready) {
-        badge.className = 'badge b-ok'; badge.textContent = '✓ active';
+        badge.className = 'badge b-ok'; badge.textContent = '\u2713 active';
         dot.className   = 'dot ok';
       } else {
-        badge.className = 'badge b-run'; badge.textContent = 'syncing…';
+        badge.className = 'badge b-run'; badge.textContent = 'syncing\u2026';
         dot.className   = 'dot running';
       }
     } catch (e) {
@@ -248,10 +324,8 @@
 
   /**
    * Load current policy rules from the gpu-group-policy ConfigMap and render them.
-   * After the rows are rendered, _fetchGroups() is called so every dropdown is
-   * populated. This guarantees that on return the table is fully ready.
-   *
-   * Safe to call multiple times (idempotent — clears and re-renders each time).
+   * After rows are rendered, _fetchGroups() is awaited so every dropdown is
+   * populated before this function returns — no race condition possible.
    */
   window.loadPolicy = async function () {
     try {
@@ -261,84 +335,68 @@
       _clearRows();
       (d.groups || []).forEach(function (g) { _appendRow(g); });
     } catch (e) {
-      console.error('GPU Policy: could not load policy —', e);
+      console.error('GPU Policy: could not load policy —', String(e));
     }
-    // Always fetch groups after rendering rows so dropdowns are ready
+    // Always fetch groups after rendering rows — guarantees dropdowns are filled
     await _fetchGroups();
   };
 
   /**
-   * "↺ load groups" button handler.
-   *
-   * 1. Fetches the latest group list from the backend.
-   * 2. Rebuilds all existing row dropdowns (so any new profiles show up).
-   * 3. Adds a default row for every group that does NOT already have a rule.
-   *    Groups that already have a row are silently skipped — no alerts.
+   * "↺ Load groups from profiles" button.
+   * Fetches all available groups, rebuilds existing dropdowns, then adds a
+   * default row for every group that does NOT already have at least one rule.
+   * Groups that already have a row are silently skipped — no alerts.
    */
   window.loadAvailGroups = async function () {
     var msg = document.getElementById('save-msg');
-    msg.textContent = 'Loading groups…'; msg.style.color = '#94a3b8';
+    msg.textContent = 'Loading groups\u2026'; msg.style.color = '#94a3b8';
 
     var groups = await _fetchGroups();
 
     if (groups.length === 0) {
-      msg.textContent = 'No groups found — create profiles first.';
+      msg.textContent = 'No groups found \u2014 create profiles first.';
       msg.style.color = '#fbbf24';
       return;
     }
 
-    // Collect which groups already have a row (non-empty select value)
-    var alreadyHaveRow = [];
-    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (sel) {
-      if (sel.value) alreadyHaveRow.push(sel.value);
+    // Groups that already have at least one rule row
+    var hasRule = [];
+    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
+      if (s.value && hasRule.indexOf(s.value) === -1) hasRule.push(s.value);
     });
 
     var added = 0;
     groups.forEach(function (g) {
-      if (alreadyHaveRow.indexOf(g) === -1) {
+      if (hasRule.indexOf(g) === -1) {
         _appendRow({ gitlab_group: g, gpu_type: 'nvidia.com/gpu', max_gpus: 1 });
         added++;
       }
     });
 
     if (added > 0) {
-      msg.textContent = groups.length + ' group(s) found — ' + added + ' row(s) added.';
+      msg.textContent = groups.length + ' group(s) \u2014 ' + added + ' row(s) added.';
     } else {
-      msg.textContent = groups.length + ' group(s) found — all groups already have rules.';
+      msg.textContent = groups.length + ' group(s) loaded \u2014 all already have rules.';
     }
     msg.style.color = '#68d391';
     setTimeout(function () { msg.textContent = ''; }, 4000);
   };
 
   /**
-   * "+ Add rule" button handler.
-   * Ensures the group cache is populated before appending the blank row so the
-   * dropdown is immediately usable (no "— pick group —" with no options).
+   * "+ Add rule" button.
+   * Ensures the group cache is populated so the dropdown is immediately usable.
+   * No duplicate checking — multiple rules for the same group are allowed.
    */
   window.addRow = async function () {
     if (_groups.length === 0) await _fetchGroups();
     _appendRow({});
   };
 
-  /**
-   * Called by the × delete button in each row.
-   * Shows the placeholder when the last rule row is removed.
-   */
-  window.checkEmpty = function () {
-    var tbody = document.getElementById('policy-rows');
-    if (!tbody.querySelector('tr:not(#empty-row)')) _clearRows();
-  };
-
-  /**
-   * "Save & Apply" button handler.
-   * Reads the current table state, POSTs to the backend, and refreshes the
-   * status badge once Kyverno has had time to reflect the update.
-   */
+  /** "Save & Apply" button. */
   window.savePolicy = async function () {
     var msg = document.getElementById('save-msg');
     var det = document.getElementById('save-detail');
 
-    // Collect rules, skip rows with no group selected
     var groups = [];
     document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
       var grp  = tr.querySelector('.grp-sel').value.trim();
@@ -349,7 +407,7 @@
       }
     });
 
-    msg.textContent = 'Applying…'; msg.style.color = '#94a3b8';
+    msg.textContent = 'Applying to cluster\u2026'; msg.style.color = '#94a3b8';
     det.style.display = 'none';
 
     try {
@@ -361,39 +419,33 @@
       var d = await resp.json();
 
       if (d.success) {
-        msg.textContent = '✓ ' + d.message;
-        msg.style.color = '#68d391';
-        // Allow Kyverno ~2 s to pick up the change before refreshing the badge
+        msg.textContent = '\u2713 ' + d.message; msg.style.color = '#68d391';
         setTimeout(window.loadKvStatus, 2000);
       } else {
-        msg.textContent = '✗ ' + (d.error || 'Failed — see detail below');
+        msg.textContent = '\u2717 ' + (d.error || 'Failed \u2014 see detail below');
         msg.style.color = '#fc8181';
       }
       if (d.detail) { det.textContent = d.detail; det.style.display = 'block'; }
 
     } catch (e) {
-      msg.textContent = '✗ Network error: ' + String(e);
+      msg.textContent = '\u2717 Network error: ' + String(e);
       msg.style.color = '#fc8181';
     }
   };
 
   /**
-   * Single entry point called by nav() in scripts.html when this tab is opened.
-   *
-   * Correct sequence:
-   *   1. loadKvStatus()  — fire-and-forget; updates the badge in the background.
-   *   2. await loadPolicy() — renders rows AND populates all dropdowns before returning.
-   *
-   * No race conditions: groups are always fetched inside loadPolicy() after the rows
-   * exist, so every dropdown is ready when the user sees the tab.
+   * Single entry point called by nav() when this tab is opened.
+   * Sequence:
+   *   1. loadKvStatus() — fire-and-forget, updates badge in background
+   *   2. await loadPolicy() — renders rows AND populates all dropdowns
+   *      (loadPolicy calls _fetchGroups internally, no separate call needed)
    */
   window.initGpuPolicyTab = async function () {
-    window.loadKvStatus();     // non-blocking — badge update is cosmetic
-    await window.loadPolicy(); // blocking — table must be ready before user interacts
+    window.loadKvStatus();
+    await window.loadPolicy();
   };
 
-  // ── DOM ready ─────────────────────────────────────────────────────────────────
-  // Handles a browser refresh while the admin is on this tab.
+  // Handle browser refresh while on this tab
   document.addEventListener('DOMContentLoaded', function () {
     if (document.getElementById('policy-rows')) {
       window.initGpuPolicyTab();
