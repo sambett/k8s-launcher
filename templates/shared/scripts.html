@@ -28,7 +28,8 @@ function showTab(name, btn) {
   if (name === 'monitoring') { if (typeof loadMonitoringStatus === 'function') loadMonitoringStatus(); }
   if (name === 'kyverno') {
     if (typeof loadKyvernoStatus   === 'function') loadKyvernoStatus();
-    if (typeof loadKyvernoVersions === 'function') loadKyvernoVersions();
+    if (typeof loadKyvernoVersions  === 'function') loadKyvernoVersions();
+    if (typeof loadKyvernoPolicies === 'function') loadKyvernoPolicies();
   }
   checkPrereqs(name);
 }

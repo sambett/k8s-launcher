@@ -1,7 +1,3 @@
-<!-- ═══════════════════════════════════════════════════════════════
-     KYVERNO TAB — Policy engine deployment and status
-     Follows the same pattern as monitoring.html and extensions.html
-     ═══════════════════════════════════════════════════════════════ -->
 <div id="tab-kyverno" class="panel">
 
   <h2 style="margin:0 0 4px">Kyverno Policy Engine</h2>
@@ -11,21 +7,35 @@
     per-group GPU quota rules that are enforced at the cluster level.
   </p>
 
-  <!-- ── Status row ──────────────────────────────────────────────── -->
+  <!-- ── Status card ────────────────────────────────────────────────────────── -->
   <div class="card" style="margin-bottom:1rem">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:.75rem">
       <span class="dot" id="dot-kyverno-status"></span>
       <strong style="font-size:13px">Kyverno status</strong>
       <span id="kyverno-status-badge" class="badge b-warn">checking…</span>
       <button class="btn btn-sm btn-ghost" onclick="loadKyvernoStatus()"
               style="margin-left:auto">↺ refresh</button>
     </div>
-    <div id="kyverno-pods-table" style="margin-top:.75rem;font-size:12px;color:#666">
-      <!-- populated by loadKyvernoStatus() -->
+
+    <!-- Explanation message (shown only when not fully ready) -->
+    <div id="kyverno-status-msg" style="display:none;margin-bottom:.75rem;
+         background:#fff8e1;border-left:3px solid #f59e0b;border-radius:0 4px 4px 0;
+         padding:.5rem .85rem;font-size:12px;color:#78350f;line-height:1.65"></div>
+
+    <!-- Core pods table -->
+    <div id="kyverno-core-pods" style="font-size:12px;color:#666;margin-bottom:.5rem"></div>
+
+    <!-- Cleanup job pods note (collapsed by default) -->
+    <div id="kyverno-job-note" style="display:none;margin-top:.35rem;
+         font-size:11px;color:#9e9e9e;font-style:italic;line-height:1.6">
+      ℹ Cleanup CronJob pod(s) also present in the namespace.
+      These run periodically to purge old admission reports.
+      <strong>ImagePullBackOff on cleanup pods is normal</strong> in air-gapped
+      clusters — it does not affect policy enforcement.
     </div>
   </div>
 
-  <!-- ── Version selection ────────────────────────────────────────── -->
+  <!-- ── Version selection card ─────────────────────────────────────────────── -->
   <div class="card" style="margin-bottom:1rem">
     <h3 style="margin:0 0 .5rem;font-size:14px">Select version to install</h3>
     <div id="kyverno-versions-box" style="color:#999;font-size:13px">
@@ -33,7 +43,8 @@
     </div>
     <div style="display:flex;gap:8px;margin-top:.75rem;align-items:center;flex-wrap:wrap">
       <input id="kyverno-version-input" type="text" placeholder="e.g. 3.2.6"
-             class="input-sm" style="width:130px">
+             style="max-width:140px;border:1px solid #ddd;border-radius:4px;
+                    padding:5px 9px;font-size:13px">
       <button class="btn btn-primary btn-sm" onclick="installKyverno()">
         Install Kyverno
       </button>
@@ -42,7 +53,7 @@
     </div>
   </div>
 
-  <!-- ── Install log ──────────────────────────────────────────────── -->
+  <!-- ── Install log card ───────────────────────────────────────────────────── -->
   <div class="card" style="margin-bottom:1rem">
     <h3 style="margin:0 0 .5rem;font-size:14px">Install log</h3>
     <div id="kyverno-install-log" class="log" style="height:280px">
@@ -50,96 +61,172 @@
     </div>
   </div>
 
-  <!-- ── Active policies (read-only) ─────────────────────────────── -->
+  <!-- ── Active policies card ───────────────────────────────────────────────── -->
   <div class="card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem">
       <h3 style="margin:0;font-size:14px;flex:1">Active ClusterPolicies</h3>
       <span style="font-size:11px;color:#999">managed by workbench-admin</span>
       <button class="btn btn-sm btn-ghost" onclick="loadKyvernoPolicies()">↺ refresh</button>
     </div>
-    <p style="margin:0 0 .5rem;font-size:12px;color:#888">
-      Policies are created through the <strong>GPU Policies tab</strong> in workbench-admin.
+    <p style="margin:0 0 .75rem;font-size:12px;color:#888">
+      Policies are created in the <strong>workbench-admin → GPU Policies tab</strong>.
       This table is read-only — it shows what is currently enforced in the cluster.
     </p>
     <div id="kyverno-policies-table" style="font-size:13px;color:#666">
-      Click refresh to load…
+      Loading…
     </div>
   </div>
 
 </div>
 
 <script>
-// ── loadKyvernoStatus ──────────────────────────────────────────────
+// ── loadKyvernoStatus ──────────────────────────────────────────────────────────
 async function loadKyvernoStatus() {
   const badge  = document.getElementById('kyverno-status-badge');
-  const table  = document.getElementById('kyverno-pods-table');
-  const dot    = document.getElementById('dot-kyverno-status');
+  const msgBox = document.getElementById('kyverno-status-msg');
+  const table  = document.getElementById('kyverno-core-pods');
+  const note   = document.getElementById('kyverno-job-note');
+
   badge.textContent = 'checking…';
   badge.className   = 'badge b-warn';
+  setDot('dot-kyverno-status', 'running');
+  msgBox.style.display = 'none';
+
+  let d;
   try {
-    const d = await fetch('/api/kyverno/status').then(r => r.json());
-    if (!d.installed) {
-      badge.textContent = 'not installed';
-      badge.className   = 'badge b-err';
-      setDot('dot-kyverno-status', 'error');
-      table.innerHTML   = '<span style="color:#999;font-size:12px">No Kyverno pods found.</span>';
-      return;
-    }
-    if (d.running) {
-      badge.textContent = '✓ running';
-      badge.className   = 'badge b-ok';
-      setDot('dot-kyverno-status', 'ok');
-    } else {
-      badge.textContent = '⚠ pods not ready';
-      badge.className   = 'badge b-warn';
-      setDot('dot-kyverno-status', 'running');
-    }
-    // render pod table
-    const rows = d.pods.map(p =>
-      `<tr>
-         <td style="padding:3px 10px 3px 0;color:#333">${p.name}</td>
-         <td style="padding:3px 10px 3px 0"><span class="badge ${p.status==='Running'?'b-ok':'b-warn'}">${p.status}</span></td>
-         <td style="padding:3px 0;color:#888">${p.ready}</td>
-       </tr>`
-    ).join('');
-    table.innerHTML = `<table style="border-collapse:collapse">${rows}</table>`;
+    d = await fetch('/api/kyverno/status').then(r => r.json());
   } catch(e) {
     badge.textContent = 'error';
     badge.className   = 'badge b-err';
     setDot('dot-kyverno-status', 'error');
+    table.innerHTML = '<span style="color:#c62828;font-size:12px">Could not reach backend</span>';
+    return;
   }
+
+  // ── Status badge ────────────────────────────────────────────────────────────
+  if (!d.installed) {
+    badge.textContent = 'not installed';
+    badge.className   = 'badge b-err';
+    setDot('dot-kyverno-status', 'error');
+    table.innerHTML = '<span style="color:#999;font-size:12px">No Kyverno pods found.</span>';
+    note.style.display = 'none';
+    return;
+  }
+
+  if (d.running) {
+    badge.textContent = '✓ all pods ready';
+    badge.className   = 'badge b-ok';
+    setDot('dot-kyverno-status', 'ok');
+  } else {
+    badge.textContent = '⚠ not fully ready';
+    badge.className   = 'badge b-warn';
+    setDot('dot-kyverno-status', 'running');
+  }
+
+  // ── Explanation message ─────────────────────────────────────────────────────
+  if (d.message && !d.running) {
+    msgBox.textContent   = d.message;
+    msgBox.style.display = 'block';
+  }
+
+  // ── Core pods table ─────────────────────────────────────────────────────────
+  const corePods = d.core_pods || [];
+  if (corePods.length === 0) {
+    table.innerHTML = '<span style="color:#999;font-size:12px">No core pods found.</span>';
+  } else {
+    const rows = corePods.map(p => {
+      // Shorten name: "kyverno-admission-controller-7d8b9f-vxzqp"
+      //           → "admission-controller"
+      const short  = p.name
+        .replace(/^kyverno-/, '')          // strip "kyverno-" prefix
+        .replace(/-[a-z0-9]+-[a-z0-9]+$/, ''); // strip hash suffix
+
+      const isReady = p.status === 'Running' && (() => {
+        try { const [r,t] = p.ready.split('/'); return parseInt(r) === parseInt(t); }
+        catch(e) { return false; }
+      })();
+
+      const statusColor = p.status === 'Running'  ? '#2e7d32'
+                        : p.status === 'Completed' ? '#888'
+                        : '#c62828';
+
+      const readyColor  = isReady ? '#2e7d32' : '#e65100';
+
+      return `<tr>
+        <td style="padding:4px 12px 4px 0;color:#333;font-size:12px;font-family:monospace">
+          ${esc(short)}
+        </td>
+        <td style="padding:4px 12px 4px 0">
+          <span style="color:${readyColor};font-weight:500;font-size:12px">
+            ${esc(p.ready)}
+          </span>
+        </td>
+        <td style="padding:4px 0">
+          <span class="badge ${p.status === 'Running' ? 'b-ok' : (p.status === 'Completed' ? 'b-info' : 'b-err')}"
+                style="font-size:11px">
+            ${esc(p.status)}
+          </span>
+        </td>
+      </tr>`;
+    }).join('');
+
+    table.innerHTML =
+      `<table style="border-collapse:collapse;min-width:340px">
+         <thead>
+           <tr style="border-bottom:1px solid #e0e0e0">
+             <th style="text-align:left;padding:3px 12px 5px 0;font-size:11px;color:#888;font-weight:600">
+               Controller
+             </th>
+             <th style="text-align:left;padding:3px 12px 5px 0;font-size:11px;color:#888;font-weight:600">
+               Ready
+             </th>
+             <th style="text-align:left;padding:3px 0 5px;font-size:11px;color:#888;font-weight:600">
+               Status
+             </th>
+           </tr>
+         </thead>
+         <tbody>${rows}</tbody>
+       </table>`;
+  }
+
+  // ── Cleanup job pods note ───────────────────────────────────────────────────
+  const jobPods = d.job_pods || [];
+  note.style.display = jobPods.length > 0 ? 'block' : 'none';
 }
 
-// ── loadKyvernoVersions ────────────────────────────────────────────
+// ── loadKyvernoVersions ────────────────────────────────────────────────────────
 async function loadKyvernoVersions() {
   const el = document.getElementById('kyverno-versions-box');
   try {
     const d = await fetch('/api/kyverno/versions').then(r => r.json());
     if (!d.versions || d.versions.length === 0) {
-      el.innerHTML = '<span class="badge b-warn">No compatible versions found for K8s ' + (d.k8s_version||'?') + '</span>';
+      el.innerHTML =
+        '<span class="badge b-warn">No compatible versions found for K8s ' +
+        esc(d.k8s_version || '?') + '</span>';
       return;
     }
     el.innerHTML =
       `<div style="font-size:12px;color:#666;margin-bottom:6px">
-         Compatible with K8s ${d.k8s_version}.x —
-         ${d.recommended ? 'Recommended: <strong>' + d.recommended + '</strong>' : ''}
+         Compatible with K8s ${esc(d.k8s_version)}.x
+         ${d.recommended ? '— Recommended: <strong>' + esc(d.recommended) + '</strong>' : ''}
        </div>
        <div style="display:flex;flex-wrap:wrap;gap:6px">
          ${d.versions.map(v =>
-           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
-              title="${v.notes||''}"
-              onclick="document.getElementById('kyverno-version-input').value='${v.version}'">
-              ${v.version}${v.version===d.recommended?' ★':''}
+           `<button class="btn btn-sm ${v.version === d.recommended ? 'btn-primary' : ''}"
+              style="${v.version !== d.recommended ? 'background:#f0f0f0;border-color:#ccc' : ''}"
+              title="${esc(v.notes || '')}"
+              onclick="document.getElementById('kyverno-version-input').value='${esc(v.version)}'">
+              ${esc(v.version)}${v.version === d.recommended ? ' ★' : ''}
             </button>`
          ).join('')}
        </div>
        <div style="margin-top:.3rem;font-size:11px;color:#999">Click a version to select it.</div>`;
   } catch(e) {
-    el.innerHTML = '<span class="badge b-err">Error loading versions: ' + e + '</span>';
+    el.innerHTML = '<span class="badge b-err">Error loading versions: ' + esc(String(e)) + '</span>';
   }
 }
 
-// ── installKyverno ─────────────────────────────────────────────────
+// ── installKyverno ─────────────────────────────────────────────────────────────
 function installKyverno() {
   const version  = document.getElementById('kyverno-version-input').value.trim();
   const logEl    = document.getElementById('kyverno-install-log');
@@ -148,7 +235,10 @@ function installKyverno() {
   logEl.innerHTML = '';
   statusEl.textContent = 'Running…';
   setDot('dot-kyverno-install', 'running');
-  const es = new EventSource('/api/kyverno/install/stream?version=' + encodeURIComponent(version));
+
+  const es = new EventSource(
+    '/api/kyverno/install/stream?version=' + encodeURIComponent(version)
+  );
   es.onmessage = e => {
     if (e.data === '__DONE__') {
       setDot('dot-kyverno-install', 'ok');
@@ -167,39 +257,113 @@ function installKyverno() {
   es.onerror = () => { setDot('dot-kyverno-install', 'error'); es.close(); };
 }
 
-// ── loadKyvernoPolicies ────────────────────────────────────────────
+// ── loadKyvernoPolicies ────────────────────────────────────────────────────────
 async function loadKyvernoPolicies() {
   const el = document.getElementById('kyverno-policies-table');
-  el.innerHTML = '<span style="color:#999">Loading…</span>';
+  el.innerHTML = '<span style="color:#999;font-size:12px">Loading…</span>';
+
+  let d;
   try {
-    const d = await fetch('/api/kyverno/policies').then(r => r.json());
-    if (!d.policies || d.policies.length === 0) {
-      el.innerHTML = '<span style="color:#999;font-size:12px">No ClusterPolicies found. ' +
-                     'Create rules in workbench-admin → GPU Policies tab.</span>';
-      return;
-    }
-    const rows = d.policies.map(p =>
-      `<tr style="border-bottom:1px solid #f0f0f0">
-         <td style="padding:5px 16px 5px 0;font-weight:500">${p.name}</td>
-         <td style="padding:5px 16px 5px 0">
-           <span class="badge ${p.ready==='True'?'b-ok':'b-warn'}">${p.ready}</span>
-         </td>
-         <td style="padding:5px 0;color:#888;font-size:12px">${p.age}</td>
-       </tr>`
-    ).join('');
-    el.innerHTML =
-      `<table style="border-collapse:collapse;width:100%">
-         <thead>
-           <tr style="border-bottom:2px solid #e0e0e0">
-             <th style="text-align:left;padding:4px 16px 4px 0;font-size:12px;color:#888">Policy name</th>
-             <th style="text-align:left;padding:4px 16px 4px 0;font-size:12px;color:#888">Ready</th>
-             <th style="text-align:left;padding:4px 0;font-size:12px;color:#888">Age</th>
-           </tr>
-         </thead>
-         <tbody>${rows}</tbody>
-       </table>`;
+    d = await fetch('/api/kyverno/policies').then(r => r.json());
   } catch(e) {
-    el.innerHTML = '<span class="badge b-err">Error: ' + e + '</span>';
+    el.innerHTML =
+      '<span class="badge b-err">Could not reach backend: ' + esc(String(e)) + '</span>';
+    return;
   }
+
+  if (d.error) {
+    el.innerHTML =
+      '<span class="badge b-err">' + esc(d.error) + '</span>';
+    return;
+  }
+
+  if (!d.policies || d.policies.length === 0) {
+    el.innerHTML =
+      '<span style="color:#999;font-size:12px">No ClusterPolicies found. ' +
+      'Create rules in workbench-admin → GPU Policies tab.</span>';
+    return;
+  }
+
+  const rows = d.policies.map(p => {
+    // ── Ready badge ──────────────────────────────────────────────────────────
+    // 'ready' is always lowercase 'true' / 'false' / 'unknown' from the backend
+    const isReady      = String(p.ready).toLowerCase() === 'true';
+    const readyClass   = isReady ? 'b-ok' : 'b-warn';
+    const readyLabel   = isReady ? '✓ ready' : p.ready;
+
+    // ── Action badge ─────────────────────────────────────────────────────────
+    const isEnforce    = String(p.action).toLowerCase() === 'enforce';
+    const actionClass  = isEnforce ? 'b-err' : 'b-warn';
+    const actionLabel  = p.action || 'unknown';
+
+    // ── Groups cell ──────────────────────────────────────────────────────────
+    const groupsHtml   = (p.groups && p.groups.length > 0)
+      ? p.groups.map(g =>
+          `<span style="display:inline-block;background:#e3f2fd;color:#1565c0;
+                        font-size:10px;padding:1px 6px;border-radius:3px;margin:1px 2px 1px 0">
+             ${esc(g)}
+           </span>`
+        ).join('')
+      : '<span style="color:#9e9e9e;font-size:11px">— all groups</span>';
+
+    // ── Rules count ──────────────────────────────────────────────────────────
+    const rulesLabel   = p.rule_count === 1 ? '1 rule' : p.rule_count + ' rules';
+
+    return `<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:8px 14px 8px 0;vertical-align:top">
+        <div style="font-weight:600;font-size:13px;margin-bottom:2px">
+          ${esc(p.title)}
+        </div>
+        ${p.description
+          ? `<div style="font-size:11px;color:#9e9e9e;line-height:1.5;margin-bottom:3px">
+               ${esc(p.description)}
+             </div>`
+          : ''}
+        <div style="font-size:10px;color:#bbb;font-family:monospace">${esc(p.name)}</div>
+      </td>
+      <td style="padding:8px 14px 8px 0;vertical-align:top;white-space:nowrap">
+        <span class="badge ${readyClass}" style="font-size:11px">${readyLabel}</span>
+      </td>
+      <td style="padding:8px 14px 8px 0;vertical-align:top;white-space:nowrap">
+        <span class="badge ${actionClass}" style="font-size:11px">${esc(actionLabel)}</span>
+      </td>
+      <td style="padding:8px 14px 8px 0;vertical-align:top;white-space:nowrap;
+                 font-size:11px;color:#888">
+        ${esc(rulesLabel)}
+      </td>
+      <td style="padding:8px 14px 8px 0;vertical-align:top">${groupsHtml}</td>
+      <td style="padding:8px 0;vertical-align:top;white-space:nowrap;
+                 font-size:11px;color:#bbb">
+        ${esc(p.age)}
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML =
+    `<table style="border-collapse:collapse;width:100%">
+       <thead>
+         <tr style="border-bottom:2px solid #e0e0e0">
+           <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
+             Policy
+           </th>
+           <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
+             Ready
+           </th>
+           <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
+             Action
+           </th>
+           <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
+             Rules
+           </th>
+           <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
+             Groups covered
+           </th>
+           <th style="text-align:left;padding:5px 0 6px;font-size:11px;color:#888;font-weight:600">
+             Age
+           </th>
+         </tr>
+       </thead>
+       <tbody>${rows}</tbody>
+     </table>`;
 }
 </script>
