@@ -109,7 +109,12 @@ async def kyverno_status():
     Return running state of all Kyverno pods.
     Used by the launcher dashboard to show an install status badge.
     """
-    out, rc = run_on_cp("kubectl get pods -n kyverno --no-headers 2>&1")
+    # Only check the 4 core Kyverno deployments — ignore CronJob cleanup pods
+    # which fail ImagePullBackOff in air-gapped clusters but do not affect enforcement
+    out, rc = run_on_cp(
+        "kubectl get pods -n kyverno --no-headers "
+        "-l '!batch.kubernetes.io/job-name' 2>&1"
+    )
 
     if rc != 0 or not out.strip() or "No resources found" in out:
         return {"installed": False, "running": False, "pods": []}
@@ -118,6 +123,10 @@ async def kyverno_status():
     for line in out.strip().splitlines():
         parts = line.split()
         if len(parts) >= 3:
+            # Skip CronJob-spawned cleanup pods (name contains 'cleanup-' and digits)
+            import re
+            if re.search(r'cleanup-\d{8,}', parts[0]):
+                continue
             pods.append({"name": parts[0], "ready": parts[1], "status": parts[2]})
 
     all_running = all(p["status"] == "Running" for p in pods) if pods else False

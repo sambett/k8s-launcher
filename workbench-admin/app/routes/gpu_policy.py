@@ -105,8 +105,14 @@ def api_set_policy():
     for g in groups:
         if not g.get("gitlab_group", "").strip():
             return jsonify({"success": False, "error": "Each rule needs a gitlab_group"}), 400
+    for g in groups:
         if not isinstance(g.get("max_gpus", 0), int) or g.get("max_gpus", 0) < 0:
             return jsonify({"success": False, "error": "max_gpus must be a non-negative integer"}), 400
+    # Deduplicate — if the same group appears twice, last entry wins
+    seen = {}
+    for g in groups:
+        seen[g["gitlab_group"].strip()] = g
+    groups = list(seen.values())
     ok, out = _write_policy({"groups": groups})
     if not ok:
         return jsonify({"success": False, "error": "Failed to save to ConfigMap", "detail": out}), 500
