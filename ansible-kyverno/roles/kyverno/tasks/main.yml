@@ -61,3 +61,8 @@
   changed_when: >
     'configured' in nodeselector_policy_result.stdout or
     'created' in nodeselector_policy_result.stdout
+
+- name: Clean up temp policy file from control plane
+  file:
+    path: /tmp/require-gpu-node-selector.yaml
+    state: absent
