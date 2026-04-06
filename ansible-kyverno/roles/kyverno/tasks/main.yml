@@ -44,3 +44,20 @@
     kubectl rollout status deployment kyverno-background-controller
     -n {{ kyverno_namespace }} --timeout=180s
   changed_when: false
+
+# ── Static GPU nodeSelector policy ────────────────────────────────────────────
+# Applied once after Kyverno is installed. This is a cluster-level invariant,
+# not admin-configurable, so it lives here (Day-0) not in workbench-admin (Day-2).
+
+- name: Copy require-gpu-node-selector policy to control plane
+  copy:
+    src: require-gpu-node-selector.yaml
+    dest: /tmp/require-gpu-node-selector.yaml
+    mode: '0644'
+
+- name: Apply require-gpu-node-selector ClusterPolicy
+  command: kubectl apply -f /tmp/require-gpu-node-selector.yaml
+  register: nodeselector_policy_result
+  changed_when: >
+    'configured' in nodeselector_policy_result.stdout or
+    'created' in nodeselector_policy_result.stdout

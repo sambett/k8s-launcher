@@ -75,7 +75,7 @@
   </div>
 
   <!-- ── Active policies card ───────────────────────────────────────────────── -->
-  <div class="card">
+  <div class="card" style="margin-bottom:1rem">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem">
       <h3 style="margin:0;font-size:14px;flex:1">Active ClusterPolicies</h3>
       <span style="font-size:11px;color:#999">managed by workbench-admin</span>
@@ -87,6 +87,25 @@
     </p>
     <div id="kyverno-policies-table" style="font-size:13px;color:#666">
       Loading…
+    </div>
+  </div>
+
+  <!-- ── Static GPU nodeSelector Policy card ────────────────────────────────── -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:.5rem;flex-wrap:wrap">
+      <span class="dot" id="dot-node-selector"></span>
+      <strong style="font-size:13px;flex:1">Static Infrastructure Policy</strong>
+      <button class="btn btn-sm btn-ghost" onclick="loadNodeSelectorStatus()">↺ refresh</button>
+    </div>
+    <p style="margin:0 0 .6rem;font-size:12px;color:#888;line-height:1.6">
+      <strong>require-gpu-node-selector</strong> — any pod requesting
+      <code>nvidia.com/gpu</code> must declare <code>nodeSelector: accelerator: nvidia</code>.
+      Not admin-configurable — always enforced alongside the group quota policy.
+    </p>
+    <div id="node-selector-status-msg" style="margin-bottom:.6rem;font-size:12px"></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary btn-sm" onclick="applyNodeSelectorPolicy()">Apply / Re-apply</button>
+      <span id="r-node-selector-apply" style="font-size:12px"></span>
     </div>
   </div>
 
@@ -408,5 +427,48 @@ async function checkKyvernoPrereq() {
     body.textContent  = 'Make sure the launcher backend is running.';
   }
 }
-</script>
 
+// ── loadNodeSelectorStatus / applyNodeSelectorPolicy ──────────────────────────
+async function loadNodeSelectorStatus() {
+  const dot = document.getElementById('dot-node-selector');
+  const msg = document.getElementById('node-selector-status-msg');
+  if (!dot || !msg) return;
+  try {
+    const d = await fetch('/api/kyverno/node-selector-policy/status').then(r => r.json());
+    if (d.exists && d.ready) {
+      setDot('dot-node-selector', 'ok');
+      msg.innerHTML = '<span class="badge b-ok">&#10003; Active &mdash; require-gpu-node-selector is enforcing</span>';
+    } else if (d.exists) {
+      setDot('dot-node-selector', 'warn');
+      msg.innerHTML = '<span class="badge b-warn">Policy exists but not Ready yet</span>';
+    } else {
+      setDot('dot-node-selector', 'error');
+      msg.innerHTML = '<span class="badge b-err">Not applied &mdash; click Apply to enforce this policy</span>';
+    }
+  } catch(e) {
+    if (dot) setDot('dot-node-selector', 'error');
+    if (msg) msg.innerHTML = '<span class="badge b-err">Error: ' + e + '</span>';
+  }
+}
+
+async function applyNodeSelectorPolicy() {
+  const resultEl = document.getElementById('r-node-selector-apply');
+  if (resultEl) resultEl.innerHTML = '<span class="badge b-run">Applying&hellip;</span>';
+  setDot('dot-node-selector', 'running');
+  try {
+    const r = await fetch('/api/kyverno/node-selector-policy/apply', { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      if (resultEl) resultEl.innerHTML = '<span class="badge b-ok">&#10003; ' + (d.message || 'Applied') + '</span>';
+      loadNodeSelectorStatus();
+    } else {
+      if (resultEl) resultEl.innerHTML = '<span class="badge b-err">&#10007; ' + (d.error || 'Failed') + '</span>';
+      setDot('dot-node-selector', 'error');
+    }
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = '<span class="badge b-err">Network error: ' + e + '</span>';
+    setDot('dot-node-selector', 'error');
+  }
+}
+
+</script>

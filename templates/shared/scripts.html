@@ -29,6 +29,7 @@ function showTab(name, btn) {
     if (typeof loadKyvernoStatus   === 'function') loadKyvernoStatus();
     if (typeof loadKyvernoVersions  === 'function') loadKyvernoVersions();
     if (typeof loadKyvernoPolicies === 'function') loadKyvernoPolicies();
+    if (typeof loadNodeSelectorStatus === 'function') loadNodeSelectorStatus();
   }
   if (name === 'admindashboard') { if (typeof checkDashPrereq === 'function') checkDashPrereq(); }
   checkPrereqs(name);

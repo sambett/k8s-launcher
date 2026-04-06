@@ -361,3 +361,80 @@ async def list_policies():
         })
 
     return {"policies": policies}
+
+
+# ── Node-selector static policy ────────────────────────────────────────────────
+
+# Path to the static ClusterPolicy YAML, relative to the k8s-launcher repo root.
+_NODE_SELECTOR_POLICY_FILE = BASE_DIR / "ansible-kyverno" / "roles" / "kyverno" / "files" / "require-gpu-node-selector.yaml"
+_NODE_SELECTOR_POLICY_NAME = "require-gpu-node-selector"
+
+
+@router.post("/api/kyverno/node-selector-policy/apply")
+async def apply_node_selector_policy():
+    """
+    Apply (or re-apply) the static require-gpu-node-selector ClusterPolicy.
+
+    This is idempotent — safe to call multiple times.
+    Used by the UI Apply button so admins can install the policy
+    without triggering a full Kyverno reinstall.
+
+    Flow:
+      1. Copy YAML to /tmp on the control plane via run_on_cp
+      2. kubectl apply -f /tmp/require-gpu-node-selector.yaml
+    """
+    if not _NODE_SELECTOR_POLICY_FILE.exists():
+        return {
+            "success": False,
+            "message": f"Policy YAML not found at {_NODE_SELECTOR_POLICY_FILE}",
+        }
+
+    yaml_content = _NODE_SELECTOR_POLICY_FILE.read_text()
+
+    # Write to /tmp on the control plane using a heredoc-safe approach:
+    # escape all single quotes in the YAML, then wrap in single-quote heredoc.
+    escaped = yaml_content.replace("'", "'\\''")
+    write_cmd = f"printf '%s' '{escaped}' > /tmp/require-gpu-node-selector.yaml"
+    out, rc = run_on_cp(write_cmd)
+    if rc != 0:
+        return {
+            "success": False,
+            "message": "Failed to write policy YAML to control plane",
+            "detail":  out,
+        }
+
+    out, rc = run_on_cp("kubectl apply -f /tmp/require-gpu-node-selector.yaml")
+    if rc == 0:
+        return {
+            "success": True,
+            "message": f"ClusterPolicy '{_NODE_SELECTOR_POLICY_NAME}' applied successfully.",
+            "detail":  out.strip(),
+        }
+    return {
+        "success": False,
+        "message": "kubectl apply failed",
+        "detail":  out.strip(),
+    }
+
+
+@router.get("/api/kyverno/node-selector-policy/status")
+async def node_selector_policy_status():
+    """
+    Check whether the require-gpu-node-selector ClusterPolicy exists and is Ready.
+    Returns: { exists: bool, ready: bool }
+    """
+    out, rc = run_on_cp(
+        f"kubectl get clusterpolicy {_NODE_SELECTOR_POLICY_NAME} --no-headers 2>&1"
+    )
+    if rc != 0 or "not found" in out.lower():
+        return {"exists": False, "ready": False}
+
+    ready_out, _ = run_on_cp(
+        f"kubectl get clusterpolicy {_NODE_SELECTOR_POLICY_NAME} "
+        f"-o jsonpath='{{.status.ready}}'"
+    )
+    return {
+        "exists": True,
+        "ready":  ready_out.strip().lower() == "true",
+    }
+
