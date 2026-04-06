@@ -1,5 +1,15 @@
-# ansible-kyverno variables
-# kyverno_version is intentionally left empty here — it is always
-# passed at runtime by the launcher via --extra-vars "kyverno_version=X.Y.Z"
-# This file only sets the namespace, which never changes.
+# ansible-kyverno/group_vars/all.yml
+# Single source of truth for all Kyverno configuration.
+#
+# kyverno_version is intentionally absent — it is always passed at runtime
+# via --extra-vars "kyverno_version=X.Y.Z" by the launcher API.
+# Hardcoding it here would make it impossible to select a version from the UI.
+
+# ── Namespace ──────────────────────────────────────────────────────────────────
 kyverno_namespace: "kyverno"
+
+# ── Static infrastructure policy ──────────────────────────────────────────────
+# This policy is a cluster-level invariant — not admin-configurable.
+# The launcher reads these values to know what to apply and what to query.
+kyverno_node_selector_policy_name: "require-gpu-node-selector"
+kyverno_node_selector_policy_file: "roles/kyverno/files/require-gpu-node-selector.yaml"

@@ -9,6 +9,7 @@ GET  /api/gpu-policy/status           — is the ClusterPolicy applied and ready
 GET  /api/gpu-policy/available-groups — groups that have at least one JupyterHub profile
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -83,27 +84,49 @@ def _write_policy(data):
     return r.returncode == 0, r.stdout + r.stderr
 
 
+def _stable_rule_name(gitlab_group: str, gpu_type: str) -> str:
+    """
+    Generate a stable, deterministic Kyverno rule name from group + GPU type.
+
+    Uses a 6-char content hash so rule names survive reordering — if you move
+    a rule up or down in the list, its name stays the same, kubectl apply sees
+    a no-op, and Kyverno never has a gap in enforcement during the update.
+
+    Format: limit-gpu-<safe-group>-<hash>
+    Example: limit-gpu-internship-students-a3f9c1
+    """
+    safe  = gitlab_group.replace("/", "-").replace("_", "-").lower()
+    token = hashlib.md5(f"{gitlab_group}:{gpu_type}".encode()).hexdigest()[:6]
+    return f"limit-gpu-{safe}-{token}"
+
+
 def _build_cluster_policy(groups):
     """
     Build a Kyverno ClusterPolicy dict and serialise it as YAML.
 
     Each (gitlab_group, gpu_type) pair produces exactly one rule.
-    Rule names use the enumerate index so they are always unique.
+    Rule names are stable content hashes — safe to reorder without
+    causing unnecessary policy churn in the cluster.
+
+    The key expression uses containers[] (wildcard) to check ALL containers
+    in the pod, not just containers[0]. This correctly handles multi-container
+    pods such as sidecar-injected workloads.
     """
     rules = []
-    for i, g in enumerate(groups):
+    for g in groups:
         gname    = g["gitlab_group"]
         gpu_type = g.get("gpu_type", "nvidia.com/gpu")
         max_gpus = g.get("max_gpus", 0)
-        safe     = gname.replace("/", "-").replace("_", "-").lower()
 
+        # containers[] wildcard — matches ALL containers, not just the first one
         key_expr = (
-            "{{ request.object.spec.containers[0]"
-            ".resources.limits." + '"' + gpu_type + '"' + " || '0' }}"
+            "{{ request.object.spec.containers[].resources.limits."
+            + '"' + gpu_type + '"'
+            + " || '0' }}"
         )
 
         rules.append({
-            "name": "limit-gpu-" + safe + "-" + str(i),
+            "name": _stable_rule_name(gname, gpu_type),
             "match": {
                 "any": [{
                     "resources": {

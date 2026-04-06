@@ -7,11 +7,17 @@ routes/kyverno.py — Kyverno policy engine: version selection, install, status,
   GET /api/kyverno/policies          — active ClusterPolicies with rich detail
 
 Policy CRUD lives in workbench-admin (Day-2). This file is Day-0 only.
+
+Configuration is read from ansible-kyverno/group_vars/all.yml at startup.
+That file is the single source of truth for namespace, policy names, and
+policy file paths — shared by both Ansible and this Python layer.
 """
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
+import yaml
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
@@ -21,6 +27,51 @@ from core.paths import BASE_DIR, ANSIBLE_KYVERNO_DIR
 router = APIRouter()
 
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")   # Helm chart versions: X.Y.Z
+
+# ── Load configuration from Ansible group_vars — single source of truth ────────
+# ansible-kyverno/group_vars/all.yml defines namespace, policy names, and file
+# paths. Reading it here means Ansible and Python always stay in sync — one
+# place to change, both layers pick it up automatically on next launcher restart.
+
+def _load_kyverno_vars() -> dict:
+    """Read ansible-kyverno/group_vars/all.yml and return its contents."""
+    path = BASE_DIR / "ansible-kyverno" / "group_vars" / "all.yml"
+    try:
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        # Fallback to safe defaults so the launcher still starts if the file
+        # is temporarily missing (e.g. during a git pull mid-deploy).
+        return {}
+
+_KYVERNO_VARS = _load_kyverno_vars()
+
+# These constants are derived from group_vars, with safe fallbacks.
+# Fallbacks match what group_vars declares — they exist only to prevent
+# a startup crash if the file is unreadable.
+KYVERNO_NS = _KYVERNO_VARS.get("kyverno_namespace", "kyverno")
+
+_NODE_SELECTOR_POLICY_NAME = _KYVERNO_VARS.get(
+    "kyverno_node_selector_policy_name",
+    "require-gpu-node-selector"
+)
+
+_NODE_SELECTOR_POLICY_FILE: Path = BASE_DIR / "ansible-kyverno" / _KYVERNO_VARS.get(
+    "kyverno_node_selector_policy_file",
+    "roles/kyverno/files/require-gpu-node-selector.yaml"
+)
+
+
+# ── Core Kyverno pod name prefixes ─────────────────────────────────────────────
+# The 4 permanent controller deployments. Any other pod in the namespace is a
+# CronJob-spawned cleanup job — those can fail ImagePullBackOff in air-gapped
+# clusters and that is expected / does not affect policy enforcement.
+_CORE_PREFIXES = (
+    "kyverno-admission-controller",
+    "kyverno-background-controller",
+    "kyverno-cleanup-controller",
+    "kyverno-reports-controller",
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -69,9 +120,8 @@ def _compute_age(timestamp_str: str) -> str:
 def _is_pod_ready(pod: dict) -> bool:
     """
     Return True only if a pod is both Running AND all containers are ready.
-
-    We check the 'ready' field (e.g. '1/1', '2/2') rather than just 'status'
-    because a pod can be Running but 0/1 ready during startup.
+    Checks the 'ready' field (e.g. '1/1') rather than just 'status' because
+    a pod can be Running but 0/1 ready during startup.
     """
     if pod.get("status") != "Running":
         return False
@@ -80,18 +130,6 @@ def _is_pod_ready(pod: dict) -> bool:
         return int(r) == int(t)
     except Exception:
         return False
-
-
-# ── Core Kyverno pod name prefixes ──────────────────────────────────────────────
-# These are the 4 permanent Kyverno controller deployments.
-# Any other pod in the kyverno namespace is a CronJob-spawned cleanup job,
-# which can fail ImagePullBackOff in air-gapped clusters — that is normal.
-_CORE_PREFIXES = (
-    "kyverno-admission-controller",
-    "kyverno-background-controller",
-    "kyverno-cleanup-controller",
-    "kyverno-reports-controller",
-)
 
 
 # ── Versions ───────────────────────────────────────────────────────────────────
@@ -166,20 +204,11 @@ async def kyverno_status():
 
       core_pods  — the 4 permanent controller deployments that must all be
                    Running AND ready for Kyverno to enforce policy.
-      job_pods   — cleanup CronJob pods.  These can fail (ImagePullBackOff)
-                   in air-gapped / offline clusters — that is expected and
-                   does NOT affect policy enforcement.
-
-    Fixes vs previous version:
-    - Removed -l '!batch.kubernetes.io/job-name' label selector (the '!'
-      triggers bash history expansion when routed through Ansible shell,
-      producing unreliable results).
-    - Filtering is now done in Python by matching pod name prefixes.
-    - 'running' is True only when all core pods are Running AND N/N ready.
-    - 'message' explains the reason when status is not fully healthy.
+      job_pods   — cleanup CronJob pods. These can fail (ImagePullBackOff)
+                   in air-gapped clusters — expected, does not affect enforcement.
     """
     out, rc = run_on_cp(
-        "kubectl get pods -n kyverno --no-headers 2>&1"
+        f"kubectl get pods -n {KYVERNO_NS} --no-headers 2>&1"
     )
 
     if rc != 0 or not out.strip() or "No resources found" in out:
@@ -191,8 +220,6 @@ async def kyverno_status():
             "message":    "No Kyverno pods found — is Kyverno installed?",
         }
 
-    # ── Parse raw kubectl output ──────────────────────────────────────────────
-    # Strip the Ansible header line before processing
     clean = _strip_ansible_header(out)
 
     core_pods = []
@@ -209,23 +236,18 @@ async def kyverno_status():
         else:
             job_pods.append(pod)
 
-    # ── Determine overall health ──────────────────────────────────────────────
     all_core_ready = (
         bool(core_pods) and all(_is_pod_ready(p) for p in core_pods)
     )
 
-    # ── Build explanation message when not fully ready ────────────────────────
     message = ""
     if core_pods and not all_core_ready:
         not_ready = [p for p in core_pods if not _is_pod_ready(p)]
-        # Shorten pod names for readability:
-        # "kyverno-admission-controller-6d7b9f-xxxx" → "admission-controller"
         short_names = []
         for p in not_ready:
             name = p["name"]
             for prefix in _CORE_PREFIXES:
                 if name.startswith(prefix):
-                    # keep just the controller type, drop the hash suffix
                     short_names.append(prefix.replace("kyverno-", ""))
                     break
             else:
@@ -262,25 +284,7 @@ async def kyverno_status():
 async def list_policies():
     """
     Return active ClusterPolicies with rich detail extracted from the Kyverno API.
-
-    Each policy object contains:
-      name        — internal Kubernetes name (e.g. jupyterhub-gpu-group-policy)
-      title       — human-readable title from annotation (e.g. JupyterHub GPU Group Quota)
-      description — description from annotation (empty string if absent)
-      ready       — lowercase 'true' / 'false' / 'unknown'
-      action      — 'Enforce' (hard block) or 'Audit' (log only)
-      rule_count  — number of rules inside this policy
-      groups      — list of GitLab groups covered by at least one rule
-      age         — human-readable age (e.g. 5m, 2h, 3d)
-
-    Fixes vs previous version:
-    - Ansible header line is stripped before parsing (was producing a fake
-      policy entry named 'ansiblecplane' from the ad-hoc metadata line).
-    - Uses -o json to extract title, description, action, rules, and groups
-      rather than just the --no-headers table with 3 columns.
-    - 'ready' is always lowercase so JS === 'true' works correctly.
     """
-    # ── Fetch JSON representation of all ClusterPolicies ─────────────────────
     out, rc = run_on_cp("kubectl get clusterpolicies -o json 2>&1")
 
     if rc != 0 or not out.strip():
@@ -290,7 +294,6 @@ async def list_policies():
     if not clean.strip():
         return {"policies": []}
 
-    # Guard: "No resources found" appears in the clean output (not the header)
     if "No resources found" in clean or "not found" in clean.lower():
         return {"policies": []}
 
@@ -303,8 +306,6 @@ async def list_policies():
         }
 
     items = []
-    # kubectl get X -o json returns {"kind":"List","items":[...]}
-    # or just the single object if there's one; handle both
     if isinstance(data, dict):
         items = data.get("items", [data] if data.get("kind") == "ClusterPolicy" else [])
     elif isinstance(data, list):
@@ -322,20 +323,18 @@ async def list_policies():
 
         name        = meta.get("name", "unknown")
         ready_raw   = status.get("ready", False)
-        ready       = str(ready_raw).lower()           # always lowercase
+        ready       = str(ready_raw).lower()
         action      = spec.get("validationFailureAction", "unknown")
         rules       = spec.get("rules", [])
         rule_count  = len(rules)
         title       = annotations.get(
             "policies.kyverno.io/title",
-            # Fallback: convert slug to readable words
             name.replace("-", " ").title()
         )
         description = annotations.get("policies.kyverno.io/description", "")
         created     = meta.get("creationTimestamp", "")
         age         = _compute_age(created)
 
-        # ── Extract which groups this policy covers ───────────────────────────
         groups = []
         for rule in rules:
             for any_block in (rule.get("match", {}).get("any", []) or []):
@@ -364,24 +363,15 @@ async def list_policies():
 
 
 # ── Node-selector static policy ────────────────────────────────────────────────
-
-# Path to the static ClusterPolicy YAML, relative to the k8s-launcher repo root.
-_NODE_SELECTOR_POLICY_FILE = BASE_DIR / "ansible-kyverno" / "roles" / "kyverno" / "files" / "require-gpu-node-selector.yaml"
-_NODE_SELECTOR_POLICY_NAME = "require-gpu-node-selector"
-
+# Name and file path come from _KYVERNO_VARS loaded from group_vars/all.yml.
+# No policy configuration is hardcoded in this file.
 
 @router.post("/api/kyverno/node-selector-policy/apply")
 async def apply_node_selector_policy():
     """
-    Apply (or re-apply) the static require-gpu-node-selector ClusterPolicy.
-
-    This is idempotent — safe to call multiple times.
-    Used by the UI Apply button so admins can install the policy
-    without triggering a full Kyverno reinstall.
-
-    Flow:
-      1. Copy YAML to /tmp on the control plane via run_on_cp
-      2. kubectl apply -f /tmp/require-gpu-node-selector.yaml
+    Apply (or re-apply) the static node-selector ClusterPolicy.
+    Policy name and file path are read from ansible-kyverno/group_vars/all.yml.
+    Idempotent — safe to call multiple times.
     """
     if not _NODE_SELECTOR_POLICY_FILE.exists():
         return {
@@ -391,9 +381,9 @@ async def apply_node_selector_policy():
 
     import base64 as _b64
     b64 = _b64.b64encode(_NODE_SELECTOR_POLICY_FILE.read_bytes()).decode()
-    out, rc = run_on_cp(
-        f"echo {b64} | base64 -d > /tmp/require-gpu-node-selector.yaml"
-    )
+    tmp = f"/tmp/{_NODE_SELECTOR_POLICY_NAME}.yaml"
+
+    out, rc = run_on_cp(f"echo {b64} | base64 -d > {tmp}")
     if rc != 0:
         return {
             "success": False,
@@ -401,7 +391,11 @@ async def apply_node_selector_policy():
             "detail":  out,
         }
 
-    out, rc = run_on_cp("kubectl apply -f /tmp/require-gpu-node-selector.yaml")
+    out, rc = run_on_cp(f"kubectl apply -f {tmp}")
+
+    # Always clean up — regardless of apply result
+    run_on_cp(f"rm -f {tmp}")
+
     if rc == 0:
         return {
             "success": True,
@@ -418,7 +412,8 @@ async def apply_node_selector_policy():
 @router.get("/api/kyverno/node-selector-policy/status")
 async def node_selector_policy_status():
     """
-    Check whether the require-gpu-node-selector ClusterPolicy exists and is Ready.
+    Check whether the node-selector ClusterPolicy exists and is Ready.
+    Policy name is read from ansible-kyverno/group_vars/all.yml.
     Returns: { exists: bool, ready: bool }
     """
     out, rc = run_on_cp(
@@ -431,11 +426,8 @@ async def node_selector_policy_status():
         f"kubectl get clusterpolicy {_NODE_SELECTOR_POLICY_NAME} "
         f"-o jsonpath='{{.status.ready}}'"
     )
-    # run_on_cp returns ansible output: "hostname | CHANGED | rc=0 >>\ntrue"
-    # Extract just the last non-empty line which is the actual value
-    last_line = [l for l in ready_out.splitlines() if l.strip()][-1] if ready_out.strip() else ""
+    last_line = _strip_ansible_header(ready_out).strip()
     return {
         "exists": True,
-        "ready":  last_line.strip().lower() == "true",
+        "ready":  last_line.lower() == "true",
     }
-
