@@ -1,28 +1,48 @@
 ---
-- name: Get Kyverno pod list
-  command: kubectl get pods -n {{ kyverno_namespace }} -o wide
-  register: pod_list
+# validate — post-install health check for Kyverno.
+# Verifies all 4 core controller deployments are rolled out and ready.
+# Runs on control_plane only, after Kyverno Helm install completes.
+
+- name: validate | Wait for all 4 core controllers to roll out
+  command: >
+    kubectl rollout status deployment {{ item }}
+    -n {{ kyverno_namespace }} --timeout=120s
+  loop:
+    - kyverno-admission-controller
+    - kyverno-background-controller
+    - kyverno-cleanup-controller
+    - kyverno-reports-controller
   changed_when: false
 
-- name: Print Kyverno pod status
-  debug:
-    msg: "{{ pod_list.stdout_lines }}"
-
-- name: Confirm admission controller has ready replicas
+- name: validate | Confirm all core deployments have ready replicas
   command: >
-    kubectl get deployment kyverno-admission-controller
+    kubectl get deployment {{ item }}
     -n {{ kyverno_namespace }}
     -o jsonpath='{.status.readyReplicas}'
   register: ready_replicas
   changed_when: false
   failed_when: (ready_replicas.stdout | default('0')) | int < 1
+  loop:
+    - kyverno-admission-controller
+    - kyverno-background-controller
+    - kyverno-cleanup-controller
+    - kyverno-reports-controller
 
-- name: Show active ClusterPolicies (should be empty after fresh install)
+- name: validate | Get Kyverno pod list
+  command: kubectl get pods -n {{ kyverno_namespace }} -o wide
+  register: pod_list
+  changed_when: false
+
+- name: validate | Print Kyverno pod status
+  debug:
+    msg: "{{ pod_list.stdout_lines }}"
+
+- name: validate | Show active ClusterPolicies
   command: kubectl get clusterpolicies --no-headers
   register: policies
   changed_when: false
   failed_when: false
 
-- name: Print ClusterPolicies
+- name: validate | Print ClusterPolicies
   debug:
     msg: "{{ policies.stdout_lines | default(['none — clean install state']) }}"
