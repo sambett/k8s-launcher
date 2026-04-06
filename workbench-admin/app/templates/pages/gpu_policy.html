@@ -40,6 +40,17 @@
       Groups with no rule here are <strong style="color:#68d391">unrestricted</strong>.
     </div>
 
+    <!-- GPU type suggestions — used by the datalist on every row -->
+    <!-- Adding a new GPU type here makes it available in every row automatically -->
+    <datalist id="gpu-type-options">
+      <option value="nvidia.com/gpu">
+      <option value="nvidia.com/mig-1g.5gb">
+      <option value="nvidia.com/mig-2g.10gb">
+      <option value="nvidia.com/mig-3g.20gb">
+      <option value="nvidia.com/mig-4g.20gb">
+      <option value="nvidia.com/mig-7g.40gb">
+    </datalist>
+
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;min-width:480px">
         <thead>
@@ -51,6 +62,9 @@
             <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
                        font-weight:600;text-transform:uppercase;letter-spacing:.06em">
               GPU Type
+              <span style="font-weight:400;color:#4a5568;text-transform:none;letter-spacing:0;margin-left:.4rem">
+                (type freely or pick from list)
+              </span>
             </th>
             <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
                        font-weight:600;text-transform:uppercase;letter-spacing:.06em;width:150px">
@@ -119,6 +133,16 @@
     'border-radius:5px', 'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
   ].join(';');
 
+  // GPU type field — text input backed by a datalist.
+  // Using input+datalist instead of a fixed select means:
+  //   - standard MIG profiles are offered as suggestions
+  //   - any custom resource name (e.g. vendor.com/custom-gpu) can be typed freely
+  //   - adding a new suggestion only requires adding one <option> to the datalist above
+  var S_TYPE = [
+    'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
+    'border-radius:5px', 'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
+  ].join(';');
+
   var S_NUM = [
     'width:80px', 'background:#0f1117', 'color:#e2e8f0',
     'border:1px solid #2d3148', 'border-radius:5px',
@@ -164,17 +188,12 @@
       '</td></tr>';
   }
 
-  /**
-   * Return all existing (group, gpu_type) pairs currently in the table.
-   * Used to block duplicate combinations before adding a new row.
-   * Optionally excludes a specific <tr> element (for change-event validation).
-   */
   function _existingPairs(excludeTr) {
     var pairs = [];
     document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
       if (tr === excludeTr) return;
-      var grp  = tr.querySelector('.grp-sel')  ? tr.querySelector('.grp-sel').value  : '';
-      var type = tr.querySelector('.type-sel') ? tr.querySelector('.type-sel').value : '';
+      var grp  = tr.querySelector('.grp-sel')   ? tr.querySelector('.grp-sel').value   : '';
+      var type = tr.querySelector('.type-inp')  ? tr.querySelector('.type-inp').value  : '';
       if (grp && type) pairs.push(grp + '||' + type);
     });
     return pairs;
@@ -195,13 +214,15 @@
         '<select class="grp-sel" style="' + S_SEL + '" onchange="onRowChange(this)"></select>' +
       '</td>' +
       '<td style="padding:.6rem 1rem">' +
-        '<select class="type-sel" style="' + S_SEL + '" onchange="onRowChange(this)">' +
-          '<option value="nvidia.com/gpu"'        + (type === 'nvidia.com/gpu'        ? ' selected' : '') + '>nvidia.com/gpu</option>' +
-          '<option value="nvidia.com/mig-1g.5gb"' + (type === 'nvidia.com/mig-1g.5gb' ? ' selected' : '') + '>mig-1g.5gb</option>' +
-        '</select>' +
+        // input + datalist: free text entry with suggestions from #gpu-type-options
+        '<input class="type-inp" list="gpu-type-options"' +
+        ' value="' + _esc(type) + '"' +
+        ' style="' + S_TYPE + '"' +
+        ' placeholder="e.g. nvidia.com/gpu"' +
+        ' oninput="onRowChange(this)"/>' +
       '</td>' +
       '<td style="padding:.6rem 1rem">' +
-        '<input type="number" class="max-inp" min="0" max="16" value="' + max + '" style="' + S_NUM + '">' +
+        '<input type="number" class="max-inp" min="0" max="64" value="' + max + '" style="' + S_NUM + '">' +
       '</td>' +
       '<td style="padding:.6rem 1rem;text-align:center">' +
         '<button onclick="askDeleteRow(this)" ' +
@@ -230,15 +251,13 @@
     return _groups;
   }
 
-  // ── onRowChange — highlight duplicate pairs in real time ───────────────────
-
+  // ── onRowChange — highlight duplicate (group, gpu_type) pairs in real time ──
   window.onRowChange = function (changedEl) {
     var tr    = changedEl.closest('tr');
     var grp   = tr.querySelector('.grp-sel').value;
-    var type  = tr.querySelector('.type-sel').value;
+    var type  = tr.querySelector('.type-inp').value.trim();
     var grpSel = tr.querySelector('.grp-sel');
 
-    // Clear any previous duplicate highlight on this row
     grpSel.style.borderColor = '#2d3148';
 
     if (!grp || !type) return;
@@ -256,11 +275,10 @@
   };
 
   // ── Delete modal ────────────────────────────────────────────────────────────
-
   window.askDeleteRow = function (btn) {
     _pendingDeleteTr = btn.closest('tr');
     var grp  = _pendingDeleteTr.querySelector('.grp-sel').value  || '(no group selected)';
-    var type = _pendingDeleteTr.querySelector('.type-sel').value || 'nvidia.com/gpu';
+    var type = _pendingDeleteTr.querySelector('.type-inp').value || 'nvidia.com/gpu';
     var max  = _pendingDeleteTr.querySelector('.max-inp').value;
 
     document.getElementById('del-msg').innerHTML =
@@ -364,12 +382,6 @@
     setTimeout(function () { msg.textContent = ''; }, 4000);
   };
 
-  /**
-   * "+ Add rule" button.
-   * Blocks adding if a (group, gpu_type) pair would immediately duplicate
-   * the first existing row — but since the group select starts empty, the
-   * real duplicate check fires on onRowChange when the user picks a group.
-   */
   window.addRow = async function () {
     if (_groups.length === 0) await _fetchGroups();
     _appendRow({});
@@ -385,7 +397,7 @@
 
     document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
       var grp  = tr.querySelector('.grp-sel').value.trim();
-      var type = tr.querySelector('.type-sel').value.trim() || 'nvidia.com/gpu';
+      var type = tr.querySelector('.type-inp').value.trim() || 'nvidia.com/gpu';
       var max  = parseInt(tr.querySelector('.max-inp').value, 10);
       if (!grp) return;
 
