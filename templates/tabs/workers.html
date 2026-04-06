@@ -1,5 +1,18 @@
 <div id="tab-workers" class="panel">
 
+  <div id="prereq-workers" style="display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;">
+    <span id="prereq-workers-icon" style="font-size:20px;flex-shrink:0">⏳</span>
+    <div>
+      <strong id="prereq-workers-title">Checking cluster status...</strong><br>
+      <span id="prereq-workers-body">Adding or removing worker nodes requires a running Kubernetes cluster.</span><br>
+      <a onclick="showTab('kubernetes',document.getElementById('step-kubernetes'))"
+         style="color:#1565c0;cursor:pointer;font-weight:600;text-decoration:underline;margin-top:4px;display:inline-block">
+        Open Kubernetes tab →
+      </a>
+    </div>
+  </div>
+
+
   <!-- Current nodes -->
   <div class="card">
     <h2>Cluster nodes
@@ -194,6 +207,7 @@ const AW_LABELS = [
 ];
 
 async function loadWorkerNodes() {
+  checkWorkersPrereq();
   const el = document.getElementById('worker-nodes-table');
   el.innerHTML = '<span style="color:#888;font-size:13px">Loading...</span>';
   try {
@@ -383,4 +397,33 @@ async function addWorkerNode() {
     btn.disabled = false;
   }
 }
+
+async function checkWorkersPrereq() {
+  const banner = document.getElementById('prereq-workers');
+  const icon   = document.getElementById('prereq-workers-icon');
+  const title  = document.getElementById('prereq-workers-title');
+  const body   = document.getElementById('prereq-workers-body');
+  if (!banner) return;
+  try {
+    const r = await fetch('/api/platform/status');
+    const d = await r.json();
+    const ready = d.cluster && d.cluster.status === 'ready';
+    if (ready) {
+      banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f5e9;border:1px solid #a5d6a7;border-left:4px solid #2e7d32;color:#1b5e20;';
+      icon.textContent  = '✅';
+      title.textContent = 'Kubernetes cluster is running';
+      body.textContent  = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
+    } else {
+      banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
+      icon.textContent  = '⚠️';
+      title.textContent = 'Kubernetes cluster not deployed yet';
+      body.textContent  = 'This tab requires a running cluster. Complete the Kubernetes tab first.';
+    }
+  } catch(e) {
+    icon.textContent  = '⚠️';
+    title.textContent = 'Could not check cluster status';
+    body.textContent  = 'Make sure the launcher backend is running.';
+  }
+}
 </script>
+

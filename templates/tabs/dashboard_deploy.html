@@ -1,5 +1,16 @@
 <div id="tab-admindashboard" class="panel">
-  <div id="prereq-dash" style="display:none;background:#fff3e0;border:1px solid #ffcc02;border-radius:6px;padding:.6rem 1rem;font-size:12px;color:#e65100;margin-bottom:1rem;align-items:center;gap:8px"></div>
+
+  <div id="prereq-dash" style="display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;">
+    <span id="prereq-dash-icon" style="font-size:20px;flex-shrink:0">⏳</span>
+    <div>
+      <strong id="prereq-dash-title">Checking GitLab status...</strong><br>
+      <span id="prereq-dash-body">The Admin Dashboard needs GitLab for user management, the container registry, and OAuth tokens.</span><br>
+      <a onclick="showTab('gitlab',document.getElementById('step-gitlab'))"
+         style="color:#1565c0;cursor:pointer;font-weight:600;text-decoration:underline;margin-top:4px;display:inline-block">
+        Open GitLab tab →
+      </a>
+    </div>
+  </div>
 
   <div class="card">
     <h2>Admin Dashboard deployment</h2>
@@ -64,7 +75,36 @@
 </div>
 
 <script>
+/* ── Always-visible prereq banner for Admin Dashboard ── */
+async function checkDashPrereq() {
+  const banner = document.getElementById('prereq-dash');
+  const icon   = document.getElementById('prereq-dash-icon');
+  const title  = document.getElementById('prereq-dash-title');
+  const body   = document.getElementById('prereq-dash-body');
+  if (!banner) return;
+  try {
+    const r = await fetch('/api/gitlab/outputs');
+    const d = await r.json();
+    if (d.status === 'ok') {
+      banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f5e9;border:1px solid #a5d6a7;border-left:4px solid #2e7d32;color:#1b5e20;';
+      icon.textContent  = '✅';
+      title.textContent = 'GitLab is deployed — admin token loaded';
+      body.textContent  = 'Connected to ' + d.gitlab_url + ' · Admin token ready · Registry configured';
+    } else {
+      banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1pm;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
+      icon.textContent  = '⚠️';
+      title.textContent = 'GitLab must be deployed before the Admin Dashboard';
+      body.textContent  = 'The dashboard needs GitLab for user management, the container registry, and OAuth. Deploy GitLab first.';
+    }
+  } catch(e) {
+    icon.textContent  = '⚠️';
+    title.textContent = 'Could not check GitLab status';
+    body.textContent  = 'Make sure the launcher backend is running.';
+  }
+}
+
 async function checkDashboardStatus() {
+  checkDashPrereq();
   try {
     const r   = await fetch('/api/dashboard/status');
     const d   = await r.json();

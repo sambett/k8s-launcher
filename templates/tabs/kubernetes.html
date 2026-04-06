@@ -55,6 +55,18 @@
     <div id="st-ui" style="margin-top:.5rem;font-size:13px;color:#888"></div>
   </div>
 
+  <div id="next-step-kubernetes" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">Kubernetes cluster + Longhorn storage ready</div>
+      <div class="cta-sub">Next: deploy GitLab as your identity provider and container registry</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('gitlab',document.getElementById('step-gitlab'))">
+      Continue to GitLab →
+    </button>
+  </div>
+
 </div>
 
 <script>
@@ -76,8 +88,12 @@ async function validateLonghorn() {
   const r = await fetch('/api/validate/longhorn', { method: 'POST' });
   const d = await r.json();
   setDot('dot-vlh', d.status === 'ok' ? 'ok' : 'error');
-  if (d.status === 'ok') markStepDone('kubernetes');
-  else markStepError('kubernetes');
+  if (d.status === 'ok') {
+    markStepDone('kubernetes');
+    showNextStep('kubernetes');
+  } else {
+    markStepError('kubernetes');
+  }
   renderChecks('st-lh', d.checks);
   const ui = d.checks && d.checks.longhorn_ui;
   if (ui && ui.startsWith('ok')) {

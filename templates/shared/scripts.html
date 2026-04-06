@@ -13,7 +13,6 @@ function showTab(name, btn) {
   if (btn) btn.classList.add('active');
   const stepEl = document.getElementById('step-' + name);
   if (stepEl) stepEl.classList.add('active');
-  /* Tab-specific loaders */
   if (name === 'reset')      loadResetPreview();
   if (name === 'status')     refreshPlatformOverview();
   if (name === 'gitlab')     { if (typeof loadGitLabOutputs   === 'function') loadGitLabOutputs(); }
@@ -31,6 +30,7 @@ function showTab(name, btn) {
     if (typeof loadKyvernoVersions  === 'function') loadKyvernoVersions();
     if (typeof loadKyvernoPolicies === 'function') loadKyvernoPolicies();
   }
+  if (name === 'admindashboard') { if (typeof checkDashPrereq === 'function') checkDashPrereq(); }
   checkPrereqs(name);
 }
 
@@ -53,20 +53,53 @@ function restoreStepStates() {
   });
 }
 
-/* ── Prereq banner ── */
+/* ── Show a "continue to next step" CTA card ── */
+function showNextStep(id) {
+  const el = document.getElementById('next-step-' + id);
+  if (el) el.classList.add('visible');
+}
+
+/* ── Auto-recover step states from live platform on page load ── */
+async function autoRecoverSteps() {
+  // If inventory/vars files exist → bootstrap + configure were already completed
+  try {
+    const r = await fetch('/api/configure/preview');
+    if (r.ok) {
+      if (!localStorage.getItem('step-bootstrap')) markStepDone('bootstrap');
+      if (!localStorage.getItem('step-configure')) markStepDone('configure');
+    }
+  } catch(e) {}
+  // Check live platform status for the remaining steps
+  try {
+    const r = await fetch('/api/platform/status');
+    const d = await r.json();
+    const map = {
+      kubernetes:     d.cluster?.status    === 'ready',
+      gitlab:         d.gitlab?.status     === 'ready',
+      jupyterhub:     d.jupyterhub?.status === 'ready',
+      admindashboard: d.dashboard?.status  === 'ready',
+    };
+    Object.entries(map).forEach(([name, ready]) => {
+      if (ready && !localStorage.getItem('step-' + name)) markStepDone(name);
+    });
+  } catch(e) {}
+}
+
+/* ── Prereq banners ── */
 async function checkPrereqs(tabName) {
-  if (tabName === 'jupyterhub' || tabName === 'admindashboard') {
-    const id = tabName === 'jupyterhub' ? 'prereq-jhub' : 'prereq-dash';
+  // Only GitLab tab still uses the generic showBanner pattern.
+  // All other tabs own their own always-visible prereq banners.
+  if (tabName === 'gitlab') {
     try {
-      const r = await fetch('/api/gitlab/outputs');
-      const d = await r.json();
-      showBanner(id, d.status !== 'ok',
-        '⚠ Complete the GitLab tab first — credentials not found. ' +
-        '<a onclick="showTab(\'gitlab\',document.getElementById(\'step-gitlab\'))" ' +
-        'style="color:#1565c0;cursor:pointer;text-decoration:underline">Go to GitLab tab →</a>');
+      const r = await fetch('/api/configure/preview');
+      showBanner('prereq-gitlab', r.status === 404,
+        '⚠ Generate cluster configuration first before deploying GitLab. ' +
+        '<a onclick="showTab(\'configure\',document.getElementById(\'step-configure\'))" ' +
+        'style="color:#1565c0;cursor:pointer;text-decoration:underline">Go to Configure tab →</a>');
     } catch(e) {}
   }
 }
+
 function showBanner(id, visible, html) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -195,5 +228,6 @@ function populateUrl(elId, url) {
 document.addEventListener('DOMContentLoaded', () => {
   restoreStepStates();
   showTab('bootstrap', document.getElementById('step-bootstrap'));
+  autoRecoverSteps();
 });
 </script>

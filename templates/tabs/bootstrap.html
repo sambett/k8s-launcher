@@ -1,6 +1,5 @@
 <div id="tab-bootstrap" class="panel active">
 
-  <!-- ── Platform requirements — shown before anything else ─────────────────── -->
   <div class="platform-req-banner">
     <div class="platform-req-header">
       <span class="platform-req-icon">⚠️</span>
@@ -21,18 +20,9 @@
       <div class="platform-req-row">
         <span class="platform-req-label">Why same OS?</span>
         <span class="platform-req-value">
-          Longhorn (the distributed storage layer) relies on kernel modules — iSCSI,
-          device-mapper — that differ between Ubuntu LTS generations. A mixed-OS cluster
-          will deploy successfully but produce subtle, hard-to-diagnose storage failures
-          under load. Kubernetes itself does not care, but Longhorn does.
-        </span>
-      </div>
-      <div class="platform-req-row">
-        <span class="platform-req-label">Is this normal?</span>
-        <span class="platform-req-value">
-          Yes. AWS EKS, Google GKE, and NVIDIA AI Workbench all enforce OS constraints
-          on cluster nodes for the same reason. Pinning the OS is what makes the
-          platform reproducible.
+          Longhorn relies on kernel modules — iSCSI, device-mapper — that differ between
+          Ubuntu LTS generations. A mixed-OS cluster produces subtle, hard-to-diagnose
+          storage failures under load.
         </span>
       </div>
     </div>
@@ -44,7 +34,6 @@
       The controller is the machine that runs Ansible and orchestrates the cluster.
       It must NOT be one of your cluster nodes — it stays separate.
       If you are running this launcher directly on the controller, tick the checkbox below.
-      Otherwise enter the controller's IP, SSH user, and password.
     </div>
 
     <div style="margin-bottom:.75rem">
@@ -99,6 +88,18 @@
     <div id="r-preflight" style="margin-top:.5rem"></div>
   </div>
 
+  <div id="next-step-bootstrap" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">All nodes passed preflight checks</div>
+      <div class="cta-sub">Next: define your node roles, versions, and network settings</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('configure',document.getElementById('step-configure'))">
+      Continue to Configure →
+    </button>
+  </div>
+
 </div>
 
 <script>
@@ -110,11 +111,9 @@ function toggleControllerFields() {
 async function installAnsible() {
   const el      = document.getElementById('r-ansible');
   const isLocal = document.getElementById('ctrl-is-local').checked;
-
   let body = null;
-
   if (isLocal) {
-    body = { is_local: true, ip: '', ssh_user: '' , ssh_pass: '' };
+    body = { is_local: true, ip: '', ssh_user: '', ssh_pass: '' };
   } else {
     const ip   = document.getElementById('ctrl-ip').value.trim();
     const user = document.getElementById('ctrl-user').value.trim();
@@ -125,20 +124,15 @@ async function installAnsible() {
     }
     body = { is_local: false, ip, ssh_user: user, ssh_pass: pass };
   }
-
   el.innerHTML = '<span class="badge b-run">Installing...</span>';
-
   const r = await fetch('/api/bootstrap/ansible', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(body)
   });
   const d = await r.json();
-
-  // Clear password after use
   const passEl = document.getElementById('ctrl-pass');
   if (passEl) passEl.value = '';
-
   el.innerHTML = d.status === 'ok'
     ? `<span class="badge b-ok">${d.message}</span>`
     : `<span class="badge b-err">${d.message || d.detail}</span>`;
@@ -170,7 +164,6 @@ async function runBootstrapSSH() {
     ssh_user: r.querySelector('.bu').value,
     ssh_pass: r.querySelector('.bp').value,
   })).filter(n => n.ip && n.ssh_pass);
-
   const el = document.getElementById('r-ssh');
   el.innerHTML = '<span class="badge b-run">Pushing keys...</span>';
   const resp = await fetch('/api/bootstrap/ssh', {
@@ -194,7 +187,6 @@ async function runPreflight() {
     hostname: r.querySelector('.bh').value,
     ssh_user: r.querySelector('.bu').value,
   })).filter(n => n.ip);
-
   const el = document.getElementById('r-preflight');
   el.innerHTML = '<span class="badge b-run">Checking nodes...</span>';
   const resp = await fetch('/api/preflight', {
@@ -213,6 +205,10 @@ async function runPreflight() {
       <span class="badge ${node.status === 'ok' ? 'b-ok' : 'b-err'}" style="margin-left:6px">${node.status}</span>
       <div style="margin-left:1rem;margin-top:3px">${checks}</div></div>`;
   }).join('');
+  if (d.status === 'ok') {
+    markStepDone('bootstrap');
+    showNextStep('bootstrap');
+  }
 }
 </script>
 
@@ -234,17 +230,8 @@ async function runPreflight() {
   color: #92400e;
 }
 .platform-req-icon { font-size: 18px; }
-.platform-req-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.platform-req-row {
-  display: flex;
-  gap: 12px;
-  font-size: 13px;
-  line-height: 1.5;
-}
+.platform-req-body { display: flex; flex-direction: column; gap: 8px; }
+.platform-req-row { display: flex; gap: 12px; font-size: 13px; line-height: 1.5; }
 .platform-req-label {
   flex-shrink: 0;
   width: 110px;

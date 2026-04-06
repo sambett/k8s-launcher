@@ -63,7 +63,6 @@
     </div>
   </div>
 
-
   <button class="btn btn-primary" onclick="generateConfig()">Generate configuration</button>
   <div id="r-config" style="margin-top:.75rem"></div>
 
@@ -76,6 +75,18 @@
       <h2>Generated group_vars/all.yml</h2>
       <pre id="prev-vars" class="log" style="height:auto;max-height:260px"></pre>
     </div>
+  </div>
+
+  <div id="next-step-configure" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">Configuration saved — inventory and variables ready</div>
+      <div class="cta-sub">Next: deploy Kubernetes, Calico CNI, and Longhorn storage</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('kubernetes',document.getElementById('step-kubernetes'))">
+      Continue to Kubernetes →
+    </button>
   </div>
 
 </div>
@@ -104,10 +115,10 @@ async function loadCompatMatrix() {
     COMPAT_RULES = d.rules || [];
     const p = d.presets && d.presets['stable-sprint2'];
     if (p) {
-      document.getElementById('v-k8s').value       = p.kubernetes  || '1.30.5';
-      document.getElementById('v-containerd').value = p.containerd || '1.7.22';
-      document.getElementById('v-calico').value     = p.calico     || 'v3.28.2';
-      document.getElementById('v-longhorn').value   = p.longhorn   || '1.7.2';
+      document.getElementById('v-k8s').value        = p.kubernetes  || '1.30.5';
+      document.getElementById('v-containerd').value = p.containerd  || '1.7.22';
+      document.getElementById('v-calico').value     = p.calico      || 'v3.28.2';
+      document.getElementById('v-longhorn').value   = p.longhorn    || '1.7.2';
     }
   } catch(e) {}
 }
@@ -161,6 +172,8 @@ async function generateConfig() {
   const d = await resp.json();
   if (d.status === 'ok') {
     el.innerHTML = `<span class="badge b-ok">Generated — workers: ${d.derived.worker_count}, replicas: ${d.derived.longhorn_replica_count}</span>`;
+    markStepDone('configure');
+    showNextStep('configure');
     const r2 = await fetch('/api/configure/preview');
     const d2 = await r2.json();
     document.getElementById('config-preview').style.display = 'block';

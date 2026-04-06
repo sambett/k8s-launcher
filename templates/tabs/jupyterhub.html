@@ -1,5 +1,30 @@
 <div id="tab-jupyterhub" class="panel">
-  <div id="prereq-jhub" style="display:none;background:#fff3e0;border:1px solid #ffcc02;border-radius:6px;padding:.6rem 1rem;font-size:12px;color:#e65100;margin-bottom:1rem;align-items:center;gap:8px"></div>
+
+  <!-- Prerequisite status — always visible, changes color based on state -->
+  <div id="prereq-jhub" style="
+    display:flex;
+    align-items:flex-start;
+    gap:12px;
+    border-radius:6px;
+    padding:.85rem 1.1rem;
+    margin-bottom:1.25rem;
+    font-size:13px;
+    line-height:1.6;
+    background:#fff3e0;
+    border:1px solid #f59e0b;
+    border-left:4px solid #f59e0b;
+    color:#92400e;
+  ">
+    <span id="prereq-jhub-icon" style="font-size:20px;flex-shrink:0">⏳</span>
+    <div>
+      <strong id="prereq-jhub-title">Checking GitLab status...</strong><br>
+      <span id="prereq-jhub-body">JupyterHub uses GitLab for OAuth login, container images, and user groups.</span><br>
+      <a onclick="showTab('gitlab',document.getElementById('step-gitlab'))"
+         style="color:#1565c0;cursor:pointer;font-weight:600;text-decoration:underline;margin-top:4px;display:inline-block">
+        Open GitLab tab →
+      </a>
+    </div>
+  </div>
 
   <div class="card">
     <h2>JupyterHub deployment</h2>
@@ -62,25 +87,70 @@
     </div>
   </div>
 
+  <div id="next-step-jupyterhub" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">JupyterHub is running</div>
+      <div class="cta-sub">Next: deploy the admin dashboard to manage profiles, users, and GPU policies</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('admindashboard',document.getElementById('step-admindashboard'))">
+      Continue to Admin Dashboard →
+    </button>
+  </div>
+
 </div>
 
 <script>
+/* Called every time this tab opens — updates the prereq banner based on live state */
 async function loadJhubPrefill() {
-  const el = document.getElementById('jhub-prefill-status');
-  if (!el) return;
-  const r  = await fetch('/api/jupyterhub/prefill');
-  const d  = await r.json();
-  if (d.status === 'ok') {
-    el.innerHTML =
-      `<div class="badge b-ok" style="font-size:12px">
-        ✓ GitLab credentials loaded automatically —
-        ${d.gitlab_url} · OAuth client ID confirmed
-      </div>`;
-  } else {
-    el.innerHTML =
-      `<div class="badge b-warn" style="font-size:12px">
-        ⚠ ${d.message}
-      </div>`;
+  const banner = document.getElementById('prereq-jhub');
+  const icon   = document.getElementById('prereq-jhub-icon');
+  const title  = document.getElementById('prereq-jhub-title');
+  const body   = document.getElementById('prereq-jhub-body');
+
+  try {
+    const r = await fetch('/api/gitlab/outputs');
+    const d = await r.json();
+
+    if (d.status === 'ok') {
+      // GitLab done — show green confirmation, still visible
+      banner.style.background   = '#e8f5e9';
+      banner.style.border       = '1px solid #a5d6a7';
+      banner.style.borderLeft   = '4px solid #2e7d32';
+      banner.style.color        = '#1b5e20';
+      icon.textContent          = '✅';
+      title.textContent         = 'GitLab is deployed — credentials loaded automatically';
+      body.textContent          = `Connected to ${d.gitlab_url} · OAuth client ID confirmed · Registry ready`;
+
+      // Also populate the prefill status card
+      const el = document.getElementById('jhub-prefill-status');
+      if (el) el.innerHTML =
+        `<div class="badge b-ok" style="font-size:12px">
+          ✓ GitLab at ${d.gitlab_url} · OAuth ID confirmed · Deploy token ready
+        </div>`;
+    } else {
+      // GitLab not done — show amber warning
+      banner.style.background   = '#fff3e0';
+      banner.style.border       = '1px solid #f59e0b';
+      banner.style.borderLeft   = '4px solid #f59e0b';
+      banner.style.color        = '#92400e';
+      icon.textContent          = '⚠️';
+      title.textContent         = 'GitLab must be deployed before this step';
+      body.textContent          = 'JupyterHub needs GitLab for OAuth login, container images, and user groups. This deployment will fail without it.';
+
+      const el = document.getElementById('jhub-prefill-status');
+      if (el) el.innerHTML =
+        `<div class="badge b-warn" style="font-size:12px">⚠ ${d.message || 'GitLab credentials not found'}</div>`;
+    }
+  } catch(e) {
+    banner.style.background   = '#fff3e0';
+    banner.style.border       = '1px solid #f59e0b';
+    banner.style.borderLeft   = '4px solid #f59e0b';
+    banner.style.color        = '#92400e';
+    icon.textContent          = '⚠️';
+    title.textContent         = 'Could not check GitLab status';
+    body.textContent          = 'Make sure the launcher backend is running.';
   }
 }
 
@@ -121,6 +191,7 @@ function jhubDeploy() {
       setDot('dot-jhub', 'ok');
       statusEl.textContent = 'Complete';
       markStepDone('jupyterhub');
+      showNextStep('jupyterhub');
       es.close();
       document.getElementById('jhub-ready-card').style.display = 'block';
     } else if (e.data.startsWith('__ERROR__')) {

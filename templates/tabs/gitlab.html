@@ -1,4 +1,6 @@
 <div id="tab-gitlab" class="panel">
+  <div id="prereq-gitlab" class="prereq-banner"></div>
+
 
   <div class="card">
     <h2>Step 1 — SSH bootstrap to GitLab VM</h2>
@@ -129,6 +131,18 @@
     <div id="gitlab-url-badge" style="margin-top:.5rem;font-size:13px"></div>
   </div>
 
+  <div id="next-step-gitlab" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">GitLab is deployed and credentials saved</div>
+      <div class="cta-sub">Next: deploy JupyterHub using your GitLab instance for authentication</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('jupyterhub',document.getElementById('step-jupyterhub'))">
+      Continue to JupyterHub →
+    </button>
+  </div>
+
 </div>
 
 <script>
@@ -227,6 +241,7 @@ function gitlabDeploy() {
       setDot('dot-gitlab', 'ok');
       statusEl.textContent = 'Complete';
       markStepDone('gitlab');
+      showNextStep('gitlab');
       es.close();
       await loadGitLabOutputs();
     } else if (e.data.startsWith('__ERROR__')) {
