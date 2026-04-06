@@ -389,13 +389,11 @@ async def apply_node_selector_policy():
             "message": f"Policy YAML not found at {_NODE_SELECTOR_POLICY_FILE}",
         }
 
-    yaml_content = _NODE_SELECTOR_POLICY_FILE.read_text()
-
-    # Write to /tmp on the control plane using a heredoc-safe approach:
-    # escape all single quotes in the YAML, then wrap in single-quote heredoc.
-    escaped = yaml_content.replace("'", "'\\''")
-    write_cmd = f"printf '%s' '{escaped}' > /tmp/require-gpu-node-selector.yaml"
-    out, rc = run_on_cp(write_cmd)
+    import base64 as _b64
+    b64 = _b64.b64encode(_NODE_SELECTOR_POLICY_FILE.read_bytes()).decode()
+    out, rc = run_on_cp(
+        f"echo {b64} | base64 -d > /tmp/require-gpu-node-selector.yaml"
+    )
     if rc != 0:
         return {
             "success": False,
@@ -433,8 +431,11 @@ async def node_selector_policy_status():
         f"kubectl get clusterpolicy {_NODE_SELECTOR_POLICY_NAME} "
         f"-o jsonpath='{{.status.ready}}'"
     )
+    # run_on_cp returns ansible output: "hostname | CHANGED | rc=0 >>\ntrue"
+    # Extract just the last non-empty line which is the actual value
+    last_line = [l for l in ready_out.splitlines() if l.strip()][-1] if ready_out.strip() else ""
     return {
         "exists": True,
-        "ready":  ready_out.strip().lower() == "true",
+        "ready":  last_line.strip().lower() == "true",
     }
 
