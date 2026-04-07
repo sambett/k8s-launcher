@@ -30,6 +30,7 @@
     group: "{{ dashboard_user }}"
     mode: "0640"
   no_log: true
+  notify: restart workbench-admin
 
 - name: Clone k8s-launcher repo directly into ~/k8s-launcher
   become: no
@@ -38,6 +39,7 @@
     dest: "/home/{{ dashboard_user }}/k8s-launcher"
     version: main
     force: yes
+  notify: restart workbench-admin
 
 - name: Write registry.conf into repo workbench-admin dir
   become: no
@@ -45,12 +47,14 @@
     src: registry.conf.j2
     dest: "/home/{{ dashboard_user }}/k8s-launcher/workbench-admin/registry.conf"
     mode: "0640"
+  notify: restart workbench-admin
 
 - name: Install systemd unit
   template:
     src: workbench-admin.service.j2
     dest: /etc/systemd/system/workbench-admin.service
     mode: "0644"
+  notify: restart workbench-admin
 
 - name: Enable and start service
   systemd:
@@ -59,13 +63,7 @@
     state: started
     daemon_reload: yes
 
-- name: Force restart workbench-admin to load latest code
-  systemd:
-    name: workbench-admin
-    state: restarted
-    daemon_reload: yes
-
-- name: Wait for dashboard to be reachable after restart
+- name: Wait for dashboard to be reachable
   uri:
     url: "http://localhost:{{ dashboard_port }}/api/settings/info"
     method: GET
