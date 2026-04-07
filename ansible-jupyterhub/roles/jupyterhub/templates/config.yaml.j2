@@ -144,6 +144,7 @@ hub:
               }
               if gpu_count > 0:
                   kubespawner["extra_resource_limits"] = {"nvidia.com/gpu": str(gpu_count)}
+                  kubespawner["node_selector"] = {"accelerator": "nvidia"}
               return {
                   "display_name":        p.get("display_name", "Profile"),
                   "description":         p.get("description", ""),
