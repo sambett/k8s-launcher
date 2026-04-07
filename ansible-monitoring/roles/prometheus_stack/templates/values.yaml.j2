@@ -1,0 +1,13 @@
+# ansible-monitoring/roles/prometheus_stack/templates/values.yaml.j2
+# Rendered at deploy time by Ansible — do not edit the output file directly.
+# All tunables live here. chart_version is passed separately via --version.
+
+grafana:
+  service:
+    type: NodePort
+    nodePort: {{ grafana_nodeport }}
+
+prometheus:
+  service:
+    type: NodePort
+    nodePort: {{ prometheus_nodeport }}

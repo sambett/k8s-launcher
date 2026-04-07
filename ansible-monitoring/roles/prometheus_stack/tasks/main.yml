@@ -23,18 +23,22 @@
   command: helm repo update
   changed_when: true
 
+- name: Render Helm values from template
+  template:
+    src: values.yaml.j2
+    dest: /tmp/monitoring-values.yaml
+    mode: '0644'
+
 - name: Install kube-prometheus-stack {{ chart_version }} via Helm
   command: >
     helm upgrade --install kube-prometheus-stack
     prometheus-community/kube-prometheus-stack
     --namespace {{ monitoring_namespace }}
     --version {{ chart_version }}
-    --set grafana.service.type=NodePort
-    --set grafana.service.nodePort={{ grafana_nodeport }}
-    --set prometheus.service.type=NodePort
-    --set prometheus.service.nodePort={{ prometheus_nodeport }}
+    -f /tmp/monitoring-values.yaml
     --timeout 10m
     --wait
+    --atomic
   register: helm_result
   changed_when: true
 

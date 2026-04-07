@@ -26,6 +26,16 @@
   changed_when: false
   failed_when: (operator_ready.stdout | default('0')) | int < 1
 
+- name: Confirm Alertmanager statefulset has ready replicas
+  command: >
+    kubectl get statefulset
+    alertmanager-kube-prometheus-stack-alertmanager
+    -n {{ monitoring_namespace }}
+    -o jsonpath='{.status.readyReplicas}'
+  register: alertmanager_ready
+  changed_when: false
+  failed_when: (alertmanager_ready.stdout | default('0')) | int < 1
+
 - name: Show NodePort services in monitoring namespace
   command: >
     kubectl get svc -n {{ monitoring_namespace }}
