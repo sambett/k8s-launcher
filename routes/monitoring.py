@@ -1,18 +1,10 @@
 """
 routes/monitoring.py — Prometheus + Grafana via kube-prometheus-stack Helm chart.
-
-Install flow:
-  UI picks version from compat_matrix → GET /api/monitoring/install/stream?version=X.Y.Z
-  → ansible_stream(extra_vars={"chart_version": version})
-  → ansible-playbook --extra-vars chart_version=X.Y.Z
-  → {{ chart_version }} used in helm upgrade --install (never hardcoded)
 """
 import json
 import re
-
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-
 from core.ansible import ansible_stream, run_on_cp
 from core.paths import (
     ANSIBLE_MONITORING_DIR,
@@ -22,11 +14,7 @@ from core.paths import (
 )
 
 router = APIRouter()
-
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")   # Helm chart versions: X.Y.Z
-
-
-# ── Status ─────────────────────────────────────────────────────────────────────
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 @router.get("/api/monitoring/status")
 async def monitoring_status():
@@ -37,9 +25,6 @@ async def monitoring_status():
         return {"status": "not_installed"}
     parts = out.strip().split()
     return {"status": "installed", "chart": parts[8] if len(parts) > 8 else "unknown"}
-
-
-# ── Versions ───────────────────────────────────────────────────────────────────
 
 @router.get("/api/monitoring/versions")
 async def monitoring_versions():
@@ -54,9 +39,6 @@ async def monitoring_versions():
         "k8s_version": k8s_ver,
     }
 
-
-# ── Access URLs ────────────────────────────────────────────────────────────────
-
 @router.get("/api/monitoring/access")
 async def monitoring_access():
     cp_ip = _read_cp_ip()
@@ -64,15 +46,15 @@ async def monitoring_access():
 
     out, _ = run_on_cp(
         "kubectl get svc -n monitoring --no-headers 2>/dev/null "
-        "| grep -i grafana | awk '{print $5}'"
+        "| grep 'kube-prometheus-stack-grafana ' | awk '{print $5}'"
     )
     m = re.search(r":(\d+)/TCP", out)
     if m and cp_ip:
         grafana_url = f"http://{cp_ip}:{m.group(1)}"
 
     out2, _ = run_on_cp(
-        "kubectl get svc -n monitoring --no-headers 2>/dev/null "
-        "| grep -i 'prometheus-operated\\|prometheus-kube' | head -1 | awk '{print $5}'"
+        "kubectl get svc kube-prometheus-stack-prometheus "
+        "-n monitoring --no-headers 2>/dev/null | awk '{print $5}'"
     )
     m2 = re.search(r":(\d+)/TCP", out2)
     if m2 and cp_ip:
@@ -80,38 +62,19 @@ async def monitoring_access():
 
     return {"grafana_url": grafana_url, "prometheus_url": prometheus_url}
 
-
-# ── Install (SSE stream) ───────────────────────────────────────────────────────
-
 @router.get("/api/monitoring/install/stream")
 async def monitoring_install_stream(version: str = ""):
     if not version:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "version required"}
-        )
+        return JSONResponse(status_code=400, content={"error": "version required"})
     if not VERSION_RE.match(version):
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Invalid version '{version}' — expected X.Y.Z (e.g. 65.1.0)"}
-        )
+        return JSONResponse(status_code=400, content={"error": f"Invalid version '{version}' — expected X.Y.Z"})
     if not INVENTORY_PATH.exists():
-        return JSONResponse(
-            status_code=400,
-            content={"error": "No inventory found — run Configure first"}
-        )
-
+        return JSONResponse(status_code=400, content={"error": "No inventory — run Configure first"})
     return StreamingResponse(
-        ansible_stream(
-            ANSIBLE_MONITORING_DIR,
-            extra_vars={"chart_version": version}
-        ),
+        ansible_stream(ANSIBLE_MONITORING_DIR, extra_vars={"chart_version": version}),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-# ── Private helpers ────────────────────────────────────────────────────────────
 
 def _read_k8s_version() -> str:
     if VARS_PATH.exists():
@@ -120,14 +83,12 @@ def _read_k8s_version() -> str:
                 return line.split(":", 1)[1].strip().strip('"')
     return ""
 
-
 def _read_cp_ip() -> str:
     if VARS_PATH.exists():
         for line in VARS_PATH.read_text().splitlines():
             if line.strip().startswith("cp_ip:"):
                 return line.split(":", 1)[1].strip().strip('"')
     return ""
-
 
 def _match_version(entries: list, k8s_version: str):
     if not k8s_version or not entries:

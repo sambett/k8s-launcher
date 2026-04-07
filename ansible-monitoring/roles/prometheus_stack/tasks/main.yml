@@ -31,8 +31,8 @@
     --version {{ chart_version }}
     --set grafana.service.type=NodePort
     --set grafana.service.nodePort={{ grafana_nodeport }}
-    --set prometheus.prometheusSpec.service.type=NodePort
-    --set prometheus.prometheusSpec.service.nodePort={{ prometheus_nodeport }}
+    --set prometheus.service.type=NodePort
+    --set prometheus.service.nodePort={{ prometheus_nodeport }}
     --timeout 10m
     --wait
   register: helm_result
