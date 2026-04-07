@@ -1,0 +1,8 @@
+---
+# ansible-monitoring group_vars
+# chart_version is intentionally NOT set here — it must come from --extra-vars
+# at runtime so the launcher controls the version, not this file.
+
+monitoring_namespace: monitoring
+grafana_nodeport:     32300
+prometheus_nodeport:  32301

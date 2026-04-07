@@ -1,0 +1,17 @@
+---
+# ansible-monitoring/site.yml
+# Installs kube-prometheus-stack (Prometheus + Grafana) on an existing K8s cluster.
+# chart_version is passed at runtime via --extra-vars from the launcher.
+# Prereqs: ansible-k8s, ansible-longhorn, ansible-jupyterhub already complete.
+
+- name: Install kube-prometheus-stack
+  hosts: control_plane
+  become: no
+  roles:
+    - prometheus_stack
+
+- name: Validate monitoring deployment
+  hosts: control_plane
+  become: no
+  roles:
+    - validate

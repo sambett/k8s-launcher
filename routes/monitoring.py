@@ -1,15 +1,32 @@
 """
 routes/monitoring.py — Prometheus + Grafana via kube-prometheus-stack Helm chart.
+
+Install flow:
+  UI picks version from compat_matrix → GET /api/monitoring/install/stream?version=X.Y.Z
+  → ansible_stream(extra_vars={"chart_version": version})
+  → ansible-playbook --extra-vars chart_version=X.Y.Z
+  → {{ chart_version }} used in helm upgrade --install (never hardcoded)
 """
 import json
 import re
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-from core.ansible import run_on_cp
-from core.paths import COMPAT_MATRIX_PATH, INVENTORY_PATH, VARS_PATH
+
+from core.ansible import ansible_stream, run_on_cp
+from core.paths import (
+    ANSIBLE_MONITORING_DIR,
+    COMPAT_MATRIX_PATH,
+    INVENTORY_PATH,
+    VARS_PATH,
+)
 
 router = APIRouter()
 
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")   # Helm chart versions: X.Y.Z
+
+
+# ── Status ─────────────────────────────────────────────────────────────────────
 
 @router.get("/api/monitoring/status")
 async def monitoring_status():
@@ -22,6 +39,8 @@ async def monitoring_status():
     return {"status": "installed", "chart": parts[8] if len(parts) > 8 else "unknown"}
 
 
+# ── Versions ───────────────────────────────────────────────────────────────────
+
 @router.get("/api/monitoring/versions")
 async def monitoring_versions():
     if not COMPAT_MATRIX_PATH.exists():
@@ -29,19 +48,28 @@ async def monitoring_versions():
     matrix  = json.loads(COMPAT_MATRIX_PATH.read_text())
     entries = matrix.get("kube_prometheus_stack", [])
     k8s_ver = _read_k8s_version()
-    return {"versions": entries, "recommended": _match_version(entries, k8s_ver), "k8s_version": k8s_ver}
+    return {
+        "versions":    entries,
+        "recommended": _match_version(entries, k8s_ver),
+        "k8s_version": k8s_ver,
+    }
 
+
+# ── Access URLs ────────────────────────────────────────────────────────────────
 
 @router.get("/api/monitoring/access")
 async def monitoring_access():
     cp_ip = _read_cp_ip()
     grafana_url = prometheus_url = None
+
     out, _ = run_on_cp(
-        "kubectl get svc -n monitoring --no-headers 2>/dev/null | grep -i grafana | awk '{print $5}'"
+        "kubectl get svc -n monitoring --no-headers 2>/dev/null "
+        "| grep -i grafana | awk '{print $5}'"
     )
     m = re.search(r":(\d+)/TCP", out)
     if m and cp_ip:
         grafana_url = f"http://{cp_ip}:{m.group(1)}"
+
     out2, _ = run_on_cp(
         "kubectl get svc -n monitoring --no-headers 2>/dev/null "
         "| grep -i 'prometheus-operated\\|prometheus-kube' | head -1 | awk '{print $5}'"
@@ -49,56 +77,41 @@ async def monitoring_access():
     m2 = re.search(r":(\d+)/TCP", out2)
     if m2 and cp_ip:
         prometheus_url = f"http://{cp_ip}:{m2.group(1)}"
+
     return {"grafana_url": grafana_url, "prometheus_url": prometheus_url}
 
 
-def _monitoring_install_stream(version: str):
-    if not INVENTORY_PATH.exists():
-        yield "data: __ERROR__:no_inventory — run Configure first\n\n"
-        return
-    yield f"data: Installing kube-prometheus-stack {version}...\n\n"
-    run_on_cp("kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f - 2>&1")
-    yield "data: Namespace monitoring ready\n\n"
-    yield "data: Adding prometheus-community helm repo...\n\n"
-    out, _ = run_on_cp(
-        "helm repo add prometheus-community "
-        "https://prometheus-community.github.io/helm-charts && helm repo update 2>&1"
-    )
-    for line in out.splitlines():
-        if line.strip():
-            yield f"data: {line}\n\n"
-    yield f"data: Deploying chart {version} (3-5 minutes)...\n\n"
-    out, rc = run_on_cp(
-        f"helm upgrade --install kube-prometheus-stack "
-        f"prometheus-community/kube-prometheus-stack "
-        f"--namespace monitoring --version {version} "
-        f"--set grafana.service.type=NodePort "
-        f"--set grafana.service.nodePort=32300 "
-        f"--set prometheus.prometheusSpec.service.type=NodePort "
-        f"--set prometheus.prometheusSpec.service.nodePort=32301 "
-        f"--timeout 10m --wait 2>&1"
-    )
-    for line in out.splitlines():
-        if line.strip():
-            yield f"data: {line}\n\n"
-    if rc != 0:
-        yield f"data: __ERROR__:{rc}\n\n"
-        return
-    yield "data: ✓ Grafana on NodePort 32300 — login: admin / prom-operator\n\n"
-    yield "data: ✓ Prometheus on NodePort 32301\n\n"
-    yield "data: __DONE__\n\n"
-
+# ── Install (SSE stream) ───────────────────────────────────────────────────────
 
 @router.get("/api/monitoring/install/stream")
 async def monitoring_install_stream(version: str = ""):
     if not version:
-        return JSONResponse(status_code=400, content={"error": "version required"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "version required"}
+        )
+    if not VERSION_RE.match(version):
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid version '{version}' — expected X.Y.Z (e.g. 65.1.0)"}
+        )
+    if not INVENTORY_PATH.exists():
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No inventory found — run Configure first"}
+        )
+
     return StreamingResponse(
-        _monitoring_install_stream(version),
+        ansible_stream(
+            ANSIBLE_MONITORING_DIR,
+            extra_vars={"chart_version": version}
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+
+# ── Private helpers ────────────────────────────────────────────────────────────
 
 def _read_k8s_version() -> str:
     if VARS_PATH.exists():

@@ -1,0 +1,38 @@
+---
+- name: Get all pods in monitoring namespace
+  command: kubectl get pods -n {{ monitoring_namespace }} -o wide
+  register: pod_list
+  changed_when: false
+
+- name: Print monitoring pod status
+  debug:
+    msg: "{{ pod_list.stdout_lines }}"
+
+- name: Confirm Grafana deployment has ready replicas
+  command: >
+    kubectl get deployment kube-prometheus-stack-grafana
+    -n {{ monitoring_namespace }}
+    -o jsonpath='{.status.readyReplicas}'
+  register: grafana_ready
+  changed_when: false
+  failed_when: (grafana_ready.stdout | default('0')) | int < 1
+
+- name: Confirm Prometheus operator has ready replicas
+  command: >
+    kubectl get deployment kube-prometheus-stack-operator
+    -n {{ monitoring_namespace }}
+    -o jsonpath='{.status.readyReplicas}'
+  register: operator_ready
+  changed_when: false
+  failed_when: (operator_ready.stdout | default('0')) | int < 1
+
+- name: Show NodePort services in monitoring namespace
+  command: >
+    kubectl get svc -n {{ monitoring_namespace }}
+    --no-headers -o wide
+  register: svc_list
+  changed_when: false
+
+- name: Print monitoring services
+  debug:
+    msg: "{{ svc_list.stdout_lines }}"
