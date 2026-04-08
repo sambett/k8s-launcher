@@ -1,6 +1,5 @@
 <div id="tab-jupyterhub" class="panel">
 
-  <!-- Prerequisite status — always visible, changes color based on state -->
   <div id="prereq-jhub" style="
     display:flex;
     align-items:flex-start;
@@ -30,7 +29,7 @@
     <h2>JupyterHub deployment</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
       Credentials are read automatically from the GitLab tab outputs.
-      You only need to confirm the NodePort and optionally provide a crypt key.
+      You only need to confirm the NodePort.
     </p>
 
     <div id="jhub-prefill-status" style="margin-bottom:1rem"></div>
@@ -38,11 +37,6 @@
     <div class="field-row">
       <label>NodePort</label>
       <input type="number" id="jhub-nodeport" value="32080"/>
-    </div>
-    <div class="field-row">
-      <label>Crypt key (optional)</label>
-      <input type="text" id="jhub-crypt-key"
-        placeholder="leave blank to auto-generate a secure key"/>
     </div>
     <div class="field-row">
       <label>Storage class</label>
@@ -102,7 +96,6 @@
 </div>
 
 <script>
-/* Called every time this tab opens — updates the prereq banner based on live state */
 async function loadJhubPrefill() {
   const banner = document.getElementById('prereq-jhub');
   const icon   = document.getElementById('prereq-jhub-icon');
@@ -114,7 +107,6 @@ async function loadJhubPrefill() {
     const d = await r.json();
 
     if (d.status === 'ok') {
-      // GitLab done — show green confirmation, still visible
       banner.style.background   = '#e8f5e9';
       banner.style.border       = '1px solid #a5d6a7';
       banner.style.borderLeft   = '4px solid #2e7d32';
@@ -123,14 +115,12 @@ async function loadJhubPrefill() {
       title.textContent         = 'GitLab is deployed — credentials loaded automatically';
       body.textContent          = `Connected to ${d.gitlab_url} · OAuth client ID confirmed · Registry ready`;
 
-      // Also populate the prefill status card
       const el = document.getElementById('jhub-prefill-status');
       if (el) el.innerHTML =
         `<div class="badge b-ok" style="font-size:12px">
           ✓ GitLab at ${d.gitlab_url} · OAuth ID confirmed · Deploy token ready
         </div>`;
     } else {
-      // GitLab not done — show amber warning
       banner.style.background   = '#fff3e0';
       banner.style.border       = '1px solid #f59e0b';
       banner.style.borderLeft   = '4px solid #f59e0b';
@@ -158,7 +148,6 @@ async function jhubConfigure() {
   const el   = document.getElementById('r-jhub-cfg');
   const body = {
     nodeport:      parseInt(document.getElementById('jhub-nodeport').value),
-    crypt_key:     document.getElementById('jhub-crypt-key').value.trim(),
     storage_class: document.getElementById('jhub-storage-class').value.trim(),
     user_storage:  document.getElementById('jhub-user-storage').value.trim(),
   };
@@ -171,8 +160,7 @@ async function jhubConfigure() {
   const d = await resp.json();
   if (d.status === 'ok') {
     el.innerHTML =
-      `<span class="badge b-ok">Config saved — access URL: ${d.access_url}` +
-      (d.crypt_key_auto ? ' · crypt key auto-generated' : '') + `</span>`;
+      `<span class="badge b-ok">Config saved — access URL: ${d.access_url}</span>`;
   } else {
     el.innerHTML = `<span class="badge b-err">${d.message || 'Error'}</span>`;
   }
@@ -182,7 +170,7 @@ function jhubDeploy() {
   const logEl    = document.getElementById('jhub-log');
   const statusEl = document.getElementById('jhub-deploy-status');
   logEl.innerHTML      = '';
-  statusEl.textContent = 'Running…';
+  statusEl.textContent = 'Running\u2026';
   setDot('dot-jhub', 'running');
 
   const es = new EventSource('/api/jupyterhub/stream');

@@ -1,7 +1,7 @@
 """
 routes/jupyterhub.py — JupyterHub tab
 Reads credentials from gitlab-outputs.json automatically.
-User only needs to provide nodeport and optionally a crypt key.
+User only needs to provide nodeport.
 """
 import json
 import re
@@ -27,7 +27,6 @@ router = APIRouter()
 
 class JupyterHubConfig(BaseModel):
     nodeport:        int    = 32080
-    crypt_key:       str    = ""
     storage_class:   str    = "longhorn-jupyterhomes"
     user_storage:    str    = "10Gi"
 
@@ -84,7 +83,7 @@ async def jupyterhub_configure(cfg: JupyterHubConfig):
                     worker_ip = m.group(1)
                     break
 
-    crypt_key = cfg.crypt_key if cfg.crypt_key else secrets.token_hex(32)
+    crypt_key = secrets.token_hex(32)
     access_node_ip = worker_ip
 
     content = (
@@ -112,7 +111,6 @@ async def jupyterhub_configure(cfg: JupyterHubConfig):
     return {
         "status":         "ok",
         "access_url":     f"http://{access_node_ip}:{cfg.nodeport}",
-        "crypt_key_auto": cfg.crypt_key == "",
     }
 
 
