@@ -39,10 +39,16 @@
   changed_when: false
   no_log: true
 
-- name: Create empty profiles ConfigMap
+- name: Check if profiles ConfigMap already exists
+  command: kubectl get configmap jupyterhub-profiles -n jhub
+  register: profiles_cm_check
+  failed_when: false
+  changed_when: false
+
+- name: Create profiles ConfigMap (first install only)
   shell: >
     kubectl create configmap jupyterhub-profiles
     --from-literal=profiles.json='[]'
     --namespace jhub
-    --dry-run=client -o yaml | kubectl apply -f -
-  changed_when: false
+  when: profiles_cm_check.rc != 0
+  changed_when: true
