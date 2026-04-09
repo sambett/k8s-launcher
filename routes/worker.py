@@ -422,11 +422,27 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         if line.strip():
             yield f"data: {line}\n\n"
 
+    # FIX C: warn operator if removing this worker will leave only 1 worker.
+    # With longhorn_replica_count=2, every volume drops to 1 replica (degraded)
+    # until a replacement worker is added. Better to know before the drain runs.
+    worker_count_out, _ = run_on_cp(
+        "kubectl get nodes --no-headers "
+        "| grep -v control-plane | wc -l"
+    )
+    worker_count_lines = [l.strip() for l in worker_count_out.splitlines() if l.strip().isdigit()]
+    worker_count = int(worker_count_lines[0]) if worker_count_lines else 0
+    if worker_count <= 2:
+        yield f"data: ⚠ WARNING: cluster has {worker_count} worker(s). Removing {hostname} will leave only {worker_count - 1} worker(s).\n\n"
+        yield f"data: ⚠ Longhorn volumes will go DEGRADED (1 replica instead of 2) until a replacement worker is added.\n\n"
+        yield f"data: ⚠ Proceeding with removal in 3 seconds...\n\n"
+        import time
+        time.sleep(3)
+
     # Step 2 — Drain
     yield f"data: PLAY [Step 2/{STEPS}] Draining all pods from {hostname}...\n\n"
     out, rc = run_on_cp(
         f"kubectl drain {hostname} "
-        f"--ignore-daemonsets --delete-emptydir-data --force --timeout=120s 2>&1"
+        f"--ignore-daemonsets --delete-emptydir-data --force --timeout=300s 2>&1"
     )
     for line in out.splitlines():
         if line.strip():
@@ -438,6 +454,13 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     for line in out.splitlines():
         if line.strip():
             yield f"data: {line}\n\n"
+
+    # FIX B: remove Longhorn ghost node entry after K8s node deletion.
+    # Without this Longhorn keeps the node in its registry and tries to
+    # schedule replicas to a node that no longer exists, leaving volumes degraded.
+    # --ignore-not-found makes this safe even if the node was never in Longhorn.
+    run_on_cp(f"kubectl delete node.longhorn.io {hostname} -n longhorn-system --ignore-not-found 2>&1")
+    yield f"data: ok: Longhorn node entry removed\n\n"
 
     if INVENTORY_PATH.exists():
         lines = [

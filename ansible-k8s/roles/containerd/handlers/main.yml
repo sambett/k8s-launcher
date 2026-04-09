@@ -1,0 +1,13 @@
+---
+# FIX: added missing handlers file.
+# The containerd role uses "notify: restart containerd" in the GitLab
+# registry block. Without this file Ansible throws:
+#   ERROR! The requested handler 'restart containerd' was not found
+# and aborts the play whenever gitlab_registry_host is defined.
+
+- name: restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: yes
+  become: yes

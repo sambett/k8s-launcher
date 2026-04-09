@@ -1,8 +1,8 @@
 ---
-# FIX 3: worker labeling resolves actual K8s node name by IP address
-# instead of assuming inventory_hostname matches the VM hostname.
-# FIX 3b: label task runs on every play — not just on first join —
-# so a failed labeling step is corrected automatically on re-run.
+# FIX: worker labeling now resolves the actual Kubernetes node name by
+# matching the node IP address instead of assuming inventory_hostname
+# matches the VM hostname. Also added a pre-join assertion so hostname
+# mismatches are caught early with a clear error message.
 
 - name: Check if this node already joined
   stat:
@@ -32,8 +32,8 @@
   become: yes
   when: not kubelet_conf.stat.exists
 
-# Resolve actual K8s node name by matching node IP via jsonpath + grep.
-# Runs on every play (no when guard) so labeling is always corrected.
+# FIX: resolve actual K8s node name by matching node IP via jsonpath + grep.
+# No Python, no multiline blocks — safe in all shell contexts.
 # Retries 6x / 10s delay to allow kubelet registration to complete after join.
 - name: Resolve actual Kubernetes node name for this host
   shell: >-
@@ -48,6 +48,7 @@
   delay: 10
   until: k8s_node_name.rc == 0 and k8s_node_name.stdout != ""
   changed_when: false
+  when: not kubelet_conf.stat.exists
 
 - name: Label node as worker
   command: >
@@ -55,3 +56,4 @@
     node-role.kubernetes.io/worker=worker --overwrite
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
+  when: not kubelet_conf.stat.exists

@@ -54,21 +54,37 @@
     mode: '0600'
   become: yes
 
-# ── Join command ──────────────────────────────────────────────────────────────
-# FIX: replaced brittle log-parsing (grep/sed on kubeadm-init.log) with
-# kubeadm token create --print-join-command. This always produces a valid,
-# self-contained join command regardless of kubeadm output format changes.
-# A new token is generated on every run — existing tokens remain valid (24h TTL).
-- name: Generate worker join command via kubeadm
-  shell: kubeadm token create --print-join-command 2>/dev/null
-  register: join_cmd
+- name: Extract and save worker join command
+  shell: |
+    grep -A1 "Then you can join any number of worker nodes" {{ artifacts_dir }}/kubeadm-init.log \
+    | grep "kubeadm join" \
+    | sed 's/^[[:space:]]*//'
+  register: join_cmd_raw
   become: yes
-  changed_when: true
+  changed_when: false
 
-- name: Write join command to artifacts
+- name: Fetch discovery token hash
+  shell: |
+    grep "discovery-token-ca-cert-hash" {{ artifacts_dir }}/kubeadm-init.log \
+    | tail -1 \
+    | grep -o 'sha256:[a-f0-9]*'
+  register: token_hash
+  become: yes
+  changed_when: false
+
+- name: Fetch bootstrap token
+  shell: |
+    grep "bootstrap-token" {{ artifacts_dir }}/kubeadm-init.log \
+    | grep -o '[a-z0-9]*\.[a-z0-9]*' \
+    | head -1
+  register: bootstrap_token
+  become: yes
+  changed_when: false
+
+- name: Write clean join command
   copy:
-    content: "{{ join_cmd.stdout }}\n"
-    dest: "{{ join_command_file }}"
+    content: "kubeadm join {{ cp_ip }}:{{ api_port }} --token {{ bootstrap_token.stdout }} --discovery-token-ca-cert-hash {{ token_hash.stdout }}\n"
+    dest: "{{ artifacts_dir }}/join-command.txt"
     owner: "{{ ansible_user }}"
     mode: '0600'
   become: yes
