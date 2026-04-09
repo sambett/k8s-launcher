@@ -23,6 +23,16 @@
     gitlab_admin_token: "{{ pat_output.stdout_lines | last }}"
   no_log: true
 
+- name: Validate parsed admin token format
+  assert:
+    that:
+      - gitlab_admin_token | length > 10
+      - gitlab_admin_token is match('^glpat-')
+    fail_msg: >
+      PAT parsing failed — the last line of gitlab-rails runner output did not look
+      like a personal access token. Full stdout was: {{ pat_output.stdout }}
+  no_log: true
+
 - name: Create registry group
   uri:
     url: "{{ gitlab_external_url }}/api/v4/groups"
@@ -72,6 +82,26 @@
     validate_certs: no
   register: project_info
 
+- name: Get existing deploy tokens for notebook-images project
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/projects/{{ project_info.json.id }}/deploy_tokens?active=true"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: existing_deploy_tokens
+
+- name: Delete existing workbench-registry-token if present
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/projects/{{ project_info.json.id }}/deploy_tokens/{{ item.id }}"
+    method: DELETE
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+    status_code: [200, 204]
+  loop: "{{ existing_deploy_tokens.json | selectattr('name', 'equalto', 'workbench-registry-token') | list }}"
+  no_log: true
+
 - name: Create registry deploy token
   uri:
     url: "{{ gitlab_external_url }}/api/v4/projects/{{ project_info.json.id }}/deploy_tokens"
@@ -88,6 +118,25 @@
     validate_certs: no
   register: deploy_token
   no_log: true
+
+- name: Get existing OAuth applications
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/applications"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+  register: existing_oauth_apps
+
+- name: Delete existing jupyterhub OAuth app if present
+  uri:
+    url: "{{ gitlab_external_url }}/api/v4/applications/{{ item.id }}"
+    method: DELETE
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_admin_token }}"
+    validate_certs: no
+    status_code: [200, 204]
+  loop: "{{ existing_oauth_apps.json | selectattr('application_name', 'equalto', 'jupyterhub') | list }}"
 
 - name: Create OAuth application
   uri:
@@ -130,8 +179,10 @@
     dest: "{{ controller_outputs_path }}"
     flat: yes
   no_log: true
+  register: fetch_result
 
 - name: Clean outputs from GitLab VM
   file:
     path: /tmp/gitlab-outputs.json
     state: absent
+  when: fetch_result is succeeded
