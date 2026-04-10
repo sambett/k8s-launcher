@@ -5,6 +5,7 @@ Delete is blocked if any profile references the tag — prevents orphaned profil
 Import runs as a background thread — HTTP returns immediately with a job ID.
 """
 
+import shutil
 import subprocess
 import threading
 import uuid
@@ -22,6 +23,14 @@ bp = Blueprint("images", __name__)
 _jobs = {}
 _jobs_lock = threading.Lock()
 
+# Maximum number of completed jobs to keep in memory.
+# Running jobs are never pruned regardless of this limit.
+_JOBS_MAX = 20
+
+# Resolve skopeo once at module load — avoids PATH lookup on every import call.
+# Falls back to the conventional install location if not found on PATH.
+_SKOPEO = shutil.which("skopeo") or "/usr/bin/skopeo"
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +45,21 @@ def _registry_namespace():
 def _append_log(job_id, line):
     with _jobs_lock:
         _jobs[job_id]["log"].append(line)
+
+
+def _prune_jobs():
+    """
+    Remove the oldest finished jobs once the store exceeds _JOBS_MAX entries.
+    Called inside _jobs_lock — must not acquire the lock itself.
+    Only jobs in a terminal state (done/failed) are eligible for removal.
+    Running jobs are always preserved regardless of the cap.
+    """
+    finished = [
+        jid for jid, j in _jobs.items()
+        if j["status"] in ("done", "failed")
+    ]
+    for jid in finished[:max(0, len(_jobs) - _JOBS_MAX)]:
+        del _jobs[jid]
 
 
 def _profiles_using_tag(repo_name, tag_name):
@@ -66,7 +90,7 @@ def run_import(job_id, source, target):
     """
     token = get_token()
     cmd = [
-        "skopeo", "copy",
+        _SKOPEO, "copy",
         f"docker://{source}",
         f"docker://{target}",
         "--dest-creds", f"root:{token}",
@@ -95,19 +119,23 @@ def run_import(job_id, source, target):
             _append_log(job_id, f"\n✗ skopeo exited with code {proc.returncode}")
             with _jobs_lock:
                 _jobs[job_id]["status"] = "failed"
+                _prune_jobs()
         else:
             with _jobs_lock:
                 _jobs[job_id]["status"] = "done"
+                _prune_jobs()
             _append_log(job_id, f"\n✓ Import complete → {target}")
 
     except FileNotFoundError:
-        _append_log(job_id, "✗ skopeo not found — run: sudo apt-get install -y skopeo")
+        _append_log(job_id, f"✗ skopeo not found at {_SKOPEO} — run: sudo apt-get install -y skopeo")
         with _jobs_lock:
             _jobs[job_id]["status"] = "failed"
+            _prune_jobs()
     except Exception as e:
         _append_log(job_id, f"✗ Unexpected error: {str(e)}")
         with _jobs_lock:
             _jobs[job_id]["status"] = "failed"
+            _prune_jobs()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -180,7 +208,6 @@ def api_delete_tag(repo_id, tag_name):
     """
     repo_name = request.args.get("repo_name", "")
 
-    # ── Safety check — refuse if any profile uses this tag ────────────────────
     if repo_name:
         blocking = _profiles_using_tag(repo_name, tag_name)
         if blocking:
@@ -190,7 +217,6 @@ def api_delete_tag(repo_id, tag_name):
                 "hint":     "Delete these profiles first, then retry."
             }), 409
 
-    # ── No profiles blocking — proceed with deletion ───────────────────────────
     pid    = registry_project_id()
     path   = f"projects/{pid}/registry/repositories/{repo_id}/tags/{tag_name}"
     result = gitlab_delete(path)
@@ -218,7 +244,6 @@ def api_delete_repo(repo_id):
     """
     repo_name = request.args.get("repo_name", "")
 
-    # Safety check — block if any profile uses this repo
     if repo_name:
         profiles = read_profiles()
         blocking = [

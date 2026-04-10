@@ -6,6 +6,7 @@ Changes only when profile business rules change.
 
 import json
 import re
+import shutil
 import subprocess
 from datetime import datetime
 
@@ -15,12 +16,16 @@ import app.config as config
 
 bp = Blueprint("profiles", __name__)
 
+# Resolve kubectl once at module load — avoids PATH lookup on every request.
+# Falls back to the conventional install location if not found on PATH.
+_KUBECTL = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+
 
 # ── ConfigMap helpers ──────────────────────────────────────────────────────────
 
 def read_profiles():
     result = subprocess.run(
-        ["kubectl", "get", "configmap", config.CONFIGMAP_NAME,
+        [_KUBECTL, "get", "configmap", config.CONFIGMAP_NAME,
          "-n", config.CONFIGMAP_NS,
          "-o", "jsonpath={.data.profiles\\.json}"],
         capture_output=True, text=True
@@ -38,7 +43,7 @@ def write_profiles(profiles):
     json_str = json.dumps(profiles, indent=2)
     patch    = {"data": {"profiles.json": json_str}}
     result   = subprocess.run(
-        ["kubectl", "patch", "configmap", config.CONFIGMAP_NAME,
+        [_KUBECTL, "patch", "configmap", config.CONFIGMAP_NAME,
          "-n", config.CONFIGMAP_NS,
          "--type=merge",
          "--patch", json.dumps(patch)],

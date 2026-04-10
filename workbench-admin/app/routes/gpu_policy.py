@@ -12,6 +12,8 @@ GET  /api/gpu-policy/available-groups — groups that have at least one JupyterH
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 
@@ -27,6 +29,16 @@ POLICY_CM_NAME      = "gpu-group-policy"
 POLICY_CM_NS        = config.CONFIGMAP_NS        # "jhub"
 KYVERNO_POLICY_NAME = "jupyterhub-gpu-group-policy"
 
+# Resolve kubectl once at module load — avoids PATH lookup on every request.
+# Falls back to the conventional install location if not found on PATH.
+_KUBECTL = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+
+# Allowed gpu_type format:
+#   - vendor prefix:  letters, digits, dots, hyphens  (e.g. nvidia.com)
+#   - slash separator
+#   - resource name:  letters, digits, dots, hyphens  (e.g. gpu, mig-1g.5gb)
+_GPU_TYPE_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.\-]*/[a-zA-Z0-9][a-zA-Z0-9.\-]*$')
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +50,7 @@ def _run(cmd):
 def _read_policy():
     """Return the rules dict from the gpu-group-policy ConfigMap, or empty dict."""
     r = _run([
-        "kubectl", "get", "configmap", POLICY_CM_NAME,
+        _KUBECTL, "get", "configmap", POLICY_CM_NAME,
         "-n", POLICY_CM_NS, "-o", "jsonpath={.data.policy}"
     ])
     if r.returncode != 0:
@@ -57,11 +69,11 @@ def _write_policy(data):
     """
     json_str = json.dumps(data, indent=2)
 
-    check = _run(["kubectl", "get", "configmap", POLICY_CM_NAME, "-n", POLICY_CM_NS])
+    check = _run([_KUBECTL, "get", "configmap", POLICY_CM_NAME, "-n", POLICY_CM_NS])
 
     if check.returncode != 0:
         r = _run([
-            "kubectl", "create", "configmap", POLICY_CM_NAME,
+            _KUBECTL, "create", "configmap", POLICY_CM_NAME,
             "-n", POLICY_CM_NS,
             "--from-literal", "policy=" + json_str
         ])
@@ -73,7 +85,7 @@ def _write_policy(data):
         patch_file = f.name
     try:
         r = _run([
-            "kubectl", "patch", "configmap", POLICY_CM_NAME,
+            _KUBECTL, "patch", "configmap", POLICY_CM_NAME,
             "-n", POLICY_CM_NS,
             "--type=merge",
             "--patch-file", patch_file
@@ -118,7 +130,6 @@ def _build_cluster_policy(groups):
         gpu_type = g.get("gpu_type", "nvidia.com/gpu")
         max_gpus = g.get("max_gpus", 0)
 
-        # containers[] wildcard — matches ALL containers, not just the first one
         key_expr = (
             "{{ request.object.spec.containers[].resources.limits."
             + '"' + gpu_type + '"'
@@ -218,6 +229,19 @@ def api_set_policy():
         g["gitlab_group"] = g["gitlab_group"].strip()
         g.setdefault("gpu_type", "nvidia.com/gpu")
 
+    # ── gpu_type format validation ────────────────────────────────────────────
+    for g in groups:
+        gpu_type = g["gpu_type"].strip()
+        if not _GPU_TYPE_RE.match(gpu_type):
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Invalid gpu_type '{}'. "
+                    "Expected format: vendor.com/resource (e.g. nvidia.com/gpu)."
+                ).format(gpu_type)
+            }), 400
+        g["gpu_type"] = gpu_type
+
     # ── Duplicate (group, gpu_type) check ─────────────────────────────────────
     seen_pairs = set()
     for g in groups:
@@ -241,7 +265,7 @@ def api_set_policy():
         }), 500
 
     if not groups:
-        r = _run(["kubectl", "delete", "clusterpolicy",
+        r = _run([_KUBECTL, "delete", "clusterpolicy",
                   KYVERNO_POLICY_NAME, "--ignore-not-found"])
         return jsonify({
             "success": True,
@@ -255,7 +279,7 @@ def api_set_policy():
         f.write(policy_yaml)
         policy_file = f.name
     try:
-        r = _run(["kubectl", "apply", "-f", policy_file])
+        r = _run([_KUBECTL, "apply", "-f", policy_file])
     finally:
         os.unlink(policy_file)
 
@@ -282,13 +306,13 @@ def api_policy_status():
     Step 2: is its .status.ready field true?
     """
     exists = _run([
-        "kubectl", "get", "clusterpolicy", KYVERNO_POLICY_NAME, "--no-headers"
+        _KUBECTL, "get", "clusterpolicy", KYVERNO_POLICY_NAME, "--no-headers"
     ])
     if exists.returncode != 0:
         return jsonify({"status": "not_applied", "ready": False})
 
     ready_r = _run([
-        "kubectl", "get", "clusterpolicy", KYVERNO_POLICY_NAME,
+        _KUBECTL, "get", "clusterpolicy", KYVERNO_POLICY_NAME,
         "-o", "jsonpath={.status.ready}"
     ])
     ready = (ready_r.returncode == 0 and
@@ -304,7 +328,7 @@ def api_available_groups():
     Return unique group paths from the jupyterhub-profiles ConfigMap.
     """
     r = _run([
-        "kubectl", "get", "configmap", config.CONFIGMAP_NAME,
+        _KUBECTL, "get", "configmap", config.CONFIGMAP_NAME,
         "-n", config.CONFIGMAP_NS,
         "-o", r"jsonpath={.data.profiles\.json}"
     ])
