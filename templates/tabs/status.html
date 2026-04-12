@@ -20,6 +20,25 @@
       <span class="mono">~/cluster-artifacts/join-command.txt</span> on the control plane.
       Each click creates a new token — previous tokens remain valid until they expire.
     </p>
+
+    <div style="
+        display:flex;align-items:flex-start;gap:10px;
+        background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
+        padding:10px 14px;margin-bottom:.75rem;font-size:13px;line-height:1.6">
+      <span style="font-size:18px;margin-top:1px">⚠️</span>
+      <div>
+        <strong>Joining a worker manually?</strong><br>
+        If you run this join command directly on a VM instead of using the
+        <em>Add Worker</em> tab, the new node will <strong>not</strong> have
+        the containerd registry config for the GitLab HTTP registry — and image
+        pulls will fail with <span class="mono">http: server gave HTTP response
+        to HTTPS client</span>.<br>
+        <span style="color:#555">Always add workers through the launcher, or run
+        <span class="mono">ansible-k8s/configure-registry.yml</span> manually
+        on the new node afterward.</span>
+      </div>
+    </div>
+
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:.75rem">
       <button class="btn btn-primary btn-sm" id="btn-get-token"
         onclick="fetchJoinToken()">
@@ -78,7 +97,6 @@ async function fetchJoinToken() {
 
       document.getElementById('btn-copy-token').onclick = function() {
         const btn = this;
-        // navigator.clipboard requires HTTPS — use execCommand fallback for HTTP
         if (navigator.clipboard && window.isSecureContext) {
           navigator.clipboard.writeText(cmd).then(() => {
             btn.textContent = '✓ Copied!';
