@@ -12,9 +12,11 @@ from pydantic import BaseModel
 
 from core.paths import (
     ANSIBLE_GITLAB_DIR,
+    ANSIBLE_K8S_DIR,
     GITLAB_INVENTORY_PATH,
     GITLAB_VARS_PATH,
     GITLAB_OUTPUTS_PATH,
+    INVENTORY_PATH,
     GENERATED_DIR,
     SSH_KEY_PATH,
     SSH_PUB_KEY_PATH,
@@ -147,6 +149,7 @@ def _gitlab_stream():
         yield "data: __ERROR__:no_inventory — run /api/gitlab/configure first\n\n"
         return
 
+    # ── Phase 1: deploy GitLab ────────────────────────────────────────────────
     cmd = [
         "ansible-playbook",
         "-i", str(GITLAB_INVENTORY_PATH),
@@ -172,13 +175,73 @@ def _gitlab_stream():
     process.stdout.close()
     process.wait()
 
-    if process.returncode == 0:
-        # FIX R1 — delete become_pass file after Ansible run completes.
-        # The sudo password has no further purpose and should not sit on disk.
-        GITLAB_BECOME_PATH.unlink(missing_ok=True)
-        yield "data: __DONE__\n\n"
-    else:
+    if process.returncode != 0:
         yield f"data: __ERROR__:{process.returncode}\n\n"
+        return
+
+    # FIX R1 — delete become_pass file after Ansible run completes.
+    GITLAB_BECOME_PATH.unlink(missing_ok=True)
+
+    # ── Phase 2: configure containerd on all k8s nodes ───────────────────────
+    # Read registry host from gitlab-outputs.json written by the GitLab role.
+    # Then run configure-registry.yml against the full k8s cluster inventory
+    # so every node (control plane + workers) can pull from the HTTP registry.
+    if not GITLAB_OUTPUTS_PATH.exists():
+        yield "data: [WARN] gitlab-outputs.json not found — skipping registry config\n\n"
+        yield "data: __DONE__\n\n"
+        return
+
+    if not INVENTORY_PATH.exists():
+        yield "data: [WARN] k8s inventory not found — skipping registry config\n\n"
+        yield "data: __DONE__\n\n"
+        return
+
+    try:
+        outputs = json.loads(GITLAB_OUTPUTS_PATH.read_text())
+        registry_host = outputs.get("gitlab_registry_host", "")
+    except Exception as exc:
+        yield f"data: [WARN] Could not read gitlab-outputs.json: {exc} — skipping registry config\n\n"
+        yield "data: __DONE__\n\n"
+        return
+
+    if not registry_host:
+        yield "data: [WARN] gitlab_registry_host empty — skipping registry config\n\n"
+        yield "data: __DONE__\n\n"
+        return
+
+    yield f"data: \n\n"
+    yield f"data: ── Configuring containerd registry on all k8s nodes ──\n\n"
+
+    reg_cmd = [
+        "ansible-playbook",
+        "-i", str(INVENTORY_PATH),
+        "configure-registry.yml",
+        "--extra-vars", f"gitlab_registry_host={registry_host}",
+    ]
+
+    reg_process = subprocess.Popen(
+        reg_cmd,
+        cwd=str(ANSIBLE_K8S_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in iter(reg_process.stdout.readline, ""):
+        stripped = line.rstrip()
+        if stripped:
+            yield f"data: {stripped}\n\n"
+
+    reg_process.stdout.close()
+    reg_process.wait()
+
+    if reg_process.returncode != 0:
+        yield f"data: [WARN] Registry config playbook exited {reg_process.returncode} — containerd may need manual fix\n\n"
+    else:
+        yield "data: Registry configured on all nodes ✓\n\n"
+
+    yield "data: __DONE__\n\n"
 
 
 @router.get("/api/gitlab/stream")
