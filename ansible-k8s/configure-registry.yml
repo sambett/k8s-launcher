@@ -1,0 +1,34 @@
+---
+# configure-registry.yml
+# Standalone playbook — run AFTER ansible-gitlab completes.
+# Configures containerd on ALL nodes to allow HTTP pulls from the
+# GitLab container registry.
+# Called by the launcher with --extra-vars "gitlab_registry_host=IP:5050"
+
+- hosts: all
+  become: yes
+  tasks:
+    - name: Create containerd certs.d directory for GitLab registry
+      file:
+        path: "/etc/containerd/certs.d/{{ gitlab_registry_host }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write hosts.toml for insecure GitLab registry
+      copy:
+        dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
+        content: |
+          server = "http://{{ gitlab_registry_host }}"
+
+          [host."http://{{ gitlab_registry_host }}"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+        mode: "0644"
+      register: hosts_toml
+
+    - name: Restart containerd if config changed
+      systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: yes
+      when: hosts_toml.changed

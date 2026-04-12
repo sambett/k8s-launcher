@@ -55,3 +55,34 @@
     node-role.kubernetes.io/worker=worker --overwrite
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
+
+# Configure insecure GitLab registry so new workers can pull images immediately.
+# Only runs when gitlab_registry_host is passed in (post-GitLab installs).
+- name: Create containerd certs.d directory for GitLab registry
+  file:
+    path: "/etc/containerd/certs.d/{{ gitlab_registry_host }}"
+    state: directory
+    mode: "0755"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+
+- name: Write hosts.toml for insecure GitLab registry
+  copy:
+    dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
+    content: |
+      server = "http://{{ gitlab_registry_host }}"
+
+      [host."http://{{ gitlab_registry_host }}"]
+        capabilities = ["pull", "resolve", "push"]
+        skip_verify = true
+    mode: "0644"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+  register: worker_hosts_toml
+
+- name: Restart containerd if registry config changed
+  systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: yes
+  when:
+    - gitlab_registry_host is defined and gitlab_registry_host != ''
+    - worker_hosts_toml.changed
