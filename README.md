@@ -1,3 +1,4 @@
+
 # k8s-launcher
 
 A browser-based deployment tool for provisioning a production-grade Kubernetes cluster on bare Ubuntu VMs — no prior Ansible or Kubernetes knowledge required.
@@ -22,86 +23,155 @@ Once the cluster is running, it hosts **JupyterHub**: a multi-user AI notebook p
 
 ---
 
-## Requirements
+## VM Requirements
 
-- One Ubuntu 22.04 VM to act as the **launcher host** (Ansible controller)
-- Two or more fresh Ubuntu 22.04 VMs for the **cluster nodes**
-- SSH access (username + password) from the launcher host to all nodes
-- Python 3.10+ on the launcher host
-- All VMs on the same network
+- All nodes must run **Ubuntu 22.04 LTS** or **Ubuntu 24.04 LTS**
+- All nodes must run the **same OS version** — mixed OS clusters are not supported
+- Architecture: **amd64 (x86-64)** only
+- Minimum per node: 2 vCPU, 4 GB RAM, 40 GB disk
+- All VMs must be on the same network and reachable on port 22
 
 ---
 
-## Install
+## Prerequisites — Before Launching the Platform
 
-Run the following on your **launcher host**:
+The following must be done **manually, once**, on every VM before starting the launcher. The platform cannot automate these steps because it has no credentials yet.
+
+### 1 — Install the launcher dependencies on the controller VM
+
+The controller is the machine that will run the launcher. It must **not** be one of the cluster nodes.
+
 ```bash
-sudo apt update && sudo apt install -y python3-pip git
+sudo apt update && sudo apt install -y python3-pip git openssh-client
 pip3 install fastapi uvicorn paramiko pyyaml ansible
 
 git clone https://github.com/sambett/k8s-launcher.git
 cd k8s-launcher
-
 python3 app.py
 ```
+
+### 2 — Make all VMs reachable via SSH with no password
+
+From the **controller**, push your key to every node:
+
+```bash
+# Generate a key pair on the controller if you don't have one
+ls ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+
+# Push it to each node — you will be asked for the password once per node
+ssh-copy-id cplane@<cplane-ip>
+ssh-copy-id worker01@<worker01-ip>
+ssh-copy-id worker02@<worker02-ip>
+# Repeat for any additional nodes and the GitLab VM if applicable
+```
+
+Record all fingerprints in `known_hosts` so OpenSSH never prompts:
+
+```bash
+ssh-keyscan -H <cplane-ip> <worker01-ip> <worker02-ip> >> ~/.ssh/known_hosts
+```
+
+### 3 — Grant passwordless sudo on every node
+
+The platform runs Ansible with `become: yes` — every node must allow sudo without a password. Run this once per node, replacing the username and IP:
+
+```bash
+ssh -t cplane@<cplane-ip> \
+  "echo 'cplane ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ansible-nopasswd \
+   && sudo chmod 440 /etc/sudoers.d/ansible-nopasswd"
+
+ssh -t worker01@<worker01-ip> \
+  "echo 'worker01 ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ansible-nopasswd \
+   && sudo chmod 440 /etc/sudoers.d/ansible-nopasswd"
+
+ssh -t worker02@<worker02-ip> \
+  "echo 'worker02 ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/ansible-nopasswd \
+   && sudo chmod 440 /etc/sudoers.d/ansible-nopasswd"
+```
+
+### 4 — Verify everything is ready
+
+All three commands below should print `root` with **no password prompt**:
+
+```bash
+ssh cplane@<cplane-ip>    "sudo whoami"
+ssh worker01@<worker01-ip> "sudo whoami"
+ssh worker02@<worker02-ip> "sudo whoami"
+```
+
+If all three return `root` instantly, your VMs are ready. The launcher will take it from here.
+
+> **Note:** The Bootstrap tab inside the launcher automates steps 2 and 3 for you
+> if you prefer to let the platform handle it. You only need to do this manually
+> if you want to pre-trust the nodes before opening the UI.
 
 ---
 
 ## Open the launcher
 
-Once running, open your browser and go to:
-http://<launcher-host-ip>:5000
-
+Once the launcher is running on the controller: http://<controller-ip>:5000
 ---
+
+
 
 ## Usage
 
-The launcher walks you through 5 steps:
+The launcher walks you through the following tabs in order:
 
-### 1. Bootstrap
-Enter the IP address and SSH credentials for each node. The launcher generates an SSH key pair and distributes it to all machines so Ansible can connect without a password going forward.
+### Bootstrap
+Enter the IP, SSH user, and password for each node. The launcher pushes the
+controller SSH key, configures passwordless sudo, and records all fingerprints
+automatically. After this step no password is ever needed again.
 
-### 2. Configure
-Enter the number of worker nodes, select the Kubernetes version, set the pod network CIDR, and choose the Longhorn replica count. The launcher validates version compatibility before letting you proceed.
+### Configure
+Enter node roles, Kubernetes version, network CIDRs, and Longhorn settings.
+The launcher validates version compatibility and writes the Ansible inventory.
+It also wires up passwordless SSH from the control plane to all workers
+automatically.
 
-### 3. Deploy
-Click **Deploy** and watch the installation stream live to your browser. The launcher runs two Ansible projects in sequence:
-- `ansible-k8s` — installs containerd, kubeadm, initializes the control plane, joins workers, deploys Calico
-- `ansible-longhorn` — installs Helm, deploys Longhorn, sets the default StorageClass
+### Kubernetes
+Click **Deploy** and watch the installation stream live. The launcher runs
+Ansible to install containerd, kubeadm, initialize the control plane, join
+workers, deploy Calico CNI and Longhorn storage.
+Expected time: **15–20 minutes**.
 
-Expected time: **15–20 minutes** on a fresh set of VMs.
+### GitLab
+Deploy GitLab CE as the identity provider and container registry. Step 1
+bootstraps SSH trust to the GitLab VM the same way the Bootstrap tab does
+for cluster nodes.
 
-### 4. Status
-Once deployment completes, this tab shows the health of every component. You can also generate a fresh worker join token and download your `kubeconfig` file to manage the cluster from your local machine.
+### JupyterHub
+Deploy JupyterHub backed by GitLab OAuth. Users log in with their GitLab
+credentials and get isolated notebook environments with persistent storage.
 
-### 5. Reset
-Safely wipe the cluster. The launcher shows you exactly which nodes will be affected before you confirm. Use this to start over on the same machines.
+### Kyverno
+Deploy and manage GPU enforcement policies. Controls which GitLab groups
+can request GPU resources and sets per-group limits.
 
----
-
-## Adding a worker node after deployment
-
-In the **Status** tab, use the **Add Worker** button. Enter the new node's IP — the launcher installs all prerequisites and joins it to the existing cluster automatically.
+### Workers
+Add or remove worker nodes from a running cluster. Adding a worker
+bootstraps full SSH trust automatically before joining it — no manual
+preparation needed for new nodes once the initial cluster is running.
 
 ---
 
 ## Admin dashboard
 
-After a full deployment, a browser-based admin dashboard is available on the control plane node at port **8888**. It provides:
+After a full deployment, a browser-based admin dashboard is available on
+the control plane node at port **8888**. It provides:
 
-- **Profiles** — create and manage JupyterHub notebook environments (CPU/RAM/GPU limits, notebook image)
-- **Groups** — manage GitLab groups, which control which profiles each user can access
+- **Profiles** — create and manage JupyterHub notebook environments
+- **Groups** — manage GitLab groups and JupyterHub access
 - **Users** — browse and assign GitLab users to groups
-- **Images** — import notebook Docker images into the GitLab container registry
-- **GPU Policies** — set per-group GPU type and usage limits, enforced at the cluster level by Kyverno
-
-Profile changes take effect within ~60 seconds — no Helm upgrades, no service restarts, no user interruption.
+- **Images** — import notebook Docker images into the GitLab registry
+- **GPU Policies** — set per-group GPU type and usage limits enforced by Kyverno
 
 ---
 
 ## Standalone Ansible usage
 
-The two Ansible projects inside this repo are fully self-contained and can be used without the launcher:
+The Ansible projects inside this repo are fully self-contained:
+
 ```bash
 # Deploy Kubernetes
 cd ansible-k8s
@@ -112,11 +182,13 @@ cd ansible-longhorn
 ansible-playbook -i inventory/hosts.yml site.yml
 ```
 
-Edit `inventory/hosts.yml` and `group_vars/all.yml` in each project to match your environment.
+Edit `inventory/hosts.yml` and `group_vars/all.yml` in each project to match
+your environment.
 
 ---
 
 ## Authors
 
-Sam Bettaieb · Selma  
+Sam Bettaieb · Selma
 Final-year engineering thesis (PFE) — on-premise AI Workbench as a Service
+EOF
