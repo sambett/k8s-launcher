@@ -52,9 +52,8 @@ class GitLabConfig(BaseModel):
 async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
     """
     Push the controller SSH key to the GitLab VM, configure passwordless sudo,
-    and populate the controller known_hosts — all in one session while the
-    password is still available. After this runs, Ansible can reach the GitLab
-    VM with no interactive prompts of any kind.
+    populate the controller known_hosts, and verify key-based SSH works —
+    all before Ansible ever runs. After this, no interactive prompts of any kind.
     """
     if not SSH_PUB_KEY_PATH.exists():
         subprocess.run(
@@ -80,8 +79,6 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
                         "message": f"SSH key setup failed: {cmd} — {stderr}"}
 
         # ── Passwordless sudo setup ────────────────────────────────────────────
-        # Password is still available here — write the sudoers drop-in while
-        # the session is open. Uses sudo -S to read password from stdin.
         _, stderr, rc = run_command(
             client,
             f"echo '{req.ssh_pass}' | sudo -S bash -c "
@@ -109,8 +106,6 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
             client.close()
 
     # ── Populate controller known_hosts ────────────────────────────────────────
-    # Done after closing the paramiko session — uses local ssh-keyscan.
-    # Non-fatal: if this fails the sudoers + key push already succeeded.
     from pathlib import Path
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,20 +115,58 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
         capture_output=True, text=True
     )
     if scan.returncode == 0 and scan.stdout.strip():
-        existing = known_hosts_path.read_text()
-        for line in scan.stdout.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            key_blob = parts[-1] if len(parts) >= 3 else ""
-            if key_blob and key_blob not in existing:
-                with open(known_hosts_path, "a") as f:
+        existing_lines = known_hosts_path.read_text().splitlines()
+        existing_blobs = {
+            ln.split()[-1]
+            for ln in existing_lines
+            if ln.strip() and not ln.startswith("#") and len(ln.split()) >= 3
+        }
+        with open(known_hosts_path, "a") as f:
+            for line in scan.stdout.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                key_blob = parts[-1]
+                if key_blob not in existing_blobs:
                     f.write(line + "\n")
+                    existing_blobs.add(key_blob)
+
+    # ── Verify key-based SSH works (no password) ───────────────────────────────
+    # Opens a second Paramiko session using the private key — not the password.
+    # If this fails, the key push silently failed and Ansible would also fail.
+    key_client = None
+    try:
+        key_client = paramiko.SSHClient()
+        key_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        pkey = paramiko.Ed25519Key.from_private_key_file(str(SSH_KEY_PATH))
+        key_client.connect(
+            hostname=req.ip,
+            username=req.ssh_user,
+            pkey=pkey,
+            timeout=10,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        stdout_val, _, rc = run_command(key_client, "echo ssh-key-ok")
+        if rc != 0 or "ssh-key-ok" not in stdout_val:
+            return {"status": "error",
+                    "message": "Key-based SSH verification failed — authorized_keys may not have been written correctly"}
+    except paramiko.AuthenticationException:
+        return {"status": "error",
+                "message": "Key-based SSH auth failed — the public key was not accepted. Check ~/.ssh/authorized_keys on the VM."}
+    except (socket.timeout, paramiko.SSHException) as exc:
+        return {"status": "error",
+                "message": f"Key-based SSH connection failed: {exc}"}
+    finally:
+        if key_client:
+            key_client.close()
 
     return {
         "status":  "ok",
-        "message": f"SSH key pushed · passwordless sudo configured · fingerprint recorded for {req.ip}"
+        "message": f"SSH key pushed · passwordless sudo configured · key-based auth verified · fingerprint recorded for {req.ip}"
     }
 
 
@@ -235,7 +268,7 @@ def _gitlab_stream():
         yield f"data: __ERROR__:{process.returncode}\n\n"
         return
 
-    # FIX R1 — delete become_pass file after Ansible run completes.
+    # Delete become_pass file after Ansible run completes
     GITLAB_BECOME_PATH.unlink(missing_ok=True)
 
     # ── Phase 2: configure containerd on all k8s nodes ───────────────────────
