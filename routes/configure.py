@@ -4,7 +4,9 @@ routes/configure.py — Phase 3
 Generates inventory.ini and group_vars/all.yml from dashboard inputs.
 Also wires up passwordless SSH from control plane to all worker nodes
 so Ansible delegate_to tasks and cross-node operations never prompt.
-No Ansible project file is ever modified.
+Also writes ansible.cfg to every Ansible project on every configure run
+so StrictHostKeyChecking=no is always guaranteed regardless of prior state.
+No Ansible project file is ever modified beyond ansible.cfg.
 All output goes to generated/ which is git-ignored.
 """
 import json
@@ -131,7 +133,45 @@ longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/long
 """
 
 
-# ── NEW: Wire cplane → workers passwordless SSH ────────────────────────────────
+# ── Write ansible.cfg to every Ansible project ────────────────────────────────
+# Always overwrites — never skips — so StrictHostKeyChecking=no is guaranteed
+# on every configure run regardless of what was there before.
+# This is the automatic fix for the OpenSSH fingerprint prompt that fires
+# when Ansible encounters a node not yet in known_hosts.
+
+_ANSIBLE_CFG_CONTENT = """\
+[defaults]
+host_key_checking = False
+stdout_callback   = yaml
+timeout           = 30
+
+[ssh_connection]
+ssh_args   = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
+pipelining = True
+"""
+
+_ANSIBLE_PROJECT_DIRS = [
+    Path("~/k8s-launcher/ansible-k8s").expanduser(),
+    Path("~/k8s-launcher/ansible-longhorn").expanduser(),
+    Path("~/k8s-launcher/ansible-monitoring").expanduser(),
+    Path("~/k8s-launcher/ansible-dashboard").expanduser(),
+    Path("~/k8s-launcher/ansible-gitlab").expanduser(),
+    Path("~/k8s-launcher/ansible-jupyterhub").expanduser(),
+    Path("~/k8s-launcher/ansible-kyverno").expanduser(),
+]
+
+def _write_ansible_cfgs() -> list:
+    written = []
+    for project_dir in _ANSIBLE_PROJECT_DIRS:
+        if not project_dir.exists():
+            continue
+        cfg_path = project_dir / "ansible.cfg"
+        cfg_path.write_text(_ANSIBLE_CFG_CONTENT)
+        written.append(str(cfg_path))
+    return written
+
+
+# ── Wire cplane → workers passwordless SSH ────────────────────────────────────
 # Triggered automatically during configure so that by the time any playbook
 # runs, the control plane can already SSH into every worker without prompting.
 #
@@ -153,7 +193,6 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
     try:
         cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
 
-        # Generate keypair on cplane if not present
         _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
         if rc != 0:
             _, stderr, rc = run_command(
@@ -169,7 +208,6 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
         else:
             report["cplane_keygen"] = "already exists"
 
-        # Read cplane pubkey
         cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
         if rc != 0 or not cplane_pubkey.strip():
             return {"status": "error", "message": "Could not read cplane public key"}
@@ -221,7 +259,6 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
                 w_client.close()
 
     # ── Step 4 — populate cplane known_hosts for all workers ──────────────────
-    worker_ips = " ".join(w.ip for w in workers)
     cp_client = None
     try:
         cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
@@ -232,21 +269,18 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
                 f"ssh-keyscan -H -T 5 {worker.ip} 2>/dev/null"
             )
             if scan_out.strip():
-                # Append only new entries
                 run_command(
                     cp_client,
                     f"touch ~/.ssh/known_hosts && "
                     f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts"
                 )
 
-        # Deduplicate known_hosts on cplane
         run_command(
             cp_client,
             "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
         )
 
     except Exception as exc:
-        # Non-fatal — key push already done, this is just the fingerprint cache
         report["known_hosts_warning"] = f"cplane known_hosts population failed: {exc}"
     finally:
         if cp_client:
@@ -265,6 +299,9 @@ async def configure(config: ClusterConfig):
     VARS_PATH.write_text(_make_group_vars(config))
     replica_count, soft_anti = _replica_settings(len(config.workers))
 
+    # Always write ansible.cfg to all projects — guarantees no fingerprint prompts
+    cfgs_written = _write_ansible_cfgs()
+
     # Wire cplane → workers passwordless SSH automatically
     wire_report = _wire_cplane_to_workers(config.control_plane, config.workers)
 
@@ -279,7 +316,8 @@ async def configure(config: ClusterConfig):
             "longhorn_replica_count":              replica_count,
             "longhorn_replica_soft_anti_affinity": soft_anti
         },
-        "cplane_to_workers": wire_report
+        "ansible_cfgs_written": cfgs_written,
+        "cplane_to_workers":    wire_report
     }
 
 
