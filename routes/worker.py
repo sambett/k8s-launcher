@@ -114,7 +114,7 @@ def _add_worker_stream(node: NewWorker):
             capture_output=True, text=True,
         )
 
-    # ── Step 1 — SSH key push + sudo + known_hosts + cplane trust ────────────
+    # -- Step 1 — SSH key push + sudo + known_hosts + cplane trust ------------
     yield _step(1, f"Pushing SSH key to {node.ip}")
 
     pub_key = SSH_PUB_KEY_PATH.read_text().strip()
@@ -122,7 +122,7 @@ def _add_worker_stream(node: NewWorker):
     try:
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
-        # ── SSH key setup ──────────────────────────────────────────────────────
+        # -- SSH key setup -----------------------------------------------------
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -137,8 +137,7 @@ def _add_worker_stream(node: NewWorker):
                 return
         yield _ok(f"SSH key installed on {node.ip}")
 
-        # ── Passwordless sudo setup ────────────────────────────────────────────
-        # Password is still available — write sudoers drop-in in the same session.
+        # -- Passwordless sudo setup -------------------------------------------
         _, stderr, rc = run_command(
             client,
             f"echo '{node.ssh_pass}' | sudo -S bash -c "
@@ -151,7 +150,6 @@ def _add_worker_stream(node: NewWorker):
             yield _err("sudo_setup")
             return
 
-        # Verify sudo works without password
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
             yield _fail("Sudo verification failed — sudoers entry may not have applied")
@@ -171,8 +169,7 @@ def _add_worker_stream(node: NewWorker):
         if client:
             client.close()
 
-    # ── Populate controller known_hosts ───────────────────────────────────────
-    # Done after closing the paramiko session — uses local ssh-keyscan.
+    # -- Populate controller known_hosts --------------------------------------
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -193,27 +190,21 @@ def _add_worker_stream(node: NewWorker):
                     f.write(line + "\n")
     yield _ok(f"Controller known_hosts updated for {node.ip}")
 
-    # ── Wire cplane → new worker passwordless SSH ─────────────────────────────
-    # Controller already has passwordless access to cplane (from bootstrap).
-    # We SSH into cplane, generate its keypair if missing, read its pubkey,
-    # then push it to the new worker and populate cplane known_hosts.
+    # -- Wire cplane -> new worker passwordless SSH ---------------------------
     cp = _get_cp_info()
     if cp["ip"] and cp["user"]:
         cp_client = None
         try:
             cp_client = get_client_with_key(cp["ip"], cp["user"], str(SSH_KEY_PATH))
 
-            # Generate cplane keypair if missing
             _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
             if rc != 0:
                 run_command(cp_client, "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q")
 
-            # Read cplane pubkey
             cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
             if rc == 0 and cplane_pubkey.strip():
                 cplane_pubkey = cplane_pubkey.strip()
 
-                # Push cplane pubkey to new worker using controller key
                 w_client = None
                 try:
                     w_client = get_client_with_key(node.ip, node.ssh_user, str(SSH_KEY_PATH))
@@ -229,7 +220,6 @@ def _add_worker_stream(node: NewWorker):
                     if w_client:
                         w_client.close()
 
-                # Populate cplane known_hosts for new worker
                 scan_out, _, _ = run_command(
                     cp_client,
                     f"ssh-keyscan -H -T 5 {node.ip} 2>/dev/null"
@@ -241,17 +231,16 @@ def _add_worker_stream(node: NewWorker):
                         f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts && "
                         f"sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
                     )
-                yield _ok(f"cplane → {node.ip} passwordless SSH wired")
+                yield _ok(f"cplane -> {node.ip} passwordless SSH wired")
         except Exception as exc:
-            # Non-fatal — cluster join still works without this
-            yield _log(f"[WARN] cplane→worker SSH wiring failed: {exc} — continuing")
+            yield _log(f"[WARN] cplane->worker SSH wiring failed: {exc} — continuing")
         finally:
             if cp_client:
                 cp_client.close()
     else:
-        yield _log("[WARN] Could not read cplane info from vars — skipping cplane→worker wiring")
+        yield _log("[WARN] Could not read cplane info from vars — skipping cplane->worker wiring")
 
-    # ── Step 1b — OS version gate (mirrors preflight check) ──────────────────
+    # -- Step 1b — OS version gate --------------------------------------------
     r_os = _ansible(". /etc/os-release && echo $VERSION_ID")
     os_ver = ""
     for line in r_os.stdout.splitlines():
@@ -270,7 +259,7 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok(f"OS check passed: Ubuntu {os_ver}")
 
-    # ── Step 2 — Repair stale apt state ──────────────────────────────────────
+    # -- Step 2 — Repair stale apt state --------------------------------------
     yield _step(2, "Checking for stale apt state (idempotency repair)")
 
     r = _ansible(
@@ -291,7 +280,7 @@ def _add_worker_stream(node: NewWorker):
         if "Removed" in line or "No cleanup" in line:
             yield _ok(line)
 
-    # ── Step 3 — Base packages + /etc/hosts ──────────────────────────────────
+    # -- Step 3 — Base packages + /etc/hosts ----------------------------------
     yield _step(3, "Installing base packages and updating /etc/hosts")
 
     r = _ansible(
@@ -332,7 +321,7 @@ def _add_worker_stream(node: NewWorker):
     else:
         yield _ok("/etc/hosts — no cluster_hosts in vars, skipped")
 
-    # ── Step 4 — Node prerequisites ──────────────────────────────────────────
+    # -- Step 4 — Node prerequisites ------------------------------------------
     yield _step(4, "Installing node prerequisites")
 
     prereq_steps = [
@@ -369,7 +358,7 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok("Node prerequisites satisfied")
 
-    # ── Step 5 — containerd ───────────────────────────────────────────────────
+    # -- Step 5 — containerd --------------------------------------------------
     yield _step(5, "Installing containerd (pinned)")
 
     containerd_steps = [
@@ -416,7 +405,7 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok("containerd installed and configured")
 
-    # ── Insecure registry (GitLab HTTP registry) ──────────────────────────────
+    # -- Insecure registry (GitLab HTTP registry) ------------------------------
     yield _log("changed: [Configure insecure GitLab registry]")
     registry_host = _get_registry_host()
     if registry_host:
@@ -439,7 +428,7 @@ def _add_worker_stream(node: NewWorker):
     else:
         yield _log("No registry host in vars — skipping insecure registry config")
 
-    # ── Step 6 — Kubernetes packages ─────────────────────────────────────────
+    # -- Step 6 — Kubernetes packages -----------------------------------------
     yield _step(6, f"Installing kubeadm + kubelet {k8s_version} (pinned)")
 
     k8s_steps = [
@@ -472,7 +461,7 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok(f"kubeadm + kubelet {k8s_version} installed")
 
-    # ── Step 7 — Join cluster ─────────────────────────────────────────────────
+    # -- Step 7 — Join cluster ------------------------------------------------
     yield _step(7, "Joining the cluster")
 
     yield _log("changed: [Generating fresh join token (kubeadm token create)]")
@@ -495,7 +484,7 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok(f"{node.hostname} joined the cluster")
 
-    # ── Step 8 — Label + inventory ────────────────────────────────────────────
+    # -- Step 8 — Label + inventory -------------------------------------------
     yield _step(8, "Labelling node and updating inventory")
 
     run_on_cp(
@@ -516,7 +505,7 @@ def _add_worker_stream(node: NewWorker):
 
     out, _ = run_on_cp("kubectl get nodes -o wide --no-headers")
     yield _log("")
-    yield _log("── Current cluster nodes ─────────────────────────")
+    yield _log("-- Current cluster nodes -----------------------------------------")
     for line in out.splitlines():
         yield _log(line)
 
@@ -532,7 +521,7 @@ async def add_worker(node: NewWorker):
     )
 
 
-# ── Remove worker ─────────────────────────────────────────────────────────────
+# -- Remove worker ------------------------------------------------------------
 
 class RemoveWorkerRequest(BaseModel):
     hostname: str
@@ -543,12 +532,57 @@ class RemoveWorkerRequest(BaseModel):
 
 
 def _remove_worker_stream(req: RemoveWorkerRequest):
+    import json as _lhj
+    import time
+
     hostname = req.hostname.lower()
     STEPS    = 4 if req.mode == "full" else 3
 
     yield f"data: Starting {req.mode} removal of {hostname}...\n\n"
 
-    # Step 1 — Cordon
+    # -- Longhorn pre-delete safety check ------------------------------------
+    # Abort if removing this node would leave any volume with 0 healthy replicas.
+    yield f"data: Checking Longhorn volume safety for {hostname}...\n\n"
+    _lh_out, _lh_rc = run_on_cp(
+        "kubectl -n longhorn-system get replicas -o json 2>/dev/null"
+    )
+    if _lh_rc == 0 and _lh_out.strip().startswith("{"):
+        try:
+            _items = _lhj.loads(_lh_out).get("items", [])
+            _on_node = [r for r in _items
+                        if r["spec"].get("nodeID", "") == hostname]
+            _vols = set(r["spec"]["volumeName"] for r in _on_node)
+            _faulted = []
+            for _v in _vols:
+                _survivors = [
+                    r for r in _items
+                    if r["spec"]["volumeName"] == _v
+                    and r["spec"].get("nodeID", "") != hostname
+                    and r["status"].get("currentState", "")
+                    not in ("stopped", "error", "")
+                ]
+                if len(_survivors) == 0:
+                    _faulted.append(_v)
+            if _faulted:
+                yield (
+                    f"data: ABORT: removing {hostname} would fault "
+                    f"{len(_faulted)} volume(s) -- 0 replicas would remain:\n\n"
+                )
+                for _v in _faulted:
+                    yield f"data:   - {_v}\n\n"
+                yield (
+                    "data: Fix: add another worker first, or raise "
+                    "replica count in Longhorn UI.\n\n"
+                )
+                yield "data: __ERROR__:longhorn_fault_risk\n\n"
+                return
+            yield "data: ok: Longhorn safety check passed\n\n"
+        except Exception as _ex:
+            yield f"data: WARNING: Longhorn check failed ({_ex}) -- proceeding\n\n"
+    else:
+        yield "data: WARNING: Longhorn not available -- skipping safety check\n\n"
+
+    # -- Step 1 — Cordon ------------------------------------------------------
     yield f"data: PLAY [Step 1/{STEPS}] Cordoning {hostname}...\n\n"
     out, rc = run_on_cp(f"kubectl cordon {hostname} 2>&1")
     for line in out.splitlines():
@@ -562,13 +596,12 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     worker_count_lines = [l.strip() for l in worker_count_out.splitlines() if l.strip().isdigit()]
     worker_count = int(worker_count_lines[0]) if worker_count_lines else 0
     if worker_count <= 2:
-        yield f"data: ⚠ WARNING: cluster has {worker_count} worker(s). Removing {hostname} will leave only {worker_count - 1} worker(s).\n\n"
-        yield f"data: ⚠ Longhorn volumes will go DEGRADED (1 replica instead of 2) until a replacement worker is added.\n\n"
-        yield f"data: ⚠ Proceeding with removal in 3 seconds...\n\n"
-        import time
+        yield f"data: WARNING: cluster has {worker_count} worker(s). Removing {hostname} will leave only {worker_count - 1} worker(s).\n\n"
+        yield f"data: WARNING: Longhorn volumes will go DEGRADED (1 replica instead of 2) until a replacement worker is added.\n\n"
+        yield f"data: WARNING: Proceeding with removal in 3 seconds...\n\n"
         time.sleep(3)
 
-    # Step 2 — Drain
+    # -- Step 2 — Drain -------------------------------------------------------
     yield f"data: PLAY [Step 2/{STEPS}] Draining all pods from {hostname}...\n\n"
     out, rc = run_on_cp(
         f"kubectl drain {hostname} "
@@ -578,15 +611,44 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         if line.strip():
             yield f"data: {line}\n\n"
 
-    # Step 3 — Delete from cluster + update inventory
+    # -- Step 3 — Delete from cluster + stop kubelet + update inventory -------
     yield f"data: PLAY [Step 3/{STEPS}] Removing {hostname} from cluster...\n\n"
     out, rc = run_on_cp(f"kubectl delete node {hostname} 2>&1")
     for line in out.splitlines():
         if line.strip():
             yield f"data: {line}\n\n"
 
-    run_on_cp(f"kubectl delete node.longhorn.io {hostname} -n longhorn-system --ignore-not-found 2>&1")
+    run_on_cp(
+        f"kubectl delete node.longhorn.io {hostname} "
+        f"-n longhorn-system --ignore-not-found 2>&1"
+    )
     yield f"data: ok: Longhorn node entry removed\n\n"
+
+    # -- Stop + disable kubelet on the removed VM so it does not loop --------
+    # Uses key-based SSH (set up during add-worker). Best-effort — non-fatal.
+    yield f"data: Stopping kubelet on {req.ip} to prevent reconnect loop...\n\n"
+    _kube_client = None
+    try:
+        _kube_client = get_client_with_key(req.ip, req.ssh_user, str(SSH_KEY_PATH))
+        _stop_cmds = [
+            "sudo systemctl stop kubelet 2>/dev/null || true",
+            "sudo systemctl disable kubelet 2>/dev/null || true",
+            "sudo kubeadm reset -f 2>/dev/null || true",
+            "sudo rm -rf /etc/kubernetes /var/lib/kubelet "
+            "/etc/cni/net.d /var/lib/etcd 2>/dev/null || true",
+        ]
+        for _cmd in _stop_cmds:
+            run_command(_kube_client, _cmd)
+        yield f"data: ok: kubelet stopped and disabled on {req.ip}\n\n"
+    except Exception as _e:
+        yield (
+            f"data: WARNING: could not stop kubelet on {req.ip} ({_e}) -- "
+            f"VM may keep retrying. SSH in manually and run: "
+            f"sudo systemctl stop kubelet && sudo kubeadm reset -f\n\n"
+        )
+    finally:
+        if _kube_client:
+            _kube_client.close()
 
     if INVENTORY_PATH.exists():
         lines = [
@@ -597,12 +659,13 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         yield f"data: ok: inventory updated — {hostname} removed\n\n"
 
     if req.mode == "soft":
-        yield f"data: {hostname} removed from cluster. VM is still running.\n\n"
+        yield f"data: {hostname} removed from cluster. VM is still running but kubelet is stopped.\n\n"
         yield "data: Re-add it any time via the Add worker form above.\n\n"
         yield "data: __DONE__\n\n"
         return
 
-    # Step 4 — Full reset on VM
+    # -- Step 4 — Full reset on VM --------------------------------------------
+    # Full wipe: packages + directories + apt sources removed entirely.
     yield f"data: PLAY [Step 4/{STEPS}] Running full reset on {req.ip}...\n\n"
     if not req.ssh_pass:
         yield "data: ERROR: SSH password required for full reset.\n\n"
@@ -613,21 +676,40 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     try:
         client = get_client_with_password(req.ip, req.ssh_user, req.ssh_pass)
         reset_steps = [
-            ("kubeadm reset",
-             "sudo kubeadm reset -f 2>/dev/null || true"),
-            ("stop services",
-             "sudo systemctl stop kubelet containerd 2>/dev/null || true"),
-            ("remove packages",
-             "sudo apt-get remove -y --allow-change-held-packages "
-             "kubeadm kubelet kubectl containerd.io 2>/dev/null || true"),
-            ("clean directories",
-             "sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet "
-             "/etc/cni /opt/cni /var/lib/containerd /etc/containerd"),
-            ("remove apt sources",
-             "sudo rm -f /etc/apt/sources.list.d/kubernetes.list "
-             "/etc/apt/sources.list.d/docker.list "
-             "/etc/apt/keyrings/kubernetes-apt-keyring.gpg "
-             "/etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc"),
+            (
+                "stop kubelet and containerd",
+                "sudo systemctl stop kubelet containerd 2>/dev/null || true && "
+                "sudo systemctl disable kubelet 2>/dev/null || true",
+            ),
+            (
+                "kubeadm reset",
+                "sudo kubeadm reset -f 2>/dev/null || true",
+            ),
+            (
+                "remove packages",
+                "sudo apt-get remove -y --allow-change-held-packages "
+                "kubeadm kubelet kubectl containerd.io 2>/dev/null || true",
+            ),
+            (
+                "clean kubernetes directories",
+                "sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet "
+                "/etc/cni /opt/cni /etc/cni/net.d",
+            ),
+            (
+                "clean containerd directories",
+                "sudo rm -rf /var/lib/containerd /etc/containerd",
+            ),
+            (
+                "remove apt sources",
+                "sudo rm -f /etc/apt/sources.list.d/kubernetes.list "
+                "/etc/apt/sources.list.d/docker.list "
+                "/etc/apt/keyrings/kubernetes-apt-keyring.gpg "
+                "/etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc",
+            ),
+            (
+                "restart containerd clean",
+                "sudo systemctl start containerd 2>/dev/null || true",
+            ),
         ]
         for label, cmd in reset_steps:
             yield f"data: changed: [{label}]\n\n"
