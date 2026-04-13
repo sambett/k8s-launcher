@@ -4,6 +4,7 @@ Streams 7-step progress as SSE so the UI shows live feedback.
 """
 import socket
 import subprocess
+from pathlib import Path
 
 import paramiko
 from fastapi import APIRouter
@@ -11,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.paths import INVENTORY_PATH, VARS_PATH, SSH_KEY_PATH, SSH_PUB_KEY_PATH
-from core.ssh import get_client_with_password, run_command
+from core.ssh import get_client_with_password, get_client_with_key, run_command
 from core.ansible import run_on_cp
 
 router = APIRouter()
@@ -54,7 +55,37 @@ def _get_containerd_version() -> str:
                 return line.split(":", 1)[1].strip().strip('"').strip("'")
     except Exception:
         pass
-    return "1.7.22"  # fallback matches validated stack
+    return "1.7.22"
+
+
+def _get_cp_info() -> dict:
+    """Read control plane IP and SSH user from generated/group_vars/all.yml."""
+    cp_ip   = ""
+    cp_user = ""
+    try:
+        for line in VARS_PATH.read_text().splitlines():
+            if line.strip().startswith("cp_ip:"):
+                cp_ip = line.split(":", 1)[1].strip().strip('"').strip("'")
+            if line.strip().startswith("cp_hostname:"):
+                pass  # not needed here
+        # cp ssh user lives in inventory — read [control_plane] section
+        if INVENTORY_PATH.exists():
+            in_cp = False
+            for line in INVENTORY_PATH.read_text().splitlines():
+                if "[control_plane]" in line:
+                    in_cp = True
+                    continue
+                if in_cp and line.strip() and not line.startswith("["):
+                    parts = line.split()
+                    for part in parts:
+                        if part.startswith("ansible_user="):
+                            cp_user = part.split("=", 1)[1]
+                    break
+                if in_cp and line.startswith("["):
+                    break
+    except Exception:
+        pass
+    return {"ip": cp_ip, "user": cp_user}
 
 
 def _add_worker_stream(node: NewWorker):
@@ -83,13 +114,15 @@ def _add_worker_stream(node: NewWorker):
             capture_output=True, text=True,
         )
 
-    # ── Step 1 — SSH key push ─────────────────────────────────────────────────
+    # ── Step 1 — SSH key push + sudo + known_hosts + cplane trust ────────────
     yield _step(1, f"Pushing SSH key to {node.ip}")
 
     pub_key = SSH_PUB_KEY_PATH.read_text().strip()
     client  = None
     try:
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
+
+        # ── SSH key setup ──────────────────────────────────────────────────────
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -103,6 +136,29 @@ def _add_worker_stream(node: NewWorker):
                 yield _err("ssh_key")
                 return
         yield _ok(f"SSH key installed on {node.ip}")
+
+        # ── Passwordless sudo setup ────────────────────────────────────────────
+        # Password is still available — write sudoers drop-in in the same session.
+        _, stderr, rc = run_command(
+            client,
+            f"echo '{node.ssh_pass}' | sudo -S bash -c "
+            f"\"echo '{node.ssh_user} ALL=(ALL) NOPASSWD:ALL' "
+            f"> /etc/sudoers.d/ansible-nopasswd && "
+            f"chmod 440 /etc/sudoers.d/ansible-nopasswd\""
+        )
+        if rc != 0:
+            yield _fail(f"Passwordless sudo setup failed — {stderr}")
+            yield _err("sudo_setup")
+            return
+
+        # Verify sudo works without password
+        _, _, verify_rc = run_command(client, "sudo -n whoami")
+        if verify_rc != 0:
+            yield _fail("Sudo verification failed — sudoers entry may not have applied")
+            yield _err("sudo_verify")
+            return
+        yield _ok(f"Passwordless sudo configured on {node.ip}")
+
     except paramiko.AuthenticationException:
         yield _fail("Authentication failed — check the SSH password.")
         yield _err("auth")
@@ -115,7 +171,87 @@ def _add_worker_stream(node: NewWorker):
         if client:
             client.close()
 
-    # ── Step 1b — OS version gate (mirrors preflight check) ─────────────────────
+    # ── Populate controller known_hosts ───────────────────────────────────────
+    # Done after closing the paramiko session — uses local ssh-keyscan.
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.touch(exist_ok=True)
+    scan = subprocess.run(
+        ["ssh-keyscan", "-H", "-T", "5", node.ip],
+        capture_output=True, text=True
+    )
+    if scan.returncode == 0 and scan.stdout.strip():
+        existing = known_hosts_path.read_text()
+        for line in scan.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            key_blob = parts[-1] if len(parts) >= 3 else ""
+            if key_blob and key_blob not in existing:
+                with open(known_hosts_path, "a") as f:
+                    f.write(line + "\n")
+    yield _ok(f"Controller known_hosts updated for {node.ip}")
+
+    # ── Wire cplane → new worker passwordless SSH ─────────────────────────────
+    # Controller already has passwordless access to cplane (from bootstrap).
+    # We SSH into cplane, generate its keypair if missing, read its pubkey,
+    # then push it to the new worker and populate cplane known_hosts.
+    cp = _get_cp_info()
+    if cp["ip"] and cp["user"]:
+        cp_client = None
+        try:
+            cp_client = get_client_with_key(cp["ip"], cp["user"], str(SSH_KEY_PATH))
+
+            # Generate cplane keypair if missing
+            _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
+            if rc != 0:
+                run_command(cp_client, "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q")
+
+            # Read cplane pubkey
+            cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
+            if rc == 0 and cplane_pubkey.strip():
+                cplane_pubkey = cplane_pubkey.strip()
+
+                # Push cplane pubkey to new worker using controller key
+                w_client = None
+                try:
+                    w_client = get_client_with_key(node.ip, node.ssh_user, str(SSH_KEY_PATH))
+                    for cmd in [
+                        "mkdir -p ~/.ssh",
+                        "chmod 700 ~/.ssh",
+                        f"echo '{cplane_pubkey}' >> ~/.ssh/authorized_keys",
+                        "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
+                        "chmod 600 ~/.ssh/authorized_keys",
+                    ]:
+                        run_command(w_client, cmd)
+                finally:
+                    if w_client:
+                        w_client.close()
+
+                # Populate cplane known_hosts for new worker
+                scan_out, _, _ = run_command(
+                    cp_client,
+                    f"ssh-keyscan -H -T 5 {node.ip} 2>/dev/null"
+                )
+                if scan_out.strip():
+                    run_command(
+                        cp_client,
+                        f"touch ~/.ssh/known_hosts && "
+                        f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts && "
+                        f"sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
+                    )
+                yield _ok(f"cplane → {node.ip} passwordless SSH wired")
+        except Exception as exc:
+            # Non-fatal — cluster join still works without this
+            yield _log(f"[WARN] cplane→worker SSH wiring failed: {exc} — continuing")
+        finally:
+            if cp_client:
+                cp_client.close()
+    else:
+        yield _log("[WARN] Could not read cplane info from vars — skipping cplane→worker wiring")
+
+    # ── Step 1b — OS version gate (mirrors preflight check) ──────────────────
     r_os = _ansible(". /etc/os-release && echo $VERSION_ID")
     os_ver = ""
     for line in r_os.stdout.splitlines():
@@ -155,10 +291,9 @@ def _add_worker_stream(node: NewWorker):
         if "Removed" in line or "No cleanup" in line:
             yield _ok(line)
 
-    # ── Step 3 — Base packages + /etc/hosts ────────────────────────────
+    # ── Step 3 — Base packages + /etc/hosts ──────────────────────────────────
     yield _step(3, "Installing base packages and updating /etc/hosts")
 
-    # Install socat and other base packages ansible-k8s common role provides
     r = _ansible(
         "apt-get update -qq && "
         "apt-get install -y apt-transport-https ca-certificates curl gpg socat openssh-server && "
@@ -170,7 +305,6 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok("Base packages installed (socat, curl, gpg, ca-certificates)")
 
-    # Populate /etc/hosts with cluster nodes from vars
     hosts_entries = []
     if VARS_PATH.exists():
         in_hosts = False
@@ -235,7 +369,7 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok("Node prerequisites satisfied")
 
-    # ── Step 4 — containerd ───────────────────────────────────────────────────
+    # ── Step 5 — containerd ───────────────────────────────────────────────────
     yield _step(5, "Installing containerd (pinned)")
 
     containerd_steps = [
@@ -282,7 +416,7 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok("containerd installed and configured")
 
-    # ── Insecure registry (GitLab HTTP registry) ───────────────────────────────
+    # ── Insecure registry (GitLab HTTP registry) ──────────────────────────────
     yield _log("changed: [Configure insecure GitLab registry]")
     registry_host = _get_registry_host()
     if registry_host:
@@ -305,7 +439,7 @@ def _add_worker_stream(node: NewWorker):
     else:
         yield _log("No registry host in vars — skipping insecure registry config")
 
-    # ── Step 5 — Kubernetes packages ─────────────────────────────────────────
+    # ── Step 6 — Kubernetes packages ─────────────────────────────────────────
     yield _step(6, f"Installing kubeadm + kubelet {k8s_version} (pinned)")
 
     k8s_steps = [
@@ -338,10 +472,9 @@ def _add_worker_stream(node: NewWorker):
             return
     yield _ok(f"kubeadm + kubelet {k8s_version} installed")
 
-    # ── Step 6 — Join cluster ─────────────────────────────────────────────────
+    # ── Step 7 — Join cluster ─────────────────────────────────────────────────
     yield _step(7, "Joining the cluster")
 
-    # Always generate a fresh token — avoids 24h TTL expiry silently breaking joins
     yield _log("changed: [Generating fresh join token (kubeadm token create)]")
     out, rc = run_on_cp("kubeadm token create --print-join-command 2>/dev/null")
     join_lines = [l.strip() for l in out.splitlines() if l.strip().startswith("kubeadm")]
@@ -362,7 +495,7 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok(f"{node.hostname} joined the cluster")
 
-    # ── Step 7 — Label + inventory ────────────────────────────────────────────
+    # ── Step 8 — Label + inventory ────────────────────────────────────────────
     yield _step(8, "Labelling node and updating inventory")
 
     run_on_cp(
@@ -422,9 +555,6 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         if line.strip():
             yield f"data: {line}\n\n"
 
-    # FIX C: warn operator if removing this worker will leave only 1 worker.
-    # With longhorn_replica_count=2, every volume drops to 1 replica (degraded)
-    # until a replacement worker is added. Better to know before the drain runs.
     worker_count_out, _ = run_on_cp(
         "kubectl get nodes --no-headers "
         "| grep -v control-plane | wc -l"
@@ -455,10 +585,6 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         if line.strip():
             yield f"data: {line}\n\n"
 
-    # FIX B: remove Longhorn ghost node entry after K8s node deletion.
-    # Without this Longhorn keeps the node in its registry and tries to
-    # schedule replicas to a node that no longer exists, leaving volumes degraded.
-    # --ignore-not-found makes this safe even if the node was never in Longhorn.
     run_on_cp(f"kubectl delete node.longhorn.io {hostname} -n longhorn-system --ignore-not-found 2>&1")
     yield f"data: ok: Longhorn node entry removed\n\n"
 

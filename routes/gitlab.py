@@ -50,6 +50,12 @@ class GitLabConfig(BaseModel):
 
 @router.post("/api/gitlab/bootstrap-ssh")
 async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
+    """
+    Push the controller SSH key to the GitLab VM, configure passwordless sudo,
+    and populate the controller known_hosts — all in one session while the
+    password is still available. After this runs, Ansible can reach the GitLab
+    VM with no interactive prompts of any kind.
+    """
     if not SSH_PUB_KEY_PATH.exists():
         subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH), "-N", ""],
@@ -59,6 +65,8 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
     client = None
     try:
         client = get_client_with_password(req.ip, req.ssh_user, req.ssh_pass)
+
+        # ── SSH key setup ──────────────────────────────────────────────────────
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -69,8 +77,28 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
             _, stderr, rc = run_command(client, cmd)
             if rc != 0:
                 return {"status": "error",
-                        "message": f"Command failed: {cmd} — {stderr}"}
-        return {"status": "ok", "message": f"SSH key pushed to {req.ip}"}
+                        "message": f"SSH key setup failed: {cmd} — {stderr}"}
+
+        # ── Passwordless sudo setup ────────────────────────────────────────────
+        # Password is still available here — write the sudoers drop-in while
+        # the session is open. Uses sudo -S to read password from stdin.
+        _, stderr, rc = run_command(
+            client,
+            f"echo '{req.ssh_pass}' | sudo -S bash -c "
+            f"\"echo '{req.ssh_user} ALL=(ALL) NOPASSWD:ALL' "
+            f"> /etc/sudoers.d/ansible-nopasswd && "
+            f"chmod 440 /etc/sudoers.d/ansible-nopasswd\""
+        )
+        if rc != 0:
+            return {"status": "error",
+                    "message": f"Passwordless sudo setup failed — {stderr}"}
+
+        # ── Verify sudo works without password ─────────────────────────────────
+        _, _, verify_rc = run_command(client, "sudo -n whoami")
+        if verify_rc != 0:
+            return {"status": "error",
+                    "message": "Sudo verification failed — sudoers entry may not have applied"}
+
     except paramiko.AuthenticationException:
         return {"status": "error",
                 "message": "Authentication failed — wrong password?"}
@@ -79,6 +107,34 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
     finally:
         if client:
             client.close()
+
+    # ── Populate controller known_hosts ────────────────────────────────────────
+    # Done after closing the paramiko session — uses local ssh-keyscan.
+    # Non-fatal: if this fails the sudoers + key push already succeeded.
+    from pathlib import Path
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.touch(exist_ok=True)
+    scan = subprocess.run(
+        ["ssh-keyscan", "-H", "-T", "5", req.ip],
+        capture_output=True, text=True
+    )
+    if scan.returncode == 0 and scan.stdout.strip():
+        existing = known_hosts_path.read_text()
+        for line in scan.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            key_blob = parts[-1] if len(parts) >= 3 else ""
+            if key_blob and key_blob not in existing:
+                with open(known_hosts_path, "a") as f:
+                    f.write(line + "\n")
+
+    return {
+        "status":  "ok",
+        "message": f"SSH key pushed · passwordless sudo configured · fingerprint recorded for {req.ip}"
+    }
 
 
 @router.post("/api/gitlab/configure")
@@ -183,9 +239,6 @@ def _gitlab_stream():
     GITLAB_BECOME_PATH.unlink(missing_ok=True)
 
     # ── Phase 2: configure containerd on all k8s nodes ───────────────────────
-    # Read registry host from gitlab-outputs.json written by the GitLab role.
-    # Then run configure-registry.yml against the full k8s cluster inventory
-    # so every node (control plane + workers) can pull from the HTTP registry.
     if not GITLAB_OUTPUTS_PATH.exists():
         yield "data: [WARN] gitlab-outputs.json not found — skipping registry config\n\n"
         yield "data: __DONE__\n\n"

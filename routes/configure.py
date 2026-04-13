@@ -2,16 +2,22 @@
 routes/configure.py — Phase 3
 
 Generates inventory.ini and group_vars/all.yml from dashboard inputs.
+Also wires up passwordless SSH from control plane to all worker nodes
+so Ansible delegate_to tasks and cross-node operations never prompt.
 No Ansible project file is ever modified.
 All output goes to generated/ which is git-ignored.
 """
 import json
+import subprocess
+from pathlib import Path
 from typing import List
 
+import paramiko
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.paths import SSH_KEY_PATH, INVENTORY_PATH, VARS_PATH, COMPAT_MATRIX_PATH
+from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH, INVENTORY_PATH, VARS_PATH, COMPAT_MATRIX_PATH
+from core.ssh import get_client_with_key, run_command
 
 router = APIRouter()
 
@@ -125,6 +131,132 @@ longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/long
 """
 
 
+# ── NEW: Wire cplane → workers passwordless SSH ────────────────────────────────
+# Triggered automatically during configure so that by the time any playbook
+# runs, the control plane can already SSH into every worker without prompting.
+#
+# Steps (all using controller's private key — no passwords needed here because
+# bootstrap already pushed the controller pubkey to every node):
+#   1. SSH into cplane, generate ed25519 keypair if missing
+#   2. Read cplane's public key
+#   3. For each worker: append cplane pubkey to worker's authorized_keys
+#   4. On cplane: run ssh-keyscan for each worker → populate cplane known_hosts
+
+def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict:
+    if not workers:
+        return {"status": "skipped", "message": "No workers to wire"}
+
+    report = {"cplane_keygen": None, "workers": []}
+
+    # ── Step 1 & 2 — generate cplane keypair if missing, read pubkey ──────────
+    cp_client = None
+    try:
+        cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+
+        # Generate keypair on cplane if not present
+        _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
+        if rc != 0:
+            _, stderr, rc = run_command(
+                cp_client,
+                "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
+            )
+            if rc != 0:
+                return {
+                    "status":  "error",
+                    "message": f"cplane keypair generation failed: {stderr}"
+                }
+            report["cplane_keygen"] = "generated"
+        else:
+            report["cplane_keygen"] = "already exists"
+
+        # Read cplane pubkey
+        cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
+        if rc != 0 or not cplane_pubkey.strip():
+            return {"status": "error", "message": "Could not read cplane public key"}
+        cplane_pubkey = cplane_pubkey.strip()
+
+    except Exception as exc:
+        return {"status": "error", "message": f"Cannot reach cplane: {exc}"}
+    finally:
+        if cp_client:
+            cp_client.close()
+
+    # ── Step 3 — push cplane pubkey to each worker ────────────────────────────
+    for worker in workers:
+        w_client = None
+        try:
+            w_client = get_client_with_key(worker.ip, worker.ssh_user, str(SSH_KEY_PATH))
+
+            cmds = [
+                "mkdir -p ~/.ssh",
+                "chmod 700 ~/.ssh",
+                f"echo '{cplane_pubkey}' >> ~/.ssh/authorized_keys",
+                "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
+                "chmod 600 ~/.ssh/authorized_keys",
+            ]
+            for cmd in cmds:
+                _, stderr, exit_code = run_command(w_client, cmd)
+                if exit_code != 0:
+                    report["workers"].append({
+                        "ip":     worker.ip,
+                        "status": "error",
+                        "message": f"Command failed: {cmd} — {stderr}"
+                    })
+                    break
+            else:
+                report["workers"].append({
+                    "ip":     worker.ip,
+                    "status": "ok",
+                    "message": "cplane pubkey pushed"
+                })
+
+        except Exception as exc:
+            report["workers"].append({
+                "ip":     worker.ip,
+                "status": "error",
+                "message": f"Cannot reach worker: {exc}"
+            })
+        finally:
+            if w_client:
+                w_client.close()
+
+    # ── Step 4 — populate cplane known_hosts for all workers ──────────────────
+    worker_ips = " ".join(w.ip for w in workers)
+    cp_client = None
+    try:
+        cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+
+        for worker in workers:
+            scan_out, _, _ = run_command(
+                cp_client,
+                f"ssh-keyscan -H -T 5 {worker.ip} 2>/dev/null"
+            )
+            if scan_out.strip():
+                # Append only new entries
+                run_command(
+                    cp_client,
+                    f"touch ~/.ssh/known_hosts && "
+                    f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts"
+                )
+
+        # Deduplicate known_hosts on cplane
+        run_command(
+            cp_client,
+            "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
+        )
+
+    except Exception as exc:
+        # Non-fatal — key push already done, this is just the fingerprint cache
+        report["known_hosts_warning"] = f"cplane known_hosts population failed: {exc}"
+    finally:
+        if cp_client:
+            cp_client.close()
+
+    failed = [w for w in report["workers"] if w["status"] == "error"]
+    report["status"] = "error" if failed else "ok"
+    return report
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/configure")
@@ -132,6 +264,10 @@ async def configure(config: ClusterConfig):
     INVENTORY_PATH.write_text(_make_inventory(config))
     VARS_PATH.write_text(_make_group_vars(config))
     replica_count, soft_anti = _replica_settings(len(config.workers))
+
+    # Wire cplane → workers passwordless SSH automatically
+    wire_report = _wire_cplane_to_workers(config.control_plane, config.workers)
+
     return {
         "status": "ok",
         "files": {
@@ -142,7 +278,8 @@ async def configure(config: ClusterConfig):
             "worker_count":                        len(config.workers),
             "longhorn_replica_count":              replica_count,
             "longhorn_replica_soft_anti_affinity": soft_anti
-        }
+        },
+        "cplane_to_workers": wire_report
     }
 
 

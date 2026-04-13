@@ -133,6 +133,8 @@ def _push_key_to_node(ip: str, ssh_user: str,
     client = None
     try:
         client = get_client_with_password(ip, ssh_user, ssh_pass)
+
+        # ── SSH key setup ──────────────────────────────────────────────────────
         commands = [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -145,7 +147,40 @@ def _push_key_to_node(ip: str, ssh_user: str,
             if exit_code != 0:
                 return {"ip": ip, "status": "error",
                         "message": f"Command failed: {cmd} — {stderr}"}
-        return {"ip": ip, "status": "ok", "message": "SSH key pushed"}
+
+        # ── Passwordless sudo setup ────────────────────────────────────────────
+        # We are still authenticated with the user's password at this point so
+        # we can write the sudoers drop-in while the session is open.
+        # Uses echo piped through tee (no heredoc) to avoid shell quoting issues.
+        # The chmod 440 matches the standard sudoers.d permission requirement.
+        sudo_commands = [
+            f"echo '{ssh_user} ALL=(ALL) NOPASSWD:ALL' | sudo -S tee /etc/sudoers.d/ansible-nopasswd",
+            "sudo chmod 440 /etc/sudoers.d/ansible-nopasswd",
+        ]
+        # Pass the password via stdin for the first sudo call (-S flag)
+        _, stderr, exit_code = run_command(
+            client,
+            f"echo '{ssh_pass}' | sudo -S bash -c "
+            f"\"echo '{ssh_user} ALL=(ALL) NOPASSWD:ALL' "
+            f"> /etc/sudoers.d/ansible-nopasswd && "
+            f"chmod 440 /etc/sudoers.d/ansible-nopasswd\""
+        )
+        if exit_code != 0:
+            return {"ip": ip, "status": "error",
+                    "message": f"Passwordless sudo setup failed — {stderr}"}
+
+        # ── Verify sudo works without password now ─────────────────────────────
+        _, _, verify_rc = run_command(client, "sudo -n whoami")
+        if verify_rc != 0:
+            return {"ip": ip, "status": "error",
+                    "message": "Sudo verification failed — sudoers entry may not have applied"}
+
+        return {
+            "ip":     ip,
+            "status": "ok",
+            "message": "SSH key pushed · passwordless sudo configured"
+        }
+
     except paramiko.AuthenticationException:
         return {"ip": ip, "status": "error",
                 "message": "Authentication failed — wrong password?"}
@@ -157,9 +192,55 @@ def _push_key_to_node(ip: str, ssh_user: str,
             client.close()
 
 
+# ── Populate system known_hosts via ssh-keyscan ────────────────────────────────
+# Runs after key push so Ansible's OpenSSH client never encounters an unknown
+# host fingerprint and never prompts interactively.
+
+def _populate_known_hosts(ips: list) -> list:
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.touch(exist_ok=True)
+
+    results = []
+    for ip in ips:
+        scan = subprocess.run(
+            ["ssh-keyscan", "-H", "-T", "5", ip],
+            capture_output=True, text=True
+        )
+        if scan.returncode == 0 and scan.stdout.strip():
+            existing = known_hosts_path.read_text()
+            added = 0
+            for line in scan.stdout.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                key_blob = parts[-1] if len(parts) >= 3 else ""
+                if key_blob and key_blob not in existing:
+                    with open(known_hosts_path, "a") as f:
+                        f.write(line + "\n")
+                    added += 1
+            results.append({
+                "ip":           ip,
+                "status":       "ok",
+                "known_hosts":  f"{added} key(s) written"
+            })
+        else:
+            results.append({
+                "ip":           ip,
+                "status":       "warn",
+                "known_hosts":  f"ssh-keyscan failed: {scan.stderr.strip() or 'no output'}"
+            })
+    return results
+
+
+# ── Endpoint ───────────────────────────────────────────────────────────────────
+
 @router.post("/api/bootstrap/ssh")
 async def bootstrap_ssh(request: BootstrapSSHRequest):
     pub_key = _ensure_ssh_key()
+
+    # Push SSH keys + configure passwordless sudo on every node
     results = []
     for node in request.nodes:
         result = _push_key_to_node(
@@ -169,5 +250,15 @@ async def bootstrap_ssh(request: BootstrapSSHRequest):
             pub_key=pub_key
         )
         results.append(result)
+
+    # Populate known_hosts for all successfully reached nodes
+    ok_ips = [r["ip"] for r in results if r["status"] == "ok"]
+    if ok_ips:
+        scan_results = _populate_known_hosts(ok_ips)
+        scan_by_ip = {r["ip"]: r for r in scan_results}
+        for r in results:
+            if r["ip"] in scan_by_ip:
+                r["known_hosts"] = scan_by_ip[r["ip"]]["known_hosts"]
+
     failed = [r for r in results if r["status"] == "error"]
     return {"status": "error" if failed else "ok", "results": results}
