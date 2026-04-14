@@ -1,0 +1,15 @@
+---
+# ansible-workers/remove-worker.yml
+# Removes a worker node from the cluster and cleans up the VM.
+# Called by routes/worker.py after the Longhorn safety check passes.
+#
+# Usage (via launcher — do not run manually):
+#   ansible-playbook -i /tmp/worker-remove-<hostname>.ini remove-worker.yml
+#   --extra-vars @generated/group_vars/all.yml
+#   --extra-vars "target_hostname=<hostname>"
+
+- name: Remove worker node from cluster and clean up VM
+  hosts: workers
+  become: yes
+  roles:
+    - worker_remove

@@ -12,7 +12,6 @@
     </div>
   </div>
 
-
   <!-- Current nodes -->
   <div class="card">
     <h2>Cluster nodes
@@ -34,49 +33,9 @@
       <span id="remove-target-name" style="font-family:monospace;margin-left:6px"></span>
     </h2>
     <p style="font-size:13px;color:#555;margin:.5rem 0 1rem">
-      Choose how to remove this node. Both options drain running pods first.
+      Drains all pods, removes the node from the cluster, and cleans up the VM.
+      The node can be re-added via the Add Worker form below.
     </p>
-
-    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
-                  border:1px solid #e0e0e0;border-radius:6px;padding:.75rem;
-                  margin-bottom:.6rem;background:#fafafa">
-      <input type="radio" name="remove-mode" value="soft" checked
-        style="margin-top:3px" onchange="toggleRemoveMode()">
-      <div>
-        <div style="font-weight:600;font-size:13px">Soft remove
-          <span class="badge b-warn" style="margin-left:6px">recommended</span>
-        </div>
-        <div style="font-size:12px;color:#666;margin-top:3px">
-          Drains pods, removes from cluster. <strong>VM stays running</strong>
-          and can be re-added via the Add worker form without any cleanup.
-        </div>
-      </div>
-    </label>
-
-    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;
-                  border:1px solid #ffcdd2;border-radius:6px;padding:.75rem;
-                  margin-bottom:.75rem;background:#fff8f8">
-      <input type="radio" name="remove-mode" value="full"
-        style="margin-top:3px" onchange="toggleRemoveMode()">
-      <div>
-        <div style="font-weight:600;font-size:13px;color:#c62828">Full reset
-          <span class="badge b-err" style="margin-left:6px">destructive</span>
-        </div>
-        <div style="font-size:12px;color:#666;margin-top:3px">
-          Drains pods, removes from cluster, then SSHs in and runs
-          <span class="mono">kubeadm reset</span> + removes all K8s packages.
-          <strong>VM is wiped</strong> — ready to reprovision from scratch.
-        </div>
-      </div>
-    </label>
-
-    <div id="remove-ssh-pass-row" style="display:none;margin-bottom:.75rem">
-      <div class="field-row">
-        <label>SSH password</label>
-        <input type="password" id="remove-ssh-pass"
-          placeholder="required for kubeadm reset"/>
-      </div>
-    </div>
 
     <div class="field-row" style="margin-bottom:.75rem">
       <label style="color:#c62828">Type RESET to confirm</label>
@@ -126,6 +85,7 @@
         </p>
       </div>
     </div>
+
     <div class="field-row">
       <label>IP address</label>
       <input type="text" id="aw-ip" placeholder="e.g. 10.0.0.14"/>
@@ -153,14 +113,9 @@
 
     <div id="aw-steps" style="display:none;margin-top:1rem;
          border-top:1px solid #f0f0f0;padding-top:.75rem">
-      <div id="aw-step-1" class="aw-step">⬜ Step 1 / 8 — Push SSH key</div>
-      <div id="aw-step-2" class="aw-step">⬜ Step 2 / 8 — Repair stale apt state</div>
-      <div id="aw-step-3" class="aw-step">⬜ Step 3 / 8 — Base packages + /etc/hosts</div>
-      <div id="aw-step-4" class="aw-step">⬜ Step 4 / 8 — Node prerequisites</div>
-      <div id="aw-step-5" class="aw-step">⬜ Step 5 / 8 — Install containerd</div>
-      <div id="aw-step-6" class="aw-step">⬜ Step 6 / 8 — Kubernetes packages</div>
-      <div id="aw-step-7" class="aw-step">⬜ Step 7 / 8 — Join cluster</div>
-      <div id="aw-step-8" class="aw-step">⬜ Step 8 / 8 — Label and update inventory</div>
+      <div id="aw-step-1" class="aw-step">⬜ Step 1 / 3 — Bootstrap SSH key</div>
+      <div id="aw-step-2" class="aw-step">⬜ Step 2 / 3 — Configure node + join cluster</div>
+      <div id="aw-step-3" class="aw-step">⬜ Step 3 / 3 — Update inventory</div>
     </div>
     <div id="r-addworker" style="margin-top:.75rem"></div>
   </div>
@@ -186,25 +141,13 @@
 .os-req-body strong{display:block;font-size:13.5px;margin-bottom:4px;color:#0d47a1}
 .os-req-body p{margin:0 0 4px 0}
 .os-req-reason{color:#555;font-size:12px;margin-top:6px !important}
-
-.os-requirement-notice{
-  display:flex;gap:12px;align-items:flex-start;
-  background:#e8f4fd;border:1px solid #b3d9f7;border-radius:6px;
-  padding:12px 14px;margin-bottom:1rem;
-}
-.os-req-icon{font-size:20px;margin-top:1px;flex-shrink:0}
-.os-req-body{font-size:13px;color:#1a1a2e;line-height:1.5}
-.os-req-body strong{display:block;font-size:13.5px;margin-bottom:4px;color:#0d47a1}
-.os-req-body p{margin:0 0 4px 0}
-.os-req-reason{color:#555;font-size:12px;margin-top:6px !important}
 </style>
 
 <script>
 const AW_LABELS = [
-  '', 'Push SSH key', 'Repair stale apt state', 'Base packages + /etc/hosts',
-  'Node prerequisites', 'Install containerd', 'Kubernetes packages',
-  'Join cluster', 'Label and update inventory',
+  '', 'Bootstrap SSH key', 'Configure node + join cluster', 'Update inventory',
 ];
+const AW_TOTAL = 3;
 
 async function loadWorkerNodes() {
   checkWorkersPrereq();
@@ -256,15 +199,8 @@ function openRemoveWorker(hostname, ip, ssh_user) {
   document.getElementById('remove-worker-card').scrollIntoView({behavior:'smooth'});
 }
 
-function toggleRemoveMode() {
-  const mode = document.querySelector('input[name="remove-mode"]:checked').value;
-  document.getElementById('remove-ssh-pass-row').style.display =
-    mode === 'full' ? 'block' : 'none';
-}
-
 async function doRemoveWorker() {
-  const val  = document.getElementById('remove-confirm-input').value;
-  const mode = document.querySelector('input[name="remove-mode"]:checked').value;
+  const val    = document.getElementById('remove-confirm-input').value;
   const logEl  = document.getElementById('remove-log');
   const statEl = document.getElementById('remove-status-label');
   if (val !== 'RESET') { statEl.textContent = 'Type RESET to confirm.'; return; }
@@ -273,8 +209,6 @@ async function doRemoveWorker() {
     hostname: _removeTarget.hostname,
     ip:       _removeTarget.ip,
     ssh_user: _removeTarget.ssh_user || 'ubuntu',
-    ssh_pass: mode === 'full' ? document.getElementById('remove-ssh-pass').value : '',
-    mode,
   };
 
   logEl.style.display = 'block'; logEl.innerHTML = '';
@@ -323,7 +257,7 @@ function _markAwStep(n, state) {
   const colors = { idle:'#9e9e9e', running:'#1976d2', ok:'#2e7d32', error:'#c62828' };
   el.style.color = colors[state];
   el.style.fontWeight = (state === 'running' || state === 'ok') ? '500' : 'normal';
-  el.textContent = icons[state] + ' Step ' + n + ' / 8 — ' + AW_LABELS[n];
+  el.textContent = icons[state] + ' Step ' + n + ' / ' + AW_TOTAL + ' — ' + AW_LABELS[n];
 }
 
 async function addWorkerNode() {
@@ -349,7 +283,7 @@ async function addWorkerNode() {
   btn.disabled = true;
   setDot('dot-aw', 'running');
   statusEl.textContent = 'Connecting to ' + body.ip + '…';
-  for (let i = 1; i <= 8; i++) _markAwStep(i, 'idle');
+  for (let i = 1; i <= AW_TOTAL; i++) _markAwStep(i, 'idle');
 
   try {
     const resp = await fetch('/api/cluster/add-worker', {
@@ -385,7 +319,7 @@ async function addWorkerNode() {
             const s = parseInt(m[1]);
             if (cur > 0 && s > cur) _markAwStep(cur, 'ok');
             cur = s; _markAwStep(cur, 'running');
-            statusEl.textContent = 'Step ' + cur + ' / 8 — ' + AW_LABELS[cur];
+            statusEl.textContent = 'Step ' + cur + ' / ' + AW_TOTAL + ' — ' + AW_LABELS[cur];
           }
           makeLogLine(msg, logEl);
         }
@@ -426,4 +360,3 @@ async function checkWorkersPrereq() {
   }
 }
 </script>
-

@@ -1,0 +1,268 @@
+---
+# worker_add/tasks/main.yml
+# Configures a fresh Ubuntu VM and joins it to the existing cluster.
+# Called by ansible-workers/add-worker.yml after Python bootstraps SSH.
+# All version variables come from --extra-vars @generated/group_vars/all.yml
+# join_command and gitlab_registry_host are passed as explicit --extra-vars.
+
+# -- Derived version facts -----------------------------------------------------
+- name: Set k8s package version facts
+  set_fact:
+    k8s_pkg:      "{{ kubernetes_version }}-1.1"
+    k8s_repo_ver: "v{{ kubernetes_version.split('.')[:2] | join('.') }}"
+
+# -- OS gate -------------------------------------------------------------------
+- name: Assert supported OS version
+  assert:
+    that: ansible_distribution_version in ['22.04', '24.04']
+    fail_msg: >
+      Unsupported OS: Ubuntu {{ ansible_distribution_version }}.
+      Only Ubuntu 22.04 and 24.04 are supported.
+      All nodes must run the same OS version.
+    success_msg: "OS check passed: Ubuntu {{ ansible_distribution_version }}"
+
+# -- Stale apt state repair ----------------------------------------------------
+- name: Check if Docker GPG key exists
+  stat:
+    path: /etc/apt/keyrings/docker.gpg
+  register: docker_gpg_stat
+
+- name: Remove stale docker.list if GPG key absent
+  file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+  when: not docker_gpg_stat.stat.exists
+
+# -- Base packages -------------------------------------------------------------
+- name: Install base packages
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+      - socat
+      - openssh-server
+    state: present
+    update_cache: yes
+
+# -- /etc/hosts ----------------------------------------------------------------
+- name: Populate /etc/hosts with cluster nodes
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ip }} {{ item.name }}"
+    regexp: "^{{ item.ip }}\\s"
+  loop: "{{ cluster_hosts }}"
+
+# -- Node prerequisites --------------------------------------------------------
+- name: Disable swap now
+  command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+  changed_when: ansible_swaptotal_mb > 0
+
+- name: Remove swap from /etc/fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '#\1'
+
+- name: Delete swapfile if present
+  file:
+    path: /swapfile
+    state: absent
+
+- name: Load overlay kernel module
+  modprobe:
+    name: overlay
+    state: present
+
+- name: Load br_netfilter kernel module
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Persist kernel modules across reboots
+  copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: "overlay\nbr_netfilter\n"
+
+- name: Set required sysctl parameters
+  copy:
+    dest: /etc/sysctl.d/kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+
+- name: Apply sysctl settings
+  command: sysctl --system
+  changed_when: false
+
+- name: Install Longhorn prerequisites
+  apt:
+    name:
+      - open-iscsi
+      - nfs-common
+    state: present
+
+- name: Enable and start iscsid
+  systemd:
+    name: iscsid
+    enabled: yes
+    state: started
+
+# -- containerd ----------------------------------------------------------------
+- name: Create apt keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Install Docker GPG key
+  shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod 644 /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: >
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    mode: '0644'
+
+- name: Install containerd.io at pinned version
+  apt:
+    name: "containerd.io={{ containerd_version }}-1"
+    state: present
+    update_cache: yes
+    allow_downgrade: yes
+
+- name: Hold containerd.io version
+  dpkg_selections:
+    name: containerd.io
+    selection: hold
+
+- name: Write containerd config (SystemdCgroup + config_path)
+  shell: |
+    containerd config default \
+      | sed 's/SystemdCgroup = false/SystemdCgroup = true/' \
+      | sed 's|config_path = ""|config_path = "/etc/containerd/certs.d"|g' \
+      > /etc/containerd/config.toml
+  changed_when: true
+
+- name: Restart and enable containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+
+- name: Verify containerd is active
+  command: systemctl is-active containerd
+  register: cri_check
+  retries: 5
+  delay: 5
+  until: cri_check.stdout == "active"
+  changed_when: false
+
+# -- GitLab insecure registry (HTTP) ------------------------------------------
+# Only configured when gitlab_registry_host is passed in.
+# This is what allows workers to pull notebook images from GitLab over HTTP.
+- name: Create containerd certs.d directory for GitLab registry
+  file:
+    path: "/etc/containerd/certs.d/{{ gitlab_registry_host }}"
+    state: directory
+    mode: "0755"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+
+- name: Write hosts.toml for insecure GitLab registry (HTTP, skip TLS verify)
+  copy:
+    dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
+    content: |
+      server = "http://{{ gitlab_registry_host }}"
+
+      [host."http://{{ gitlab_registry_host }}"]
+        capabilities = ["pull", "resolve", "push"]
+        skip_verify = true
+    mode: "0644"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+  notify: restart containerd
+
+# -- Kubernetes packages -------------------------------------------------------
+- name: Install Kubernetes GPG key
+  shell: |
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_ver }}/deb/Release.key \
+      | gpg --batch --yes --dearmor \
+          -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Add Kubernetes apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: >
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
+      https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_ver }}/deb/ /
+    mode: '0644'
+
+- name: Install kubelet and kubeadm at pinned version
+  apt:
+    name:
+      - "kubelet={{ k8s_pkg }}"
+      - "kubeadm={{ k8s_pkg }}"
+    state: present
+    update_cache: yes
+
+- name: Hold Kubernetes packages
+  dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+
+- name: Enable kubelet
+  systemd:
+    name: kubelet
+    enabled: yes
+    state: started
+
+# -- Join cluster --------------------------------------------------------------
+- name: Check if node already joined
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Run kubeadm join
+  shell: "{{ join_command }}"
+  become: yes
+  when: not kubelet_conf.stat.exists
+
+# -- Label node ----------------------------------------------------------------
+# Resolves actual K8s node name by IP — same pattern as ansible-k8s workers role.
+# Retries to allow kubelet registration to complete after join.
+- name: Resolve actual Kubernetes node name for this host
+  shell: >-
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+    | grep '{{ ansible_host }}'
+    | awk '{print $1}'
+  register: k8s_node_name
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
+  retries: 6
+  delay: 10
+  until: k8s_node_name.rc == 0 and k8s_node_name.stdout != ""
+  changed_when: false
+
+- name: Label node as worker
+  command: >
+    kubectl label node {{ k8s_node_name.stdout }}
+    node-role.kubernetes.io/worker=worker --overwrite
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no

@@ -158,6 +158,7 @@ _ANSIBLE_PROJECT_DIRS = [
     Path("~/k8s-launcher/ansible-gitlab").expanduser(),
     Path("~/k8s-launcher/ansible-jupyterhub").expanduser(),
     Path("~/k8s-launcher/ansible-kyverno").expanduser(),
+    Path("~/k8s-launcher/ansible-workers").expanduser(),
 ]
 
 def _write_ansible_cfgs() -> list:

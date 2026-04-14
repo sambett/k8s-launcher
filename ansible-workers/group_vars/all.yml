@@ -1,0 +1,18 @@
+# ansible-workers/group_vars/all.yml
+# Reference variables for standalone manual use.
+# When called by the launcher, all values are passed via:
+#   --extra-vars @generated/group_vars/all.yml
+# Do not rely on these values in production — the launcher generates them.
+
+kubernetes_version: "1.30.5"
+containerd_version: "1.7.22"
+
+cp_hostname: "REPLACE_WITH_CP_HOSTNAME"
+cp_ip:       "REPLACE_WITH_CP_IP"
+
+cluster_hosts:
+  - { name: "REPLACE_WITH_CP_HOSTNAME",     ip: "REPLACE_WITH_CP_IP" }
+  - { name: "REPLACE_WITH_WORKER_HOSTNAME", ip: "REPLACE_WITH_WORKER_IP" }
+
+# Optional — only needed if GitLab is deployed
+# gitlab_registry_host: "REPLACE_WITH_GITLAB_IP:5050"
