@@ -1,0 +1,9 @@
+---
+# ansible-reset/site.yml
+# Entry point for the full platform reset playbook.
+# Called by routes/reset.py via ansible-playbook.
+# Usage (via launcher):
+#   ansible-playbook -i generated/inventory.ini site.yml
+#   --extra-vars @generated/group_vars/all.yml
+
+- import_playbook: reset.yml

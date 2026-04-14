@@ -1,0 +1,189 @@
+---
+# ansible-reset/reset.yml
+# Full platform reset — wipes Kubernetes, Longhorn, and all traces from every node.
+# Runs on ALL nodes (control plane + workers).
+# Called by routes/reset.py after GitLab uninstall completes.
+#
+# What this wipes per node:
+#   - kubeadm reset
+#   - kubelet + containerd stopped, disabled, masked
+#   - All K8s + Longhorn + CNI packages removed
+#   - All data directories removed
+#   - apt sources and keyrings removed
+#   - /root/.kube + /root/cluster-artifacts removed
+#   - ansible_user_dir/.kube + ansible_user_dir/cluster-artifacts removed (the $HOME bug fix)
+#   - SSH authorized_keys wiped (forces re-bootstrap)
+#   - /etc/hosts cluster entries removed (injected by ansible-k8s/roles/common)
+#   - apt cache refreshed
+
+- name: Full platform reset — all cluster nodes
+  hosts: all
+  become: true
+  ignore_unreachable: false
+
+  tasks:
+
+    # ── Step 1: kubeadm reset ─────────────────────────────────────────────────
+    - name: Run kubeadm reset
+      shell: kubeadm reset -f 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    # ── Step 2: Stop and disable services ────────────────────────────────────
+    - name: Stop kubelet
+      systemd:
+        name: kubelet
+        state: stopped
+        enabled: false
+        masked: true
+      ignore_errors: true
+
+    - name: Stop containerd
+      systemd:
+        name: containerd
+        state: stopped
+        enabled: false
+        masked: true
+      ignore_errors: true
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: true
+      ignore_errors: true
+
+    # ── Step 3: Remove packages ───────────────────────────────────────────────
+    - name: Remove Kubernetes and container runtime packages
+      apt:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+          - containerd.io
+          - cri-tools
+          - conntrack
+          - kubernetes-cni
+          - ethtool
+        state: absent
+        allow_change_held_packages: true
+        autoremove: true
+      ignore_errors: true
+
+    # ── Step 4: Remove data and config directories ────────────────────────────
+    - name: Remove Kubernetes and Longhorn data directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /var/lib/kubelet
+        - /var/lib/longhorn
+        - /var/lib/containerd
+        - /etc/containerd
+        - /etc/cni
+        - /opt/cni
+      ignore_errors: true
+
+    # ── Step 5: Remove apt sources and keyrings ───────────────────────────────
+    - name: Remove apt sources and keyrings
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/kubernetes.list
+        - /etc/apt/sources.list.d/docker.list
+        - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        - /etc/apt/keyrings/docker.asc
+        - /etc/apt/keyrings/docker.gpg
+      ignore_errors: true
+
+    # ── Step 6: Remove cluster artifacts from root's home ────────────────────
+    - name: Remove root .kube and cluster-artifacts
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /root/.kube
+        - /root/cluster-artifacts
+      ignore_errors: true
+
+    # ── Step 7: Remove cluster artifacts from login user's home ──────────────
+    # This is the critical fix for the $HOME expansion bug under --become.
+    # ansible_user_dir resolves to the actual login user's home, not /root.
+    - name: Remove ansible user .kube and cluster-artifacts
+      become: false
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ansible_user_dir }}/.kube"
+        - "{{ ansible_user_dir }}/cluster-artifacts"
+      ignore_errors: true
+
+    # ── Step 8: Wipe SSH authorized_keys ─────────────────────────────────────
+    # Forces full re-bootstrap via the Bootstrap tab after reset.
+    - name: Remove SSH authorized_keys from login user
+      become: false
+      file:
+        path: "{{ ansible_user_dir }}/.ssh/authorized_keys"
+        state: absent
+      ignore_errors: true
+
+    - name: Remove SSH authorized_keys from root
+      file:
+        path: /root/.ssh/authorized_keys
+        state: absent
+      ignore_errors: true
+
+    # ── Step 9: Remove injected /etc/hosts entries ────────────────────────────
+    # ansible-k8s/roles/common injects cluster_hosts entries into /etc/hosts.
+    # These must be removed so a fresh deploy does not conflict with stale entries.
+    - name: Remove cluster host entries from /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: "{{ item }}"
+        state: absent
+      loop: "{{ cluster_hosts | map(attribute='ip') | list }}"
+      when: cluster_hosts is defined
+      ignore_errors: true
+
+    # ── Step 10: Refresh apt cache ────────────────────────────────────────────
+    - name: Refresh apt cache
+      apt:
+        update_cache: true
+      ignore_errors: true
+
+    # ── Step 11: Verification ─────────────────────────────────────────────────
+    - name: Check kubectl binary is gone
+      stat:
+        path: /usr/bin/kubectl
+      register: kubectl_stat
+      changed_when: false
+
+    - name: Check /etc/kubernetes is gone
+      stat:
+        path: /etc/kubernetes
+      register: etckube_stat
+      changed_when: false
+
+    - name: Check /var/lib/longhorn is gone
+      stat:
+        path: /var/lib/longhorn
+      register: longhorn_stat
+      changed_when: false
+
+    - name: Check containerd service state
+      shell: systemctl is-active containerd 2>/dev/null || echo inactive
+      register: containerd_state
+      changed_when: false
+      ignore_errors: true
+
+    - name: Report per-node cleanup status
+      debug:
+        msg: |
+          ── {{ inventory_hostname }} ──────────────────────────────────
+          kubectl binary:    {{ 'GONE ✓' if not kubectl_stat.stat.exists else 'STILL PRESENT ✗' }}
+          /etc/kubernetes:   {{ 'GONE ✓' if not etckube_stat.stat.exists else 'STILL PRESENT ✗' }}
+          /var/lib/longhorn: {{ 'GONE ✓' if not longhorn_stat.stat.exists else 'STILL PRESENT ✗' }}
+          containerd:        {{ 'STOPPED ✓' if containerd_state.stdout == 'inactive' else containerd_state.stdout + ' ✗' }}
+          .kube (user):      {{ 'GONE ✓' if not (ansible_user_dir + "/.kube") is exists else 'STILL PRESENT ✗' }}

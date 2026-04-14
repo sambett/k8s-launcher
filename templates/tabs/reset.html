@@ -1,40 +1,77 @@
 <div id="tab-reset" class="panel">
 
-  <!-- ── Component resets ─────────────────────────────────────────────────── -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:1rem">
-
-    <!-- GitLab reset -->
-    <div class="card" style="border-color:#ffcdd2">
-      <h2 style="color:#c62828;font-size:.9rem">🦊 Reset GitLab</h2>
-      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
-        <strong>Uninstalls GitLab CE completely from the VM</strong> — stops all
-        services, purges the package, and deletes all data under
-        <span class="mono">/etc/gitlab</span>, <span class="mono">/var/opt/gitlab</span>,
-        and <span class="mono">/opt/gitlab</span>. Also clears all generated
-        credential files on the controller. Re-run the GitLab tab to start fresh.
-      </p>
-      <input type="text" id="confirm-gitlab" placeholder="Type RESET"
-        style="max-width:140px;border-color:#ffcdd2;margin-bottom:.5rem">
-      <div>
-        <button class="btn btn-danger btn-sm" onclick="resetComponent('gitlab')">
-          Reset GitLab
-        </button>
-      </div>
-      <div id="r-reset-gitlab" style="margin-top:.5rem;font-size:12px"></div>
-      <div class="log" id="log-reset-gitlab"
-        style="height:120px;display:none;margin-top:.5rem"></div>
+  <!-- ── What this does warning ───────────────────────────────────────────── -->
+  <div style="background:#fff8f8;border:1px solid #ffcdd2;border-left:4px solid #c62828;
+              border-radius:6px;padding:1rem 1.25rem;margin-bottom:1.25rem">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:.75rem">
+      <span style="font-size:18px">⚠️</span>
+      <strong style="color:#c62828;font-size:14px">Full Platform Reset — this cannot be undone</strong>
     </div>
+    <p style="font-size:12px;color:#555;line-height:1.8;margin-bottom:.6rem">
+      The <strong>Full Platform Reset</strong> below wipes everything across all three phases.
+      Use the component resets above it to redeploy a single component without touching the cluster.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem;font-size:12px">
+      <div style="background:#fff;border:1px solid #ffcdd2;border-radius:5px;padding:.6rem .85rem">
+        <div style="font-weight:600;color:#c62828;margin-bottom:.35rem">Phase 1 — K8s Nodes</div>
+        <div style="color:#555;line-height:1.8">
+          kubeadm reset<br>
+          kubelet + containerd removed<br>
+          All K8s + Longhorn packages<br>
+          /etc/kubernetes, /var/lib/etcd<br>
+          /var/lib/longhorn, /opt/cni<br>
+          ~/.kube + cluster-artifacts<br>
+          SSH authorized_keys wiped<br>
+          /etc/hosts entries removed
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #ffcdd2;border-radius:5px;padding:.6rem .85rem">
+        <div style="font-weight:600;color:#c62828;margin-bottom:.35rem">Phase 2 — GitLab VM</div>
+        <div style="color:#555;line-height:1.8">
+          gitlab-ctl stop<br>
+          apt-get remove --purge gitlab-ce<br>
+          /etc/gitlab deleted<br>
+          /var/opt/gitlab deleted<br>
+          /var/log/gitlab deleted<br>
+          /opt/gitlab deleted<br>
+          OAuth tokens invalidated<br>
+          Registry data removed
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #ffcdd2;border-radius:5px;padding:.6rem .85rem">
+        <div style="font-weight:600;color:#c62828;margin-bottom:.35rem">Phase 3 — Controller</div>
+        <div style="color:#555;line-height:1.8">
+          generated/inventory.ini<br>
+          generated/group_vars/all.yml<br>
+          gitlab-inventory.ini<br>
+          gitlab-vars.yml<br>
+          gitlab-outputs.json<br>
+          jupyterhub-vars.yml<br>
+          dashboard-vars.yml<br>
+          entire generated/ dir
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:.85rem;background:#fff3e0;border:1px solid #ffcc02;border-radius:4px;
+                padding:.5rem .85rem;font-size:12px;color:#e65100">
+      ⚠ After a full reset you must re-run the <strong>Bootstrap tab</strong> with SSH passwords
+      to re-establish trust — all authorized_keys are wiped.
+    </div>
+  </div>
+
+  <!-- ── Component resets ─────────────────────────────────────────────────── -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
 
     <!-- JupyterHub reset -->
     <div class="card" style="border-color:#ffcdd2">
       <h2 style="color:#c62828;font-size:.9rem">📓 Reset JupyterHub</h2>
-      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
+      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem;line-height:1.65">
         Uninstalls the JupyterHub Helm release and deletes the
-        <span class="mono">jhub</span> namespace including all secrets and
-        ConfigMaps. Clears the generated JupyterHub vars file.
-        Re-run the JupyterHub tab to redeploy.<br><br>
+        <span class="mono">jhub</span> namespace — removes all secrets,
+        ConfigMaps, and OAuth credentials. Clears the generated vars file.<br><br>
         <strong>Note:</strong> Longhorn volumes use a <em>Retain</em> reclaim
-        policy — old user data volumes remain in Longhorn until manually deleted.
+        policy — existing user data PVs remain in Longhorn until manually deleted.
+        Re-run the JupyterHub tab to redeploy.
       </p>
       <input type="text" id="confirm-jupyterhub" placeholder="Type RESET"
         style="max-width:140px;border-color:#ffcdd2;margin-bottom:.5rem">
@@ -45,16 +82,18 @@
       </div>
       <div id="r-reset-jupyterhub" style="margin-top:.5rem;font-size:12px"></div>
       <div class="log" id="log-reset-jupyterhub"
-        style="height:120px;display:none;margin-top:.5rem"></div>
+        style="height:140px;display:none;margin-top:.5rem"></div>
     </div>
 
     <!-- Dashboard reset -->
     <div class="card" style="border-color:#ffcdd2">
       <h2 style="color:#c62828;font-size:.9rem">⚙ Reset Admin Dashboard</h2>
-      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem">
-        Stops and removes the workbench-admin systemd service and deletes
-        <span class="mono">/etc/workbench/</span> (secrets).
-        Clears the generated dashboard vars file.
+      <p style="color:#666;font-size:12px;margin:.5rem 0 .75rem;line-height:1.65">
+        Stops and removes the workbench-admin systemd service, deletes the
+        unit file, and removes <span class="mono">/etc/workbench/</span>
+        which contains the GitLab admin token. Clears the generated vars file.<br><br>
+        The <span class="mono">~/k8s-launcher</span> repo clone on the control
+        plane is preserved — it is the running codebase, not a deployment artifact.
         Re-run the Admin Dashboard tab to redeploy.
       </p>
       <input type="text" id="confirm-dashboard" placeholder="Type RESET"
@@ -66,113 +105,66 @@
       </div>
       <div id="r-reset-dashboard" style="margin-top:.5rem;font-size:12px"></div>
       <div class="log" id="log-reset-dashboard"
-        style="height:120px;display:none;margin-top:.5rem"></div>
+        style="height:140px;display:none;margin-top:.5rem"></div>
     </div>
 
   </div>
 
-  <!-- ── Cluster-level reset ───────────────────────────────────────────────── -->
-  <div class="card" style="border-color:#ffcdd2">
-    <h2 style="color:#c62828">Cluster Reset</h2>
-    <p style="color:#666;font-size:13px;margin-bottom:1rem">
-      Tears down the Kubernetes cluster and/or all generated state.
-      None of these actions can be undone.
-    </p>
-
-    <div id="reset-preview-box" style="background:#fff8f8;border:1px solid #ffcdd2;
-         border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;font-size:13px">
-      <strong style="color:#c62828">Nodes that will be affected:</strong>
-      <div id="reset-node-list" style="margin-top:.5rem;color:#555">Loading...</div>
+  <!-- ── Nodes preview ────────────────────────────────────────────────────── -->
+  <div class="card" style="border-color:#ffcdd2;margin-bottom:1rem">
+    <h2 style="color:#c62828">Nodes that will be wiped (full platform reset)</h2>
+    <div id="reset-node-list" style="margin-top:.5rem;color:#555;font-size:13px">
+      Loading...
     </div>
+  </div>
 
-    <div style="background:#fff8f8;border:1px solid #ffcdd2;border-radius:6px;
-                padding:1rem;margin-bottom:1rem">
-      <p style="font-size:13px;font-weight:500;margin-bottom:.75rem">Reset level:</p>
+  <!-- ── Full platform reset form ─────────────────────────────────────────── -->
+  <div class="card" style="border-color:#ffcdd2">
+    <h2 style="color:#c62828">Full Platform Reset</h2>
 
-      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;
-                    margin-bottom:.75rem;cursor:pointer">
-        <input type="radio" name="reset-level" value="cluster" checked
-          style="margin-top:3px"
-          onchange="document.getElementById('gitlab-become-row').style.display='none'">
-        <div>
-          <strong>Reset cluster</strong>
-          <div style="color:#666;font-size:12px;margin-top:2px">
-            Removes Kubernetes + Longhorn. Nodes left clean and ready to redeploy.
-          </div>
-        </div>
+    <div class="field-row" style="margin-bottom:1rem;margin-top:.75rem">
+      <label style="font-size:13px;color:#555;min-width:200px;flex-shrink:0">
+        GitLab VM sudo password
       </label>
-
-      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;
-                    margin-bottom:.75rem;cursor:pointer">
-        <input type="radio" name="reset-level" value="full"
-          style="margin-top:3px"
-          onchange="document.getElementById('gitlab-become-row').style.display='none'">
-        <div>
-          <strong>Full wipe</strong>
-          <div style="color:#666;font-size:12px;margin-top:2px">
-            Same as above + removes SSH authorized keys + clears generated inventory.
-            <strong>You will need SSH passwords to re-bootstrap nodes after this.</strong>
-          </div>
-        </div>
-      </label>
-
-      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer">
-        <input type="radio" name="reset-level" value="full_platform"
-          style="margin-top:3px"
-          onchange="document.getElementById('gitlab-become-row').style.display='block'">
-        <div>
-          <strong style="color:#c62828">Full platform reset</strong>
-          <div style="color:#666;font-size:12px;margin-top:2px">
-            Removes everything: Kubernetes + Longhorn + GitLab CE + JupyterHub + Admin Dashboard.
-            Clears all generated files and credentials. Use to start from absolute zero.
-          </div>
-        </div>
-      </label>
-
-      <!-- GitLab sudo password — only shown for full_platform -->
-      <div id="gitlab-become-row" style="display:none;margin-top:.85rem;
-           background:#fff3e0;border:1px solid #f59e0b;border-radius:6px;
-           padding:.75rem 1rem">
-        <p style="font-size:12px;color:#c62828;font-weight:600;margin-bottom:.4rem">
-          ⚠ GitLab VM sudo password required
-        </p>
-        <p style="font-size:12px;color:#666;margin-bottom:.6rem;line-height:1.5">
-          The GitLab uninstall runs <code>apt-get remove --purge gitlab-ce</code>
-          via sudo. Without this password, GitLab CE will <strong>not</strong> be
-          removed from the VM — you will see a warning and manual steps instead.
-        </p>
-        <div class="field-row">
-          <label style="font-size:12px;color:#555;min-width:160px">
-            GitLab VM sudo password
-          </label>
-          <input type="password" id="gitlab-become-pass"
-            placeholder="sudo password for the GitLab VM SSH user"
-            style="max-width:280px;border-color:#f59e0b"/>
+      <div style="flex:1">
+        <input type="password" id="gitlab-become-pass"
+          placeholder="sudo password for the GitLab VM — required to uninstall GitLab CE"
+          style="max-width:380px;border-color:#ffcdd2"/>
+        <div style="font-size:11px;color:#888;margin-top:3px">
+          If left empty, GitLab CE will not be removed automatically —
+          you will see manual instructions in the log instead.
         </div>
       </div>
     </div>
 
-    <div class="field-row" style="margin-bottom:1rem">
-      <label style="font-size:13px;color:#c62828;min-width:160px;flex-shrink:0">
+    <div class="field-row" style="margin-bottom:1.25rem">
+      <label style="font-size:13px;color:#c62828;min-width:200px;flex-shrink:0">
         Type RESET to confirm
       </label>
       <input type="text" id="reset-confirm" placeholder="RESET"
-             style="max-width:200px;border-color:#ffcdd2">
+        style="max-width:200px;border-color:#ffcdd2"/>
     </div>
 
-    <button class="btn btn-danger" onclick="runReset()">Reset cluster</button>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="btn btn-danger" onclick="runFullReset()">
+        Full Platform Reset
+      </button>
+      <span class="dot" id="dot-reset"></span>
+      <span id="reset-status-label" style="font-size:12px;color:#666"></span>
+    </div>
     <div id="r-reset" style="margin-top:.75rem"></div>
   </div>
 
-  <div class="card">
-    <h2>Cluster reset log</h2>
+  <!-- ── Full platform reset log ──────────────────────────────────────────── -->
+  <div class="card" style="margin-top:1rem">
+    <h2>Reset log</h2>
     <div class="log" id="reset-log">Waiting for reset to start...</div>
   </div>
 
 </div>
 
 <script>
-// ── Component reset (GitLab / JupyterHub / Dashboard) ─────────────────────────
+// ── Component reset (JupyterHub / Dashboard) ──────────────────────────────────
 async function resetComponent(name) {
   const confirmEl = document.getElementById('confirm-' + name);
   const resultEl  = document.getElementById('r-reset-' + name);
@@ -197,6 +189,7 @@ async function resetComponent(name) {
     if (e.data === '__DONE__') {
       resultEl.style.color = '#2e7d32';
       resultEl.textContent = '✓ Reset complete — ready for fresh deploy.';
+      // Clear stepper state for this component
       const stepName = name === 'dashboard' ? 'admindashboard' : name;
       localStorage.removeItem('step-' + stepName);
       const stepEl = document.getElementById('step-' + stepName);
@@ -210,10 +203,12 @@ async function resetComponent(name) {
       const line = document.createElement('div');
       line.textContent   = e.data;
       line.style.cssText = 'font-size:11px;font-family:monospace;padding:1px 0';
-      if (e.data.includes('done') || e.data.includes('complete'))
+      if (e.data.includes('✓') || e.data.includes('complete'))
         line.style.color = '#4ec9b0';
-      if (e.data.includes('ERROR') || e.data.includes('warning'))
+      if (e.data.includes('ERROR') || e.data.includes('✗'))
         line.style.color = '#f44747';
+      if (e.data.includes('⚠') || e.data.includes('WARNING'))
+        line.style.color = '#ce9178';
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -226,7 +221,7 @@ async function resetComponent(name) {
   };
 }
 
-// ── Cluster-level reset ───────────────────────────────────────────────────────
+// ── Full platform reset ───────────────────────────────────────────────────────
 async function loadResetPreview() {
   const el = document.getElementById('reset-node-list');
   if (!el) return;
@@ -234,55 +229,72 @@ async function loadResetPreview() {
     const r = await fetch('/api/reset/preview?t=' + Date.now());
     const d = await r.json();
     if (d.status === 'no_inventory') {
-      el.innerHTML = '<span style="color:#e65100">No inventory found. Run Configure first.</span>';
+      el.innerHTML =
+        '<span style="color:#e65100">No inventory found — run Configure tab first.</span>';
       return;
     }
     if (!d.nodes || !d.nodes.length) {
-      el.innerHTML = '<span style="color:#e65100">No nodes found in inventory.</span>';
+      el.innerHTML =
+        '<span style="color:#e65100">No nodes found in inventory.</span>';
       return;
     }
     el.innerHTML = d.nodes.map(n =>
-      '<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid #ffcdd2">' +
-      '<span style="min-width:160px;font-weight:500">' + n.hostname + '</span>' +
-      '<span style="color:#888;min-width:120px">' + n.ip + '</span>' +
-      '<span class="badge ' + (n.role === 'control-plane' ? 'b-info' : 'b-warn') + '">' +
-      n.role + '</span></div>'
+      '<div style="display:flex;gap:10px;padding:4px 0;' +
+      'border-bottom:1px solid #ffcdd2;align-items:center">' +
+      '<span style="min-width:160px;font-weight:500;font-size:13px">' +
+        n.hostname + '</span>' +
+      '<span style="color:#888;min-width:120px;font-size:13px">' +
+        n.ip + '</span>' +
+      '<span class="badge ' +
+        (n.role === 'control-plane' ? 'b-info' : 'b-warn') + '">' +
+        n.role + '</span>' +
+      '</div>'
     ).join('') +
-    '<div style="margin-top:.5rem;font-size:12px;color:#c62828">' +
-    d.nodes.length + ' node(s) will be affected</div>';
+    '<div style="margin-top:.5rem;font-size:12px;color:#c62828;font-weight:500">' +
+      d.nodes.length + ' node(s) will be wiped' +
+    '</div>';
   } catch(e) {
-    el.innerHTML = '<span style="color:#c62828">Could not load: ' + e + '</span>';
+    el.innerHTML =
+      '<span style="color:#c62828">Could not load inventory: ' + e + '</span>';
   }
 }
 
-async function runReset() {
-  const confirm_val = document.getElementById('reset-confirm').value;
-  const level       = document.querySelector('input[name="reset-level"]:checked').value;
-  const el          = document.getElementById('r-reset');
-  const rlog        = document.getElementById('reset-log');
+async function runFullReset() {
+  const confirmVal = document.getElementById('reset-confirm').value;
+  const becomePass = document.getElementById('gitlab-become-pass').value;
+  const el         = document.getElementById('r-reset');
+  const rlog       = document.getElementById('reset-log');
+  const statusEl   = document.getElementById('reset-status-label');
 
-  if (confirm_val !== 'RESET') {
-    el.innerHTML = '<span class="badge b-warn">Type RESET in the confirmation field first.</span>';
+  if (confirmVal !== 'RESET') {
+    el.innerHTML =
+      '<span class="badge b-warn">Type RESET in the confirmation field first.</span>';
     return;
   }
 
-  const becomePass = document.getElementById('gitlab-become-pass')?.value || '';
-
-  if (level === 'full_platform' && !becomePass) {
-    if (!confirm(
+  if (!becomePass) {
+    const proceed = confirm(
       'No GitLab sudo password provided.\n\n' +
       'GitLab CE will NOT be uninstalled from the VM automatically.\n' +
       'You will see manual instructions in the log instead.\n\n' +
       'Continue anyway?'
-    )) { return; }
+    );
+    if (!proceed) return;
   }
 
-  el.innerHTML   = '<span class="badge b-run">Resetting... do not close this tab.</span>';
-  rlog.innerHTML = '';
-  document.getElementById('reset-confirm').value = '';
-  if (document.getElementById('gitlab-become-pass')) {
-    document.getElementById('gitlab-become-pass').value = '';
-  }
+  el.innerHTML         = '<span class="badge b-run">Resetting... do not close this tab.</span>';
+  rlog.innerHTML       = '';
+  statusEl.textContent = 'Starting...';
+  setDot('dot-reset', 'running');
+  document.getElementById('reset-confirm').value      = '';
+  document.getElementById('gitlab-become-pass').value = '';
+
+  // Clear all stepper states immediately
+  ['kubernetes', 'gitlab', 'jupyterhub', 'admindashboard'].forEach(name => {
+    localStorage.removeItem('step-' + name);
+    const stepEl = document.getElementById('step-' + name);
+    if (stepEl) stepEl.classList.remove('done', 'error');
+  });
 
   let resp;
   try {
@@ -290,19 +302,22 @@ async function runReset() {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        level,
         confirmation:       'RESET',
         gitlab_become_pass: becomePass,
       }),
     });
   } catch(e) {
     el.innerHTML = '<span class="badge b-err">Could not reach backend: ' + e + '</span>';
+    setDot('dot-reset', 'error');
+    statusEl.textContent = 'Failed';
     return;
   }
 
   if (!resp.ok) {
     const d = await resp.json().catch(() => ({}));
     el.innerHTML = '<span class="badge b-err">' + (d.error || 'Request failed') + '</span>';
+    setDot('dot-reset', 'error');
+    statusEl.textContent = 'Failed';
     return;
   }
 
@@ -314,29 +329,41 @@ async function runReset() {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    const events = buf.split('\n\n'); buf = events.pop();
+    const events = buf.split('\n\n');
+    buf = events.pop();
+
     for (const ev of events) {
       const lines = ev.split('\n').filter(l => l.startsWith('data: '));
       if (!lines.length) continue;
       const msg = lines[lines.length - 1].slice(6);
+
       if (msg === '__DONE__') {
-        el.innerHTML = '<span class="badge b-ok">Reset complete. Nodes are clean.</span>';
-        setTimeout(loadResetPreview, 800);
-        ['kubernetes', 'gitlab', 'jupyterhub', 'admindashboard'].forEach(name => {
-          localStorage.removeItem('step-' + name);
-          const stepEl = document.getElementById('step-' + name);
-          if (stepEl) stepEl.classList.remove('done', 'error');
-        });
+        el.innerHTML = '<span class="badge b-ok">✓ Reset complete — platform at bare-OS state.</span>';
+        setDot('dot-reset', 'ok');
+        statusEl.textContent = 'Complete';
+        setTimeout(loadResetPreview, 1000);
       } else if (msg.startsWith('__ERROR__')) {
         el.innerHTML = '<span class="badge b-err">Failed: ' + msg + '</span>';
+        setDot('dot-reset', 'error');
+        statusEl.textContent = 'Failed';
       } else {
         const line = document.createElement('div');
-        line.textContent   = msg;
-        line.style.cssText = 'font-size:12px;font-family:monospace;padding:1px 0';
-        if (msg.includes('done'))                       line.style.color = '#4ec9b0';
-        if (msg.includes('ERROR') || msg.includes('⚠')) line.style.color = '#f44747';
+        line.style.cssText =
+          'font-size:12px;font-family:monospace;padding:1px 0;white-space:pre-wrap';
+        line.textContent = msg;
+        if (msg.includes('✓') || msg.includes('GONE') || msg.includes('complete'))
+          line.style.color = '#4ec9b0';
+        else if (msg.includes('✗') || msg.includes('ERROR') || msg.includes('FAILED'))
+          line.style.color = '#f44747';
+        else if (msg.includes('⚠') || msg.includes('WARNING') || msg.includes('manually'))
+          line.style.color = '#ce9178';
+        else if (msg.includes('Phase') || msg.includes('══'))
+          line.style.color = '#569cd6';
         rlog.appendChild(line);
         rlog.scrollTop = rlog.scrollHeight;
+        if (msg.includes('Phase 1'))      statusEl.textContent = 'Phase 1 — wiping nodes...';
+        else if (msg.includes('Phase 2')) statusEl.textContent = 'Phase 2 — removing GitLab...';
+        else if (msg.includes('Phase 3')) statusEl.textContent = 'Phase 3 — cleaning up...';
       }
     }
   }
