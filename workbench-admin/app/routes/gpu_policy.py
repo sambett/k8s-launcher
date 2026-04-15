@@ -131,7 +131,7 @@ def _build_cluster_policy(groups):
         max_gpus = g.get("max_gpus", 0)
 
         key_expr = (
-            "{{ request.object.spec.containers[].resources.limits."
+            "{{ request.object.spec.containers[0].resources.limits."
             + '"' + gpu_type + '"'
             + " || '0' }}"
         )
