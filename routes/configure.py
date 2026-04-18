@@ -1,13 +1,21 @@
 """
-routes/configure.py — Phase 3
+routes/configure.py — Phase 3 of the setup flow.
 
-Generates inventory.ini and group_vars/all.yml from dashboard inputs.
-Also wires up passwordless SSH from control plane to all worker nodes
-so Ansible delegate_to tasks and cross-node operations never prompt.
-Also writes ansible.cfg to every Ansible project on every configure run
-so StrictHostKeyChecking=no is always guaranteed regardless of prior state.
-No Ansible project file is ever modified beyond ansible.cfg.
-All output goes to generated/ which is git-ignored.
+Does three things when the user clicks "Generate configuration":
+
+1. Writes generated/inventory.ini — the Ansible host list
+2. Writes generated/group_vars/all.yml — all cluster variables
+3. Wires cplane → workers passwordless SSH
+   The control plane needs to SSH into its own workers for kubectl delegate_to
+   tasks. Since configure already knows which node is the cplane and which are
+   workers, this is the natural place to set that up. No passwords needed —
+   bootstrap already pushed the controller key to all nodes, so we connect
+   using the private key.
+4. Writes ansible.cfg to every Ansible project (via shared helper)
+   Always overwrites so StrictHostKeyChecking=no is guaranteed on every run.
+
+All generated files go to generated/ which is git-ignored.
+No Ansible project files are ever modified except ansible.cfg.
 """
 import json
 import subprocess
@@ -20,6 +28,11 @@ from pydantic import BaseModel
 
 from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH, INVENTORY_PATH, VARS_PATH, COMPAT_MATRIX_PATH
 from core.ssh import get_client_with_key, run_command
+
+# Shared helper — writes ansible.cfg with StrictHostKeyChecking=no to every
+# Ansible project directory. Always overwrites. Called here AND from bootstrap
+# so the guarantee holds regardless of which tab the user visits first.
+from core.ansible_cfg import write_ansible_cfgs
 
 router = APIRouter()
 
@@ -53,6 +66,12 @@ class ClusterConfig(BaseModel):
 # ── Replica logic ──────────────────────────────────────────────────────────────
 
 def _replica_settings(worker_count: int) -> tuple:
+    """
+    Choose Longhorn replica count based on how many workers exist.
+    1 worker  → 1 replica (can't replicate across 0 extra nodes)
+    2 workers → 2 replicas (one per worker, no soft anti-affinity needed)
+    3+ workers → 3 replicas (standard production setting)
+    """
     if worker_count == 1:
         return 1, "true"
     elif worker_count == 2:
@@ -64,6 +83,11 @@ def _replica_settings(worker_count: int) -> tuple:
 # ── File generators ────────────────────────────────────────────────────────────
 
 def _make_inventory(config: ClusterConfig) -> str:
+    """
+    Build inventory.ini content from user-supplied node details.
+    The ansible_ssh_private_key_file points to the key bootstrap generated,
+    so Ansible never needs a password.
+    """
     cp = config.control_plane
     lines = [
         "[control_plane]",
@@ -83,6 +107,11 @@ def _make_inventory(config: ClusterConfig) -> str:
 
 
 def _make_group_vars(config: ClusterConfig) -> str:
+    """
+    Build group_vars/all.yml content from user-supplied cluster config.
+    This file is the single source of truth for all Ansible roles — versions,
+    network CIDRs, Longhorn settings, node hostnames and IPs.
+    """
     cp = config.control_plane
     replica_count, soft_anti = _replica_settings(len(config.workers))
 
@@ -133,70 +162,39 @@ longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/long
 """
 
 
-# ── Write ansible.cfg to every Ansible project ────────────────────────────────
-# Always overwrites — never skips — so StrictHostKeyChecking=no is guaranteed
-# on every configure run regardless of what was there before.
-# This is the automatic fix for the OpenSSH fingerprint prompt that fires
-# when Ansible encounters a node not yet in known_hosts.
-
-_ANSIBLE_CFG_CONTENT = """\
-[defaults]
-host_key_checking = False
-stdout_callback   = yaml
-timeout           = 30
-
-[ssh_connection]
-ssh_args   = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
-pipelining = True
-"""
-
-_ANSIBLE_PROJECT_DIRS = [
-    Path("~/k8s-launcher/ansible-k8s").expanduser(),
-    Path("~/k8s-launcher/ansible-longhorn").expanduser(),
-    Path("~/k8s-launcher/ansible-monitoring").expanduser(),
-    Path("~/k8s-launcher/ansible-dashboard").expanduser(),
-    Path("~/k8s-launcher/ansible-gitlab").expanduser(),
-    Path("~/k8s-launcher/ansible-jupyterhub").expanduser(),
-    Path("~/k8s-launcher/ansible-kyverno").expanduser(),
-    Path("~/k8s-launcher/ansible-workers").expanduser(),
-    Path("~/k8s-launcher/ansible-reset").expanduser(),
-]
-
-def _write_ansible_cfgs() -> list:
-    written = []
-    for project_dir in _ANSIBLE_PROJECT_DIRS:
-        if not project_dir.exists():
-            continue
-        cfg_path = project_dir / "ansible.cfg"
-        cfg_path.write_text(_ANSIBLE_CFG_CONTENT)
-        written.append(str(cfg_path))
-    return written
-
-
-# ── Wire cplane → workers passwordless SSH ────────────────────────────────────
-# Triggered automatically during configure so that by the time any playbook
-# runs, the control plane can already SSH into every worker without prompting.
-#
-# Steps (all using controller's private key — no passwords needed here because
-# bootstrap already pushed the controller pubkey to every node):
-#   1. SSH into cplane, generate ed25519 keypair if missing
-#   2. Read cplane's public key
-#   3. For each worker: append cplane pubkey to worker's authorized_keys
-#   4. On cplane: run ssh-keyscan for each worker → populate cplane known_hosts
+# ── cplane → workers SSH wiring ────────────────────────────────────────────────
 
 def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict:
+    """
+    Give the control plane passwordless SSH access to all worker nodes.
+
+    Why this is needed:
+      Ansible playbooks use 'delegate_to: control_plane' for kubectl commands
+      (ansiblectl has no kubeconfig). When Ansible runs a delegated task it
+      opens a NEW SSH connection from ansiblectl → cplane, then cplane may
+      need to SSH to workers for certain operations. Without this wiring,
+      those connections prompt for a fingerprint or password and hang.
+
+    How it works (all using the controller's private key — no passwords):
+      Step 1 — SSH into cplane, generate its own ed25519 keypair if missing
+      Step 2 — Read cplane's public key
+      Step 3 — For each worker: push cplane's pubkey into authorized_keys
+      Step 4 — On cplane: run ssh-keyscan for each worker IP
+                → populate cplane's known_hosts so no fingerprint prompt fires
+    """
     if not workers:
         return {"status": "skipped", "message": "No workers to wire"}
 
     report = {"cplane_keygen": None, "workers": []}
 
-    # ── Step 1 & 2 — generate cplane keypair if missing, read pubkey ──────────
+    # ── Steps 1 & 2 — generate cplane keypair if missing, read pubkey ─────────
     cp_client = None
     try:
         cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
 
         _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
         if rc != 0:
+            # No keypair yet — generate one silently (-q) with no passphrase
             _, stderr, rc = run_command(
                 cp_client,
                 "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
@@ -225,12 +223,14 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
     for worker in workers:
         w_client = None
         try:
+            # Connect to worker using the CONTROLLER's key (bootstrap already pushed it)
             w_client = get_client_with_key(worker.ip, worker.ssh_user, str(SSH_KEY_PATH))
 
             cmds = [
                 "mkdir -p ~/.ssh",
                 "chmod 700 ~/.ssh",
                 f"echo '{cplane_pubkey}' >> ~/.ssh/authorized_keys",
+                # Deduplicate so running configure multiple times is safe
                 "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
                 "chmod 600 ~/.ssh/authorized_keys",
             ]
@@ -261,6 +261,8 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
                 w_client.close()
 
     # ── Step 4 — populate cplane known_hosts for all workers ──────────────────
+    # ssh-keyscan runs ON cplane (not on the controller) so cplane's own
+    # known_hosts gets the worker fingerprints.
     cp_client = None
     try:
         cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
@@ -277,12 +279,11 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
                     f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts"
                 )
 
-        run_command(
-            cp_client,
-            "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
-        )
+        # Deduplicate cplane known_hosts — safe to run multiple times
+        run_command(cp_client, "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts")
 
     except Exception as exc:
+        # Non-fatal — key push already done, this is belt-and-suspenders
         report["known_hosts_warning"] = f"cplane known_hosts population failed: {exc}"
     finally:
         if cp_client:
@@ -297,14 +298,20 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
 
 @router.post("/api/configure")
 async def configure(config: ClusterConfig):
+    """
+    Generate inventory + group_vars, wire cplane→workers SSH, write ansible.cfg.
+    All three happen atomically on every click of "Generate configuration".
+    """
+    # 1. Write generated files
     INVENTORY_PATH.write_text(_make_inventory(config))
     VARS_PATH.write_text(_make_group_vars(config))
     replica_count, soft_anti = _replica_settings(len(config.workers))
 
-    # Always write ansible.cfg to all projects — guarantees no fingerprint prompts
-    cfgs_written = _write_ansible_cfgs()
+    # 2. Write ansible.cfg to all Ansible projects (always overwrite)
+    #    Uses shared helper from core.ansible_cfg — same function as bootstrap.
+    cfgs_written = write_ansible_cfgs()
 
-    # Wire cplane → workers passwordless SSH automatically
+    # 3. Wire cplane → workers passwordless SSH
     wire_report = _wire_cplane_to_workers(config.control_plane, config.workers)
 
     return {
@@ -325,6 +332,7 @@ async def configure(config: ClusterConfig):
 
 @router.get("/api/configure/preview")
 async def preview_files():
+    """Return the current generated inventory and group_vars for UI display."""
     if not INVENTORY_PATH.exists() or not VARS_PATH.exists():
         raise HTTPException(
             status_code=404,
@@ -338,6 +346,7 @@ async def preview_files():
 
 @router.get("/api/compat-matrix")
 async def get_compat_matrix():
+    """Return the compatibility matrix for version validation in the UI."""
     if not COMPAT_MATRIX_PATH.exists():
         raise HTTPException(status_code=404, detail="compat_matrix.json not found")
     return json.loads(COMPAT_MATRIX_PATH.read_text())

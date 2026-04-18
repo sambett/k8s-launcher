@@ -3,9 +3,20 @@ routes/worker.py — Add and remove worker nodes.
 Streams progress as SSE so the UI shows live feedback.
 
 Add-worker flow:
-  Step 1 (Python)  — Paramiko SSH key bootstrap + sudo + known_hosts + cplane wiring
+  Step 1 (Python/Paramiko) — Full SSH trust setup using the password once:
+    1. Push controller public key → new worker authorized_keys
+    2. Write passwordless sudo on new worker
+    3. Verify sudo works without password
+    4. ssh-keyscan → populate controller known_hosts for new worker
+    5. Wire cplane → new worker (generate cplane keypair if missing,
+       push cplane pubkey to new worker, populate cplane known_hosts)
+    6. write_ansible_cfgs() → write ansible.cfg with StrictHostKeyChecking=no
   Step 2 (Ansible) — Full node config via ansible-workers/add-worker.yml
-  Step 3 (Python)  — Update permanent inventory
+    Installs containerd, Kubernetes packages, joins the cluster, labels node.
+  Step 3 (Python) — Update permanent inventory
+
+  After Step 1, the new worker is fully trusted by both ansiblectl and cplane.
+  The password is used exactly once and never stored.
 
 Remove-worker flow:
   (Python) — Longhorn safety check + worker count warning
@@ -30,10 +41,15 @@ from core.paths import (
 from core.ssh import get_client_with_password, get_client_with_key, run_command
 from core.ansible import run_on_cp
 
+# Shared helper — writes ansible.cfg with StrictHostKeyChecking=no to every
+# Ansible project directory. Called at the end of Step 1 so it is guaranteed
+# to be in place before the add-worker Ansible playbook runs in Step 2.
+from core.ansible_cfg import write_ansible_cfgs
+
 router = APIRouter()
 
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class NewWorker(BaseModel):
     ip: str
@@ -51,6 +67,7 @@ class RemoveWorkerRequest(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_registry_host() -> str:
+    """Read the GitLab registry host from generated jupyterhub vars."""
     from core.paths import JUPYTERHUB_VARS_PATH
     try:
         for line in JUPYTERHUB_VARS_PATH.read_text().splitlines():
@@ -62,6 +79,11 @@ def _get_registry_host() -> str:
 
 
 def _get_cp_info() -> dict:
+    """
+    Read control plane IP and SSH user from generated files.
+    IP comes from group_vars/all.yml, SSH user comes from inventory.ini.
+    Returns empty strings if files are missing — caller handles gracefully.
+    """
     cp_ip       = ""
     cp_user     = ""
     cp_hostname = ""
@@ -91,6 +113,10 @@ def _get_cp_info() -> dict:
 
 def _make_inventory(cp: dict, worker_hostname: str,
                     worker_ip: str, worker_user: str) -> str:
+    """
+    Build a minimal inventory string for a single-worker ansible-workers run.
+    The control plane entry is needed so delegate_to tasks can reach kubectl.
+    """
     return (
         f"[control_plane]\n"
         f"{cp['hostname']} ansible_host={cp['ip']} ansible_user={cp['user']}\n"
@@ -106,9 +132,11 @@ def _make_inventory(cp: dict, worker_hostname: str,
 
 def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
     """
-    Write temp inventory + vars files, call ansible-playbook, stream stdout.
-    Yields SSE strings.
-    Final yield is either 'data: __PLAYBOOK_OK__' or 'data: __PLAYBOOK_FAIL__:N'.
+    Write temp inventory + vars files, invoke ansible-playbook, stream stdout.
+
+    Temp files are always cleaned up regardless of playbook outcome.
+    Yields SSE-formatted strings.
+    Final yield is 'data: __PLAYBOOK_OK__' or 'data: __PLAYBOOK_FAIL__:N'.
     """
     inv_f = tempfile.NamedTemporaryFile(
         mode="w", suffix=".ini", delete=False, prefix="w-inv-"
@@ -159,6 +187,9 @@ def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
 # ── Add worker ────────────────────────────────────────────────────────────────
 
 def _add_worker_stream(node: NewWorker):
+    """
+    Three-step worker onboarding streamed live to the browser.
+    """
     TOTAL = 3
 
     def _step(n, msg): return f"data: PLAY [Step {n}/{TOTAL}] {msg}\n\n"
@@ -168,7 +199,10 @@ def _add_worker_stream(node: NewWorker):
     def _done():       return "data: __DONE__\n\n"
     def _err(code):    return f"data: __ERROR__:{code}\n\n"
 
-    # -- Step 1: SSH bootstrap ------------------------------------------------
+    # ── Step 1: Full SSH trust setup ──────────────────────────────────────────
+    # Uses the password once via Paramiko. After this step the new worker is
+    # fully trusted by both ansiblectl (controller) and cplane, and Ansible
+    # can run against it with zero interactive prompts.
     yield _step(1, f"Bootstrapping SSH key and sudo on {node.ip}")
 
     pub_key = SSH_PUB_KEY_PATH.read_text().strip()
@@ -176,6 +210,7 @@ def _add_worker_stream(node: NewWorker):
     try:
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
+        # 1a. Push controller public key
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -190,6 +225,8 @@ def _add_worker_stream(node: NewWorker):
                 return
         yield _ok(f"SSH key installed on {node.ip}")
 
+        # 1b. Write passwordless sudo
+        # sudo -S reads password from stdin — no TTY needed in Paramiko sessions
         _, stderr, rc = run_command(
             client,
             f"echo '{node.ssh_pass}' | sudo -S bash -c "
@@ -202,9 +239,11 @@ def _add_worker_stream(node: NewWorker):
             yield _err("sudo_setup")
             return
 
+        # 1c. Verify sudo works without password before closing session
+        # sudo -n is non-interactive — fails immediately if password required
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
-            yield _fail("Sudo verification failed")
+            yield _fail("Sudo verification failed — sudoers entry may not have applied")
             yield _err("sudo_verify")
             return
         yield _ok(f"Passwordless sudo configured on {node.ip}")
@@ -221,7 +260,9 @@ def _add_worker_stream(node: NewWorker):
         if client:
             client.close()
 
-    # Populate controller known_hosts
+    # 1d. Populate controller known_hosts for the new worker
+    # Done after closing the Paramiko session — uses local ssh-keyscan binary.
+    # This is the programmatic equivalent of typing 'yes' at the fingerprint prompt.
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -242,19 +283,32 @@ def _add_worker_stream(node: NewWorker):
                     f.write(line + "\n")
     yield _ok(f"Controller known_hosts updated for {node.ip}")
 
-    # Wire cplane -> new worker passwordless SSH
+    # 1e. Wire cplane → new worker passwordless SSH
+    # The controller already has key-based access to cplane (bootstrap pushed it).
+    # We SSH into cplane, generate its keypair if missing, read its pubkey,
+    # push it to the new worker, and populate cplane's known_hosts.
+    # Non-fatal — cluster join still works if this fails, but cplane operations
+    # targeting the new worker would prompt without it.
     cp = _get_cp_info()
     if cp["ip"] and cp["user"]:
         cp_client = None
         try:
             cp_client = get_client_with_key(cp["ip"], cp["user"], str(SSH_KEY_PATH))
+
+            # Generate cplane keypair if it doesn't exist yet
             _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
             if rc != 0:
-                run_command(cp_client,
-                            "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q")
+                run_command(
+                    cp_client,
+                    "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
+                )
+
+            # Read cplane's public key
             cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
             if rc == 0 and cplane_pubkey.strip():
                 cplane_pubkey = cplane_pubkey.strip()
+
+                # Push cplane pubkey to new worker using controller key
                 w_client = None
                 try:
                     w_client = get_client_with_key(
@@ -271,6 +325,9 @@ def _add_worker_stream(node: NewWorker):
                 finally:
                     if w_client:
                         w_client.close()
+
+                # Populate cplane known_hosts for the new worker
+                # ssh-keyscan runs ON cplane so cplane's own known_hosts is updated
                 scan_out, _, _ = run_command(
                     cp_client, f"ssh-keyscan -H -T 5 {node.ip} 2>/dev/null"
                 )
@@ -281,18 +338,29 @@ def _add_worker_stream(node: NewWorker):
                         f"echo '{scan_out.strip()}' >> ~/.ssh/known_hosts && "
                         f"sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts"
                     )
-                yield _ok(f"cplane -> {node.ip} passwordless SSH wired")
+                yield _ok(f"cplane → {node.ip} passwordless SSH wired")
         except Exception as exc:
-            yield _log(f"[WARN] cplane->worker SSH wiring failed: {exc} — continuing")
+            # Non-fatal — log warning and continue to the Ansible step
+            yield _log(f"[WARN] cplane→worker SSH wiring failed: {exc} — continuing")
         finally:
             if cp_client:
                 cp_client.close()
     else:
-        yield _log("[WARN] Could not read cplane info — skipping cplane->worker wiring")
+        yield _log("[WARN] Could not read cplane info — skipping cplane→worker wiring")
 
-    # -- Step 2: Ansible configures node and joins cluster --------------------
+    # 1f. Write ansible.cfg to all Ansible projects
+    # Always overwrites — guarantees StrictHostKeyChecking=no is in place
+    # before Step 2 runs the add-worker playbook against this new node.
+    write_ansible_cfgs()
+    yield _ok("ansible.cfg written to all Ansible projects")
+
+    # ── Step 2: Ansible configures node and joins cluster ─────────────────────
+    # Runs ansible-workers/add-worker.yml which installs containerd, Kubernetes
+    # packages, joins the cluster via kubeadm, and labels the node as a worker.
+    # All connection trust is already established by Step 1 — no prompts possible.
     yield _step(2, f"Configuring {node.hostname} and joining cluster (~8 min)")
 
+    # Always generate a fresh join token — avoids 24h TTL expiry silently failing
     join_out, join_rc = run_on_cp(
         "kubeadm token create --print-join-command 2>/dev/null"
     )
@@ -312,6 +380,7 @@ def _add_worker_stream(node: NewWorker):
     extra_vars: dict = {"join_command": join_lines[0]}
     registry_host = _get_registry_host()
     if registry_host:
+        # Pass GitLab registry host so the new worker can pull notebook images
         extra_vars["gitlab_registry_host"] = registry_host
 
     playbook_ok = False
@@ -333,7 +402,9 @@ def _add_worker_stream(node: NewWorker):
 
     yield _ok(f"{node.hostname} joined the cluster successfully")
 
-    # -- Step 3: Update permanent inventory -----------------------------------
+    # ── Step 3: Update permanent inventory ───────────────────────────────────
+    # Add the new worker to generated/inventory.ini so future playbook runs
+    # (Longhorn, JupyterHub, monitoring) automatically include it.
     yield _step(3, "Updating inventory")
 
     new_line = f"{node.hostname} ansible_host={node.ip} ansible_user={node.ssh_user}"
@@ -346,9 +417,10 @@ def _add_worker_stream(node: NewWorker):
         else:
             yield _ok(f"{node.hostname} already in inventory — no change")
 
+    # Print current cluster state for confirmation
     out, _ = run_on_cp("kubectl get nodes -o wide --no-headers")
     yield _log("")
-    yield _log("-- Current cluster nodes -----------------------------------------")
+    yield _log("── Current cluster nodes ─────────────────────────")
     for line in out.splitlines():
         yield _log(line)
 
@@ -367,21 +439,30 @@ async def add_worker(node: NewWorker):
 # ── Remove worker ─────────────────────────────────────────────────────────────
 
 def _remove_worker_stream(req: RemoveWorkerRequest):
-    import json as _lhj
+    """
+    Safe worker removal:
+    1. Longhorn safety check — abort if removing this worker would leave
+       any volume with zero healthy replicas (data loss prevention)
+    2. Worker count warning — warn if cluster drops below 2 workers
+    3. Ansible playbook — cordon, drain, delete node, kubeadm reset, cleanup
+    4. Update permanent inventory
+    """
     import time
 
     hostname = req.hostname.lower()
 
     yield f"data: Starting removal of {hostname}...\n\n"
 
-    # -- Longhorn safety check ------------------------------------------------
+    # ── Longhorn safety check ─────────────────────────────────────────────────
+    # Check if any volume has ALL its replicas on this node.
+    # If yes, removing it would cause data loss — abort and explain how to fix.
     yield f"data: Checking Longhorn volume safety for {hostname}...\n\n"
     _lh_out, _lh_rc = run_on_cp(
         "kubectl -n longhorn-system get replicas -o json 2>/dev/null"
     )
     if _lh_rc == 0 and _lh_out.strip().startswith("{"):
         try:
-            _items = _lhj.loads(_lh_out).get("items", [])
+            _items = json.loads(_lh_out).get("items", [])
             _on_node = [
                 r for r in _items if r["spec"].get("nodeID", "") == hostname
             ]
@@ -400,7 +481,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
             if _faulted:
                 yield (
                     f"data: ABORT: removing {hostname} would fault "
-                    f"{len(_faulted)} volume(s) -- 0 replicas would remain:\n\n"
+                    f"{len(_faulted)} volume(s) — 0 healthy replicas would remain:\n\n"
                 )
                 for _v in _faulted:
                     yield f"data:   - {_v}\n\n"
@@ -412,11 +493,11 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
                 return
             yield "data: ok: Longhorn safety check passed\n\n"
         except Exception as _ex:
-            yield f"data: WARNING: Longhorn check failed ({_ex}) -- proceeding\n\n"
+            yield f"data: WARNING: Longhorn check failed ({_ex}) — proceeding\n\n"
     else:
-        yield "data: WARNING: Longhorn not available -- skipping safety check\n\n"
+        yield "data: WARNING: Longhorn not available — skipping safety check\n\n"
 
-    # -- Worker count warning -------------------------------------------------
+    # ── Worker count warning ──────────────────────────────────────────────────
     worker_count_out, _ = run_on_cp(
         "kubectl get nodes --no-headers | grep -v control-plane | wc -l"
     )
@@ -436,7 +517,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         yield "data: WARNING: Proceeding in 3 seconds...\n\n"
         time.sleep(3)
 
-    # -- Ansible: drain + delete + VM cleanup ---------------------------------
+    # ── Ansible: cordon + drain + delete + cleanup ────────────────────────────
     yield f"data: Running drain, cluster removal, and VM cleanup for {hostname}...\n\n"
 
     cp = _get_cp_info()
@@ -457,7 +538,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         else:
             yield chunk
 
-    # -- Update permanent inventory -------------------------------------------
+    # ── Update permanent inventory ────────────────────────────────────────────
     if INVENTORY_PATH.exists():
         lines = [
             l for l in INVENTORY_PATH.read_text().splitlines()

@@ -1,3 +1,22 @@
+"""
+routes/bootstrap.py — Phase 0 and Phase 1 of the setup flow.
+
+Phase 0: Install Ansible on the controller machine.
+Phase 1: For each cluster node, using the password the user typed ONCE:
+  1. Push the controller's SSH public key → node's authorized_keys
+     After this the controller can SSH in without a password forever.
+  2. Write /etc/sudoers.d/ansible-nopasswd on the node
+     After this Ansible's 'become: yes' tasks never prompt for a sudo password.
+  3. Verify sudo works without a password (safety check before closing session)
+  Then after all nodes are processed:
+  4. Run ssh-keyscan for each node → write fingerprints to controller known_hosts
+     After this OpenSSH never prompts "Are you sure you want to continue connecting?"
+  5. Write ansible.cfg to every Ansible project directory
+     This is the second layer of protection — StrictHostKeyChecking=no — so even
+     if known_hosts is stale (e.g. a node was rebuilt), Ansible still connects.
+
+The password is used exactly once per node (step 1-3) and never stored anywhere.
+"""
 import os
 import shutil
 import socket
@@ -12,8 +31,16 @@ from pydantic import BaseModel
 from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH
 from core.ssh import get_client_with_password, get_client_with_key, run_command
 
+# Import the shared ansible.cfg writer so bootstrap guarantees
+# StrictHostKeyChecking=no is in place before any playbook ever runs.
+# This function always overwrites — never skips — so the guarantee holds
+# even if the file existed before with wrong content.
+from core.ansible_cfg import write_ansible_cfgs
+
 router = APIRouter()
 
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class NodeEntry(BaseModel):
     ip: str
@@ -80,12 +107,10 @@ async def install_ansible(controller: Optional[ControllerEntry] = None):
             controller.ip, controller.ssh_user, controller.ssh_pass
         )
 
-        # Check if already installed
         out, _, rc = run_command(client, "ansible --version 2>/dev/null | head -1")
         if rc == 0 and "ansible" in out.lower():
             return {"status": "ok", "message": f"Already installed on {controller.ip}: {out.strip()}"}
 
-        # Install
         _, stderr, rc = run_command(
             client,
             "pip3 install --user ansible 2>&1 && "
@@ -116,9 +141,13 @@ async def install_ansible(controller: Optional[ControllerEntry] = None):
             client.close()
 
 
-# ── Phase 1 — SSH Key Bootstrap ────────────────────────────────────────────────
+# ── Phase 1 helpers ────────────────────────────────────────────────────────────
 
 def _ensure_ssh_key() -> str:
+    """
+    Generate the controller's ed25519 keypair if it doesn't exist yet.
+    Returns the public key string ready to paste into authorized_keys.
+    """
     if not SSH_KEY_PATH.exists():
         subprocess.run(
             ["ssh-keygen", "-t", "ed25519",
@@ -130,34 +159,43 @@ def _ensure_ssh_key() -> str:
 
 def _push_key_to_node(ip: str, ssh_user: str,
                       ssh_pass: str, pub_key: str) -> dict:
+    """
+    Open ONE Paramiko session using the user's password and do three things:
+
+    1. SSH key setup — append controller pubkey to authorized_keys with correct
+       permissions so all future connections use key auth (no password).
+
+    2. Passwordless sudo — write a sudoers drop-in so Ansible's 'become: yes'
+       tasks never need a password. Uses sudo -S to inject the password via stdin
+       since there is no TTY in a Paramiko session.
+
+    3. Sudo verification — confirm the sudoers entry actually took effect before
+       we close the session. If this fails, the node is not ready for Ansible.
+
+    The password is used here and nowhere else. It is never stored.
+    """
     client = None
     try:
         client = get_client_with_password(ip, ssh_user, ssh_pass)
 
-        # ── SSH key setup ──────────────────────────────────────────────────────
-        commands = [
+        # ── 1. SSH key setup ───────────────────────────────────────────────────
+        # sort -u deduplicates — safe to run multiple times (idempotent)
+        for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
             f"echo '{pub_key}' >> ~/.ssh/authorized_keys",
             "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
             "chmod 600 ~/.ssh/authorized_keys",
-        ]
-        for cmd in commands:
+        ]:
             _, stderr, exit_code = run_command(client, cmd)
             if exit_code != 0:
                 return {"ip": ip, "status": "error",
                         "message": f"Command failed: {cmd} — {stderr}"}
 
-        # ── Passwordless sudo setup ────────────────────────────────────────────
-        # We are still authenticated with the user's password at this point so
-        # we can write the sudoers drop-in while the session is open.
-        # Uses echo piped through tee (no heredoc) to avoid shell quoting issues.
-        # The chmod 440 matches the standard sudoers.d permission requirement.
-        sudo_commands = [
-            f"echo '{ssh_user} ALL=(ALL) NOPASSWD:ALL' | sudo -S tee /etc/sudoers.d/ansible-nopasswd",
-            "sudo chmod 440 /etc/sudoers.d/ansible-nopasswd",
-        ]
-        # Pass the password via stdin for the first sudo call (-S flag)
+        # ── 2. Passwordless sudo setup ─────────────────────────────────────────
+        # sudo -S reads the password from stdin (the echo pipe).
+        # bash -c runs the two commands as root in a single sudo invocation.
+        # chmod 440 is the required permission for sudoers.d drop-in files.
         _, stderr, exit_code = run_command(
             client,
             f"echo '{ssh_pass}' | sudo -S bash -c "
@@ -169,7 +207,9 @@ def _push_key_to_node(ip: str, ssh_user: str,
             return {"ip": ip, "status": "error",
                     "message": f"Passwordless sudo setup failed — {stderr}"}
 
-        # ── Verify sudo works without password now ─────────────────────────────
+        # ── 3. Verify sudo works without password ──────────────────────────────
+        # sudo -n is non-interactive — it fails immediately if a password is needed.
+        # If this returns rc=0, the sudoers entry is active.
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
             return {"ip": ip, "status": "error",
@@ -192,11 +232,18 @@ def _push_key_to_node(ip: str, ssh_user: str,
             client.close()
 
 
-# ── Populate system known_hosts via ssh-keyscan ────────────────────────────────
-# Runs after key push so Ansible's OpenSSH client never encounters an unknown
-# host fingerprint and never prompts interactively.
-
 def _populate_known_hosts(ips: list) -> list:
+    """
+    Run ssh-keyscan against each IP and append new fingerprints to
+    ~/.ssh/known_hosts on the controller.
+
+    This is the programmatic equivalent of manually SSHing to a new host
+    and typing 'yes' at the fingerprint prompt. After this runs, OpenSSH
+    will never prompt for these IPs again.
+
+    Deduplication is done by comparing key blobs (the last field in each
+    known_hosts line) — so running this multiple times is safe.
+    """
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -215,32 +262,46 @@ def _populate_known_hosts(ips: list) -> list:
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split()
+                # Each known_hosts line: <hashed-host> <key-type> <key-blob>
+                # We deduplicate by the key blob (last field) — unique per host+keytype
                 key_blob = parts[-1] if len(parts) >= 3 else ""
                 if key_blob and key_blob not in existing:
                     with open(known_hosts_path, "a") as f:
                         f.write(line + "\n")
                     added += 1
             results.append({
-                "ip":           ip,
-                "status":       "ok",
-                "known_hosts":  f"{added} key(s) written"
+                "ip":          ip,
+                "status":      "ok",
+                "known_hosts": f"{added} key(s) written"
             })
         else:
+            # Non-fatal — key push already succeeded.
+            # ansible.cfg StrictHostKeyChecking=no is the safety net.
             results.append({
-                "ip":           ip,
-                "status":       "warn",
-                "known_hosts":  f"ssh-keyscan failed: {scan.stderr.strip() or 'no output'}"
+                "ip":          ip,
+                "status":      "warn",
+                "known_hosts": f"ssh-keyscan failed: {scan.stderr.strip() or 'no output'}"
             })
     return results
 
 
-# ── Endpoint ───────────────────────────────────────────────────────────────────
+# ── Phase 1 endpoint ───────────────────────────────────────────────────────────
 
 @router.post("/api/bootstrap/ssh")
 async def bootstrap_ssh(request: BootstrapSSHRequest):
+    """
+    For every node in the request:
+      - Push SSH key + configure passwordless sudo (one password session)
+    Then for all nodes that succeeded:
+      - Populate controller known_hosts (ssh-keyscan)
+      - Write ansible.cfg to every Ansible project (StrictHostKeyChecking=no)
+
+    After this endpoint returns OK, the controller can reach every node
+    with zero interactive prompts — Ansible is ready to run.
+    """
     pub_key = _ensure_ssh_key()
 
-    # Push SSH keys + configure passwordless sudo on every node
+    # ── Push SSH keys + configure passwordless sudo on every node ──────────────
     results = []
     for node in request.nodes:
         result = _push_key_to_node(
@@ -251,7 +312,8 @@ async def bootstrap_ssh(request: BootstrapSSHRequest):
         )
         results.append(result)
 
-    # Populate known_hosts for all successfully reached nodes
+    # ── Populate known_hosts for all successfully reached nodes ────────────────
+    # Only scan nodes where key push succeeded — no point scanning unreachable ones
     ok_ips = [r["ip"] for r in results if r["status"] == "ok"]
     if ok_ips:
         scan_results = _populate_known_hosts(ok_ips)
@@ -260,5 +322,16 @@ async def bootstrap_ssh(request: BootstrapSSHRequest):
             if r["ip"] in scan_by_ip:
                 r["known_hosts"] = scan_by_ip[r["ip"]]["known_hosts"]
 
+    # ── Write ansible.cfg to all Ansible project directories ──────────────────
+    # This is the second layer of SSH trust — belt + suspenders.
+    # known_hosts handles the normal case; StrictHostKeyChecking=no handles
+    # edge cases like a node being rebuilt with a new fingerprint.
+    # Always overwrites so stale or missing files can't cause a regression.
+    cfgs_written = write_ansible_cfgs()
+
     failed = [r for r in results if r["status"] == "error"]
-    return {"status": "error" if failed else "ok", "results": results}
+    return {
+        "status":           "error" if failed else "ok",
+        "results":          results,
+        "ansible_cfgs":     len(cfgs_written)
+    }

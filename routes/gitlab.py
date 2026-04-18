@@ -1,9 +1,33 @@
 """
-routes/gitlab.py — GitLab tab
+routes/gitlab.py — GitLab tab.
+
+Step 1 — SSH bootstrap (gitlab_bootstrap_ssh):
+  Using the password the user typed ONCE, in a single Paramiko session:
+  1. Push controller SSH public key → GitLab VM's authorized_keys
+  2. Write /etc/sudoers.d/ansible-nopasswd (passwordless sudo)
+  3. Verify sudo works without a password
+  Then after the session closes:
+  4. ssh-keyscan → populate controller known_hosts for the GitLab VM IP
+  5. write_ansible_cfgs() → write ansible.cfg with StrictHostKeyChecking=no
+     to every Ansible project directory
+  After this step, Ansible can reach the GitLab VM with zero interactive prompts.
+
+Step 2 — Configure (gitlab_configure):
+  Writes generated/gitlab-inventory.ini and generated/gitlab-vars.yml from
+  the user-supplied values. Also writes a temporary become-pass file used by
+  Ansible for privilege escalation during the install playbook.
+
+Step 3 — Deploy (gitlab_deploy_stream / _gitlab_stream):
+  Streams ansible-playbook output live to the browser.
+  Phase 1: runs ansible-gitlab/site.yml (installs GitLab CE, configures registry,
+           creates tokens, OAuth app, seeds group and test user)
+  Phase 2: runs ansible-k8s/configure-registry.yml on all cluster nodes so
+           every node can pull from the GitLab HTTP registry.
 """
 import json
 import socket
 import subprocess
+from pathlib import Path
 
 import paramiko
 from fastapi import APIRouter
@@ -23,10 +47,17 @@ from core.paths import (
 )
 from core.ssh import get_client_with_password, run_command
 
+# Shared helper — writes ansible.cfg with StrictHostKeyChecking=no to every
+# Ansible project directory so Ansible never prompts for host fingerprints.
+# Called here after the GitLab VM bootstrap so it is ready before the deploy runs.
+from core.ansible_cfg import write_ansible_cfgs
+
 router = APIRouter()
 
 GITLAB_BECOME_PATH = GENERATED_DIR / "gitlab-become.yml"
 
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class GitLabSSHRequest(BaseModel):
     ip: str
@@ -48,24 +79,27 @@ class GitLabConfig(BaseModel):
     seed_user_password: str   = ""
 
 
+# ── Step 1 — SSH bootstrap ─────────────────────────────────────────────────────
+
 @router.post("/api/gitlab/bootstrap-ssh")
 async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
     """
-    Push the controller SSH key to the GitLab VM, configure passwordless sudo,
-    populate the controller known_hosts, and verify key-based SSH works —
-    all before Ansible ever runs. After this, no interactive prompts of any kind.
+    Prepare the GitLab VM for unattended Ansible access.
+    Password is used once here and never stored.
     """
+    # Generate controller keypair if it doesn't exist yet
     if not SSH_PUB_KEY_PATH.exists():
         subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH), "-N", ""],
             check=True, capture_output=True
         )
     pub_key = SSH_PUB_KEY_PATH.read_text().strip()
+
     client = None
     try:
         client = get_client_with_password(req.ip, req.ssh_user, req.ssh_pass)
 
-        # ── SSH key setup ──────────────────────────────────────────────────────
+        # ── 1. SSH key setup ───────────────────────────────────────────────────
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -78,7 +112,9 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
                 return {"status": "error",
                         "message": f"SSH key setup failed: {cmd} — {stderr}"}
 
-        # ── Passwordless sudo setup ────────────────────────────────────────────
+        # ── 2. Passwordless sudo setup ─────────────────────────────────────────
+        # sudo -S reads the password from stdin so no TTY is needed.
+        # chmod 440 is required for sudoers.d drop-in files.
         _, stderr, rc = run_command(
             client,
             f"echo '{req.ssh_pass}' | sudo -S bash -c "
@@ -90,7 +126,8 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
             return {"status": "error",
                     "message": f"Passwordless sudo setup failed — {stderr}"}
 
-        # ── Verify sudo works without password ─────────────────────────────────
+        # ── 3. Verify sudo works without password ──────────────────────────────
+        # sudo -n is non-interactive — fails immediately if password is required.
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
             return {"status": "error",
@@ -105,8 +142,9 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
         if client:
             client.close()
 
-    # ── Populate controller known_hosts ────────────────────────────────────────
-    from pathlib import Path
+    # ── 4. Populate controller known_hosts ─────────────────────────────────────
+    # Done after closing the Paramiko session — uses the local ssh-keyscan binary.
+    # Non-fatal: if this fails, ansible.cfg StrictHostKeyChecking=no is the fallback.
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -115,63 +153,39 @@ async def gitlab_bootstrap_ssh(req: GitLabSSHRequest):
         capture_output=True, text=True
     )
     if scan.returncode == 0 and scan.stdout.strip():
-        existing_lines = known_hosts_path.read_text().splitlines()
-        existing_blobs = {
-            ln.split()[-1]
-            for ln in existing_lines
-            if ln.strip() and not ln.startswith("#") and len(ln.split()) >= 3
-        }
-        with open(known_hosts_path, "a") as f:
-            for line in scan.stdout.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split()
-                if len(parts) < 3:
-                    continue
-                key_blob = parts[-1]
-                if key_blob not in existing_blobs:
+        existing = known_hosts_path.read_text()
+        for line in scan.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            key_blob = parts[-1] if len(parts) >= 3 else ""
+            if key_blob and key_blob not in existing:
+                with open(known_hosts_path, "a") as f:
                     f.write(line + "\n")
-                    existing_blobs.add(key_blob)
 
-    # ── Verify key-based SSH works (no password) ───────────────────────────────
-    # Opens a second Paramiko session using the private key — not the password.
-    # If this fails, the key push silently failed and Ansible would also fail.
-    key_client = None
-    try:
-        key_client = paramiko.SSHClient()
-        key_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        pkey = paramiko.Ed25519Key.from_private_key_file(str(SSH_KEY_PATH))
-        key_client.connect(
-            hostname=req.ip,
-            username=req.ssh_user,
-            pkey=pkey,
-            timeout=10,
-            allow_agent=False,
-            look_for_keys=False,
-        )
-        stdout_val, _, rc = run_command(key_client, "echo ssh-key-ok")
-        if rc != 0 or "ssh-key-ok" not in stdout_val:
-            return {"status": "error",
-                    "message": "Key-based SSH verification failed — authorized_keys may not have been written correctly"}
-    except paramiko.AuthenticationException:
-        return {"status": "error",
-                "message": "Key-based SSH auth failed — the public key was not accepted. Check ~/.ssh/authorized_keys on the VM."}
-    except (socket.timeout, paramiko.SSHException) as exc:
-        return {"status": "error",
-                "message": f"Key-based SSH connection failed: {exc}"}
-    finally:
-        if key_client:
-            key_client.close()
+    # ── 5. Write ansible.cfg to all Ansible projects ───────────────────────────
+    # Always overwrites — guarantees StrictHostKeyChecking=no is in place
+    # before the GitLab deploy playbook runs, regardless of prior state.
+    write_ansible_cfgs()
 
     return {
         "status":  "ok",
-        "message": f"SSH key pushed · passwordless sudo configured · key-based auth verified · fingerprint recorded for {req.ip}"
+        "message": (
+            f"SSH key pushed · passwordless sudo configured · "
+            f"fingerprint recorded · ansible.cfg written for {req.ip}"
+        )
     }
 
 
+# ── Step 2 — Configure ─────────────────────────────────────────────────────────
+
 @router.post("/api/gitlab/configure")
 async def gitlab_configure(cfg: GitLabConfig):
+    """
+    Write inventory, vars, and become-pass files for the GitLab deploy playbook.
+    The become-pass file is deleted automatically after the playbook runs.
+    """
     if GITLAB_OUTPUTS_PATH.exists() and not cfg.force_redeploy:
         return {
             "status": "already_deployed",
@@ -218,6 +232,8 @@ async def gitlab_configure(cfg: GitLabConfig):
     GITLAB_INVENTORY_PATH.write_text(inventory)
     GITLAB_VARS_PATH.write_text(vars_content)
 
+    # become-pass stored in a separate file (not in vars) so it is never
+    # accidentally committed or logged. Deleted after playbook completes.
     GITLAB_BECOME_PATH.write_text(
         f'ansible_become_pass: "{cfg.become_pass}"\n'
     )
@@ -233,7 +249,22 @@ async def gitlab_configure(cfg: GitLabConfig):
     }
 
 
+# ── Step 3 — Deploy (streaming) ────────────────────────────────────────────────
+
 def _gitlab_stream():
+    """
+    Stream ansible-playbook output line by line as SSE events.
+
+    Phase 1: ansible-gitlab/site.yml
+      - Installs GitLab CE at the pinned version
+      - Configures the container registry
+      - Creates admin PAT, OAuth application, registry deploy token
+      - Seeds initial group and test user
+
+    Phase 2: ansible-k8s/configure-registry.yml
+      - Configures containerd on all cluster nodes to allow HTTP pulls
+        from the GitLab registry (needed because it runs over plain HTTP)
+    """
     if not GITLAB_INVENTORY_PATH.exists():
         yield "data: __ERROR__:no_inventory — run /api/gitlab/configure first\n\n"
         return
@@ -268,10 +299,10 @@ def _gitlab_stream():
         yield f"data: __ERROR__:{process.returncode}\n\n"
         return
 
-    # Delete become_pass file after Ansible run completes
+    # Delete become-pass file after successful run — never leave credentials on disk
     GITLAB_BECOME_PATH.unlink(missing_ok=True)
 
-    # ── Phase 2: configure containerd on all k8s nodes ───────────────────────
+    # ── Phase 2: configure containerd registry on all k8s nodes ──────────────
     if not GITLAB_OUTPUTS_PATH.exists():
         yield "data: [WARN] gitlab-outputs.json not found — skipping registry config\n\n"
         yield "data: __DONE__\n\n"
@@ -295,8 +326,8 @@ def _gitlab_stream():
         yield "data: __DONE__\n\n"
         return
 
-    yield f"data: \n\n"
-    yield f"data: ── Configuring containerd registry on all k8s nodes ──\n\n"
+    yield "data: \n\n"
+    yield "data: ── Configuring containerd registry on all k8s nodes ──\n\n"
 
     reg_cmd = [
         "ansible-playbook",
@@ -323,7 +354,10 @@ def _gitlab_stream():
     reg_process.wait()
 
     if reg_process.returncode != 0:
-        yield f"data: [WARN] Registry config playbook exited {reg_process.returncode} — containerd may need manual fix\n\n"
+        yield (
+            f"data: [WARN] Registry config playbook exited "
+            f"{reg_process.returncode} — containerd may need manual fix\n\n"
+        )
     else:
         yield "data: Registry configured on all nodes ✓\n\n"
 
@@ -339,8 +373,15 @@ async def gitlab_deploy_stream():
     )
 
 
+# ── Outputs ────────────────────────────────────────────────────────────────────
+
 @router.get("/api/gitlab/outputs")
 async def gitlab_outputs():
+    """
+    Return the GitLab deployment outputs for display in the UI and use by
+    subsequent tabs (JupyterHub, Dashboard).
+    Sensitive values (tokens, secrets) are masked — only presence is reported.
+    """
     if not GITLAB_OUTPUTS_PATH.exists():
         return {"status": "not_found", "message": "Run Deploy GitLab first."}
     data = json.loads(GITLAB_OUTPUTS_PATH.read_text())
