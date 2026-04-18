@@ -82,14 +82,41 @@ class RemoveWorkerRequest(BaseModel):
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _get_registry_host() -> str:
-    """Read the GitLab registry host from generated jupyterhub vars."""
-    from core.paths import JUPYTERHUB_VARS_PATH
+    """
+    Read the GitLab registry host for containerd insecure registry config.
+
+    Primary source:   generated/jupyterhub-vars.yml
+                      Present when JupyterHub has been deployed.
+
+    Fallback source:  generated/gitlab-outputs.json
+                      Present when GitLab has been deployed but JupyterHub
+                      has not yet. Without this fallback, a worker added
+                      before JupyterHub is deployed gets no hosts.toml and
+                      fails ImagePullBackOff when notebooks are later
+                      scheduled on it — with no obvious link to add-worker.
+    """
+    from core.paths import JUPYTERHUB_VARS_PATH, GITLAB_OUTPUTS_PATH
+    import json as _json
+
+    # Primary: jupyterhub vars
     try:
         for line in JUPYTERHUB_VARS_PATH.read_text().splitlines():
             if line.strip().startswith("jhub_registry_host:"):
-                return line.split(":", 1)[1].strip().strip('"').strip("'")
+                val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
     except Exception:
         pass
+
+    # Fallback: gitlab outputs
+    try:
+        data = _json.loads(GITLAB_OUTPUTS_PATH.read_text())
+        val = data.get("gitlab_registry_host", "")
+        if val:
+            return val
+    except Exception:
+        pass
+
     return ""
 
 
@@ -318,7 +345,7 @@ def _update_cluster_hosts(hostname: str, ip: str) -> str:
 def _propagate_etc_hosts(hostname: str, ip: str) -> str:
     """
     Add the new worker's hostname/IP to /etc/hosts on all existing cluster
-    nodes (control plane + existing workers) via an Ansible ad-hoc command.
+    nodes (control plane + existing workers) via a direct Ansible ad-hoc call.
 
     Why this is needed:
       - Longhorn uses node hostnames for inter-replica iSCSI paths. If an
@@ -326,24 +353,35 @@ def _propagate_etc_hosts(hostname: str, ip: str) -> str:
         communication fails after a volume rebalance.
       - Ansible delegate_to tasks that resolve by hostname also depend on this.
 
-    We use the permanent generated inventory (which was just updated by
-    _update_inventory) so the control plane and all existing workers are
-    targeted. The new worker itself already has its own entry from the
-    cluster_hosts loop inside the worker_add Ansible role.
+    Why subprocess.run and NOT run_on_cp:
+      run_on_cp executes its argument as a shell command on ansiblecplane.
+      INVENTORY_PATH is a local path on ansiblectl — it does not exist on
+      ansiblecplane. Running "ansible all -i /home/ansiblectl/..." as a shell
+      command on the control plane would fail with "No such file or directory".
+      subprocess.run executes Ansible directly from ansiblectl where the
+      inventory file actually lives.
     """
     if not INVENTORY_PATH.exists():
         return "inventory not found — skipping /etc/hosts propagation"
 
-    out, rc = run_on_cp(
-        f"ansible all -i {INVENTORY_PATH} "
-        f"-m lineinfile "
-        f"-a \"path=/etc/hosts line='{ip} {hostname}' state=present\" "
-        f"--become "
-        f"--extra-vars @{VARS_PATH}"
+    result = subprocess.run(
+        [
+            "ansible", "all",
+            "-i", str(INVENTORY_PATH),
+            "-m", "lineinfile",
+            "-a", f"path=/etc/hosts line='{ip} {hostname}' state=present",
+            "--become",
+            "--extra-vars", f"@{VARS_PATH}",
+        ],
+        capture_output=True,
+        text=True,
     )
-    if rc == 0:
+    if result.returncode == 0:
         return f"/etc/hosts updated on all existing nodes with {ip} {hostname}"
-    return f"WARNING: /etc/hosts propagation partially failed (rc={rc}) — check manually"
+    return (
+        f"WARNING: /etc/hosts propagation partially failed "
+        f"(rc={result.returncode}) — check manually"
+    )
 
 
 def _validate_new_worker(hostname: str, ip: str) -> list:
@@ -417,21 +455,24 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         )
 
     # ── 5. iscsi_tcp module loaded ─────────────────────────────────────────────
-    # Connect directly to the new worker using key-based auth (bootstrap already
-    # established this) rather than going through the control plane.
-    try:
-        w_client = get_client_with_key(ip, None)
-    except Exception:
-        w_client = None
-
-    # We need the ssh_user to connect — read it from the inventory line for
-    # this host. Fall back to a direct check via run_on_cp ansible ad-hoc.
-    out, rc = run_on_cp(
-        f"ansible {hostname} -i {INVENTORY_PATH} "
-        f"-m shell -a 'lsmod | grep -c iscsi_tcp' "
-        f"--extra-vars @{VARS_PATH}"
+    # Run Ansible ad-hoc directly from ansiblectl (this process) targeting the
+    # new worker. We cannot use run_on_cp here because run_on_cp executes on
+    # ansiblecplane — INVENTORY_PATH is a local path on ansiblectl and does
+    # not exist on the control plane.
+    iscsi_result = subprocess.run(
+        [
+            "ansible", hostname,
+            "-i", str(INVENTORY_PATH),
+            "-m", "shell",
+            "-a", "lsmod | grep -c iscsi_tcp",
+            "--extra-vars", f"@{VARS_PATH}",
+        ],
+        capture_output=True,
+        text=True,
     )
-    count_str = out.strip().splitlines()[-1].strip() if out.strip() else "0"
+    # Ansible ad-hoc output: last non-empty line is the command result
+    iscsi_out = (iscsi_result.stdout + iscsi_result.stderr).strip()
+    count_str = iscsi_out.splitlines()[-1].strip() if iscsi_out else "0"
     if count_str.isdigit() and int(count_str) > 0:
         results.append(f"✓ iscsi_tcp module is loaded on {hostname}")
     else:
@@ -441,12 +482,20 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         )
 
     # ── 6. multipathd inactive ─────────────────────────────────────────────────
-    out, rc = run_on_cp(
-        f"ansible {hostname} -i {INVENTORY_PATH} "
-        f"-m shell -a 'systemctl is-active multipathd 2>/dev/null || echo inactive' "
-        f"--extra-vars @{VARS_PATH}"
+    # Same pattern — direct subprocess from ansiblectl, not via run_on_cp.
+    mpd_result = subprocess.run(
+        [
+            "ansible", hostname,
+            "-i", str(INVENTORY_PATH),
+            "-m", "shell",
+            "-a", "systemctl is-active multipathd 2>/dev/null || echo inactive",
+            "--extra-vars", f"@{VARS_PATH}",
+        ],
+        capture_output=True,
+        text=True,
     )
-    mpd_status = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    mpd_out = (mpd_result.stdout + mpd_result.stderr).strip()
+    mpd_status = mpd_out.splitlines()[-1].strip() if mpd_out else ""
     if mpd_status in ("inactive", "unknown", "failed"):
         results.append(f"✓ multipathd is inactive on {hostname}")
     else:
