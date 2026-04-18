@@ -485,16 +485,24 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         capture_output=True,
         text=True,
     )
-    # Ansible ad-hoc output: last non-empty line is the command result
+    # Ansible ad-hoc output: last non-empty line is the command result.
+    # Empty output means Ansible could not reach the node — report that
+    # explicitly rather than falling back to "0" which looks like a module
+    # check result when it is actually a connection failure.
     iscsi_out = (iscsi_result.stdout + iscsi_result.stderr).strip()
-    count_str = iscsi_out.splitlines()[-1].strip() if iscsi_out else "0"
-    if count_str.isdigit() and int(count_str) > 0:
-        results.append(f"✓ iscsi_tcp module is loaded on {hostname}")
-    else:
+    if not iscsi_out:
         results.append(
-            f"✗ iscsi_tcp module NOT loaded on {hostname} — "
-            f"Longhorn volume attach will fail. Run: modprobe iscsi_tcp"
+            f"⚠ iscsi_tcp check skipped — could not reach {hostname} via Ansible"
         )
+    else:
+        count_str = iscsi_out.splitlines()[-1].strip()
+        if count_str.isdigit() and int(count_str) > 0:
+            results.append(f"✓ iscsi_tcp module is loaded on {hostname}")
+        else:
+            results.append(
+                f"✗ iscsi_tcp module NOT loaded on {hostname} — "
+                f"Longhorn volume attach will fail. Run: modprobe iscsi_tcp"
+            )
 
     # ── 6. multipathd inactive ─────────────────────────────────────────────────
     # Same pattern — direct subprocess from ansiblectl, not via run_on_cp.
@@ -510,15 +518,20 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         text=True,
     )
     mpd_out = (mpd_result.stdout + mpd_result.stderr).strip()
-    mpd_status = mpd_out.splitlines()[-1].strip() if mpd_out else ""
-    if mpd_status in ("inactive", "unknown", "failed"):
-        results.append(f"✓ multipathd is inactive on {hostname}")
-    else:
+    if not mpd_out:
         results.append(
-            f"✗ multipathd is active on {hostname} — "
-            f"this will interfere with Longhorn iSCSI volume attachment. "
-            f"Run: systemctl stop multipathd && systemctl disable multipathd"
+            f"⚠ multipathd check skipped — could not reach {hostname} via Ansible"
         )
+    else:
+        mpd_status = mpd_out.splitlines()[-1].strip()
+        if mpd_status in ("inactive", "unknown", "failed"):
+            results.append(f"✓ multipathd is inactive on {hostname}")
+        else:
+            results.append(
+                f"✗ multipathd is active on {hostname} — "
+                f"this will interfere with Longhorn iSCSI volume attachment. "
+                f"Run: systemctl stop multipathd && systemctl disable multipathd"
+            )
 
     return results
 
@@ -604,6 +617,20 @@ def _add_worker_stream(node: NewWorker):
         # ─────────────────────
         # Fail fast before installing anything. All nodes must run the same
         # Ubuntu LTS — Longhorn kernel modules differ between versions.
+        # Check both ID (must be ubuntu) and VERSION_ID (must be supported)
+        # so a Debian system that reports VERSION_ID=22.04 is caught early.
+        os_id_out, _, _ = run_command(
+            client,
+            "grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
+        )
+        if os_id_out.strip() != "ubuntu":
+            yield _fail(
+                f"Unsupported distribution: '{os_id_out.strip()}'. "
+                f"Only Ubuntu 22.04 and 24.04 are supported."
+            )
+            yield _err("os_check")
+            return
+
         out, _, _ = run_command(
             client,
             "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
@@ -611,8 +638,8 @@ def _add_worker_stream(node: NewWorker):
         os_ver = out.strip()
         if os_ver not in ("22.04", "24.04"):
             yield _fail(
-                f"Unsupported OS: Ubuntu {os_ver}. "
-                f"Only Ubuntu 22.04 and 24.04 are supported."
+                f"Unsupported Ubuntu version: {os_ver}. "
+                f"Only 22.04 and 24.04 are supported."
             )
             yield _err("os_check")
             return
@@ -803,7 +830,14 @@ def _add_worker_stream(node: NewWorker):
     yield _step(3, "Updating cluster state")
 
     # 3a. Update generated/inventory.ini — insert inside [workers] section
+    # Treat WARNING returns as hard failures — if the [workers] section is
+    # missing the inventory is corrupt and future playbook runs will skip
+    # this node entirely. Better to abort visibly than continue silently.
     inv_result = _update_inventory(node.hostname.lower(), node.ip, node.ssh_user)
+    if inv_result.startswith("WARNING"):
+        yield _fail(inv_result)
+        yield _err("inventory_update")
+        return
     yield _ok(inv_result)
 
     # 3b. Update cluster_hosts in generated/group_vars/all.yml
@@ -893,7 +927,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
                     if r["spec"]["volumeName"] == _v
                     and r["spec"].get("nodeID", "") != hostname
                     and r["status"].get("currentState", "")
-                    not in ("stopped", "error", "")
+                    not in ("stopped", "error", "failed", "")
                 ]
                 if len(_survivors) == 0:
                     _faulted.append(_v)
