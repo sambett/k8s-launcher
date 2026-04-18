@@ -66,6 +66,19 @@ from core.ansible_cfg import write_ansible_cfgs
 router = APIRouter()
 
 
+# ── File structure ─────────────────────────────────────────────────────────────
+#
+#   Models              NewWorker, RemoveWorkerRequest
+#   Helpers             _get_registry_host, _get_cp_info,
+#                       _make_worker_inventory, _call_playbook,
+#                       _update_inventory, _update_cluster_hosts,
+#                       _propagate_etc_hosts, _validate_new_worker
+#   Add-worker          _add_worker_stream → POST /api/cluster/add-worker
+#   Remove-worker       _remove_worker_stream → POST /api/cluster/remove-worker
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 class NewWorker(BaseModel):
