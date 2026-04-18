@@ -17,9 +17,12 @@ Add-worker flow:
     1h. write_ansible_cfgs() → StrictHostKeyChecking=no in all Ansible dirs
 
   Step 2 (Ansible) — Full node config via ansible-workers/add-worker.yml
-    Runs longhorn_prereqs then worker_add:
-      - Longhorn OS prerequisites (iscsi_tcp, cryptsetup, multipathd)
-      - containerd, Kubernetes packages, join, labels
+    Runs 5 focused roles in sequence:
+      - node_prep:            OS prep, /etc/hosts, swap, kernel modules, sysctl
+      - longhorn_prereqs:     iscsi_tcp, cryptsetup, multipathd
+      - containerd:           container runtime install and config
+      - kubernetes_packages:  kubelet + kubeadm at pinned version
+      - worker_join:          stale state cleanup, kubeadm join, labels
 
   Step 3 (Python) — Inventory and state updates
     - Update generated/inventory.ini — new worker inserted inside [workers]
@@ -41,7 +44,6 @@ Remove-worker flow (unchanged):
   (Python) — Update permanent inventory
 """
 import json
-import re
 import socket
 import subprocess
 import tempfile
@@ -156,7 +158,7 @@ def _make_worker_inventory(cp: dict, worker_hostname: str,
                             worker_ip: str, worker_user: str) -> str:
     """
     Build a minimal inventory string for a single-worker ansible-workers run.
-    The control plane entry is required so delegate_to tasks inside worker_add
+    The control plane entry is required so delegate_to tasks inside worker_join
     can reach kubectl on the control plane.
     """
     return (
@@ -540,7 +542,7 @@ def _add_worker_stream(node: NewWorker):
         # ─────────────────────────────────────────
         # Read the VM's actual current hostname. If it does not match what the
         # operator typed in the form, set it now via hostnamectl.
-        # This MUST happen before the Ansible role runs because worker_add
+        # This MUST happen before the Ansible role runs because node_prep
         # asserts ansible_hostname == inventory_hostname. A mismatch causes
         # the playbook to fail 8+ minutes in with a confusing assertion error.
         actual_hostname, _, rc = run_command(client, "hostname")
@@ -551,7 +553,7 @@ def _add_worker_stream(node: NewWorker):
             )
             _, stderr, rc = run_command(
                 client,
-                f"sudo hostnamectl set-hostname {node.hostname}"
+                f"echo '{node.ssh_pass}' | sudo -S hostnamectl set-hostname {node.hostname}"
             )
             if rc != 0:
                 yield _fail(f"Could not set hostname: {stderr}")
@@ -574,7 +576,8 @@ def _add_worker_stream(node: NewWorker):
         if rc != 0:
             _, stderr, set_rc = run_command(
                 client,
-                f"echo '127.0.1.1 {node.hostname}' | sudo tee -a /etc/hosts"
+                f"echo '{node.ssh_pass}' | sudo -S sh -c "
+                f""echo '127.0.1.1 {node.hostname}' >> /etc/hosts""
             )
             if set_rc != 0:
                 yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
@@ -736,7 +739,7 @@ def _add_worker_stream(node: NewWorker):
     # ── Step 2: Ansible configures node and joins cluster ──────────────────────
     # Runs ansible-workers/add-worker.yml which executes:
     #   - longhorn_prereqs role (iscsi_tcp, cryptsetup, multipathd)
-    #   - worker_add role (containerd, k8s packages, join, labels)
+    #   - worker_join role handles the actual cluster join and labeling
     yield _step(2, f"Configuring {node.hostname} and joining cluster (~10 min)")
 
     # Always generate a fresh join token immediately before the playbook runs.
