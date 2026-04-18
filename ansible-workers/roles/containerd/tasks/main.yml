@@ -1,0 +1,140 @@
+---
+# ansible-workers/roles/containerd/tasks/main.yml
+#
+# Installs and configures the containerd container runtime.
+#
+# Responsibilities:
+#   - Install containerd at the exact pinned version from group_vars
+#   - Write config.toml with the three settings Kubernetes requires
+#   - Verify the config was written correctly
+#   - Configure the insecure GitLab registry (when deployed)
+#
+# All tasks are idempotent — safe to re-run for runtime repair.
+
+
+# ── Install ───────────────────────────────────────────────────────────────────
+- name: containerd | Create apt keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: containerd | Install Docker GPG key
+  shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod 644 /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+# ansible_distribution_release resolves to "jammy" on Ubuntu 22.04 and
+# "noble" on 24.04 automatically — no hardcoded codename.
+- name: containerd | Add Docker apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: >
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    mode: '0644'
+
+# Pin containerd to the exact same version as the existing cluster nodes.
+# containerd_version comes from group_vars/all.yml — the single source of
+# truth shared with initial cluster provisioning — so this node is always
+# consistent with the rest of the cluster.
+# allow_downgrade: yes handles the case where the VM came pre-installed with
+# a newer containerd from a previous failed provisioning attempt.
+- name: containerd | Install containerd.io at pinned version
+  apt:
+    name: "containerd.io={{ containerd_version }}-1"
+    state: present
+    update_cache: yes
+    allow_downgrade: yes
+
+- name: containerd | Hold containerd.io version
+  dpkg_selections:
+    name: containerd.io
+    selection: hold
+
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+# Write config.toml with three critical changes from the containerd default:
+#
+#   SystemdCgroup = true
+#     Must match kubelet's cgroup driver. A mismatch causes pod OOM kills
+#     and kubelet instability under memory pressure.
+#
+#   config_path = "/etc/containerd/certs.d"
+#     Enables per-registry directory config. Without this the hosts.toml
+#     written below for the GitLab registry is never consulted and all pulls
+#     from the local registry fail with:
+#     "http: server gave HTTP response to HTTPS client"
+#
+#   sandbox_image
+#     Pin the pause container to the same version used by the existing cluster.
+#     pause_image comes from group_vars/all.yml — same source as initial deploy.
+#     A mismatch causes spurious pod restarts during node pressure events.
+- name: containerd | Write config.toml with required settings
+  shell: |
+    containerd config default \
+      | sed 's/SystemdCgroup = false/SystemdCgroup = true/' \
+      | sed 's|config_path = ""|config_path = "/etc/containerd/certs.d"|g' \
+      | sed 's|sandbox_image = ".*"|sandbox_image = "{{ pause_image }}"|' \
+      > /etc/containerd/config.toml
+  changed_when: true
+
+# Verify the sed pipeline produced the expected output before restarting.
+# If a future containerd release changes its default config format the seds
+# above will silently produce the wrong file. This assert catches that
+# immediately rather than letting it surface as a mysterious failure later.
+- name: containerd | Verify config.toml has expected values
+  shell: |
+    grep -c 'SystemdCgroup = true' /etc/containerd/config.toml && \
+    grep -c 'config_path = "/etc/containerd/certs.d"' /etc/containerd/config.toml
+  register: containerd_config_check
+  changed_when: false
+  failed_when: containerd_config_check.rc != 0
+
+- name: containerd | Restart and enable containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+
+- name: containerd | Verify containerd is active after restart
+  command: systemctl is-active containerd
+  register: cri_check
+  retries: 5
+  delay: 5
+  until: cri_check.stdout == "active"
+  changed_when: false
+
+
+# ── GitLab insecure registry ───────────────────────────────────────────────────
+# The GitLab container registry runs over plain HTTP (no TLS).
+# containerd's certs.d mechanism allows per-registry override of TLS behaviour.
+#
+# This block is conditional — only runs when the launcher passes in
+# gitlab_registry_host, which it does whenever GitLab has already been deployed.
+# New workers added before GitLab is deployed skip this block entirely and
+# get the registry config applied later via ansible-k8s/configure-registry.yml.
+- name: containerd | Create certs.d directory for GitLab registry
+  file:
+    path: "/etc/containerd/certs.d/{{ gitlab_registry_host }}"
+    state: directory
+    mode: "0755"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+
+- name: containerd | Write hosts.toml for insecure GitLab registry
+  copy:
+    dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
+    content: |
+      server = "http://{{ gitlab_registry_host }}"
+
+      [host."http://{{ gitlab_registry_host }}"]
+        capabilities = ["pull", "resolve", "push"]
+        skip_verify = true
+    mode: "0644"
+  when: gitlab_registry_host is defined and gitlab_registry_host != ''
+  notify: restart containerd

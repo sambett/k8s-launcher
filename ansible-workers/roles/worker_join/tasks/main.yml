@@ -1,0 +1,132 @@
+---
+# ansible-workers/roles/worker_join/tasks/main.yml
+#
+# Joins the node to the existing Kubernetes cluster and applies labels.
+# This is the only role that touches the Kubernetes control plane —
+# all other roles in this project are pure OS/runtime configuration.
+#
+# Responsibilities:
+#   - Detect and clean up stale state from a previous failed join
+#   - Run kubeadm join with the provided token
+#   - Resolve the actual Kubernetes node name by IP
+#   - Apply the worker role label
+#   - Apply the Longhorn disk creation label
+#
+# Variables required:
+#   join_command  — injected by the launcher via --extra-vars
+#                   generated fresh immediately before this playbook runs
+#
+# All kubectl tasks are delegated to the control plane node because worker
+# nodes do not have a kubeconfig or kubectl installed.
+
+
+# ── Stale state detection and cleanup ─────────────────────────────────────────
+# Three possible states for /etc/kubernetes/kubelet.conf:
+#
+#   A) File absent
+#      Clean node. Proceed to join normally.
+#
+#   B) File present AND kubelet active
+#      Node already joined successfully in a previous run.
+#      Skip join — this is an idempotent re-run.
+#
+#   C) File present AND kubelet inactive
+#      Prior join partially failed. The file was written but kubelet never
+#      came up cleanly. If we skip the join here (as a naive idempotency
+#      check would), the node is absent from the cluster but Ansible
+#      proceeds to the label step, which then fails with a confusing
+#      "node not found" error rather than a clear join error.
+#      Fix: kubeadm reset -f cleans /etc/kubernetes, CNI state, and
+#      iptables rules so the join below starts from a truly clean state.
+
+- name: worker_join | Check if kubelet.conf exists
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: worker_join | Check if kubelet is actually active
+  command: systemctl is-active kubelet
+  register: kubelet_active
+  changed_when: false
+  failed_when: false
+  when: kubelet_conf.stat.exists
+
+- name: worker_join | Clean up stale partial join state (case C)
+  command: kubeadm reset -f
+  when:
+    - kubelet_conf.stat.exists
+    - kubelet_active.stdout is defined
+    - kubelet_active.stdout != "active"
+  changed_when: true
+
+
+# ── Join cluster ──────────────────────────────────────────────────────────────
+# Re-stat after the potential reset so the join condition reflects the
+# current state accurately regardless of which case we were in above.
+- name: worker_join | Re-check kubelet.conf after potential reset
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf_final
+
+# join_command is generated fresh by the launcher immediately before calling
+# this playbook — token expiry is never a concern.
+- name: worker_join | Run kubeadm join
+  shell: "{{ join_command }}"
+  become: yes
+  when: not kubelet_conf_final.stat.exists
+
+
+# ── Resolve node name ─────────────────────────────────────────────────────────
+# The Kubernetes node name assigned by kubelet may differ from the Ansible
+# inventory_hostname. We look up the actual name by matching InternalIP
+# against ansible_host — the IP is the stable, unambiguous identifier.
+#
+# Why not use inventory_hostname directly:
+#   kubelet derives its node name from the VM hostname at join time.
+#   If the VM hostname differs from the inventory entry for any reason,
+#   using inventory_hostname would target the wrong node or find nothing.
+#   Matching by IP is always correct.
+#
+# Retry window: 12 × 15s = 180s
+#   Slow VMs and loaded clusters can take well over 60s for kubelet to
+#   complete registration and the node to become visible in the API server.
+#   Failing here leaves the node joined but unlabeled — which silently
+#   breaks JupyterHub scheduling and Longhorn node discovery.
+- name: worker_join | Resolve actual Kubernetes node name by IP
+  shell: >-
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+    | grep '{{ ansible_host }}'
+    | awk '{print $1}'
+  register: k8s_node_name
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
+  retries: 12
+  delay: 15
+  until: k8s_node_name.rc == 0 and k8s_node_name.stdout != ""
+  changed_when: false
+
+
+# ── Apply labels ──────────────────────────────────────────────────────────────
+# Both labels are applied via the control plane — workers have no kubeconfig.
+
+# Marks the node with the worker role so it appears correctly in
+# kubectl get nodes and so any scheduling rules targeting the worker
+# role label work correctly on this node.
+- name: worker_join | Label node as worker
+  command: >
+    kubectl label node {{ k8s_node_name.stdout }}
+    node-role.kubernetes.io/worker=worker --overwrite
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
+
+# Without this label Longhorn never registers the node's disk in its
+# scheduling pool. The node appears Ready in kubectl but is invisible
+# to Longhorn — no replicas will be placed here regardless of how much
+# disk space is available.
+- name: worker_join | Label node for Longhorn default disk creation
+  command: >
+    kubectl label node {{ k8s_node_name.stdout }}
+    node.longhorn.io/create-default-disk=true --overwrite
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no

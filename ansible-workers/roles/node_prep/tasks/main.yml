@@ -1,0 +1,137 @@
+---
+# ansible-workers/roles/node_prep/tasks/main.yml
+#
+# Prepares the base OS for Kubernetes.
+# Scope: everything that belongs to the OS layer — not the container runtime,
+# not storage, not Kubernetes packages. Just the node itself.
+#
+# Responsibilities:
+#   - OS version gate (fail fast before installing anything)
+#   - Stale apt state repair
+#   - Base packages
+#   - /etc/hosts cluster entries
+#   - Swap disabled permanently
+#   - Kernel modules required by Kubernetes networking
+#   - sysctl parameters required by Kubernetes networking
+#
+# All tasks are idempotent — safe to re-run for node repair.
+
+
+# ── OS gate ───────────────────────────────────────────────────────────────────
+# Hard-fail immediately on unsupported OS versions.
+# All nodes in the cluster must run the same Ubuntu LTS release.
+# Longhorn's iSCSI and device-mapper kernel modules differ between Ubuntu 22.04
+# (kernel 5.15) and 24.04 (kernel 6.8). A mixed-OS cluster produces
+# non-deterministic storage failures that are difficult to diagnose.
+- name: node_prep | Assert supported OS version
+  assert:
+    that: ansible_distribution_version in ['22.04', '24.04']
+    fail_msg: >
+      Unsupported OS: Ubuntu {{ ansible_distribution_version }}.
+      Only Ubuntu 22.04 and 24.04 are supported.
+      All cluster nodes must run the same OS version.
+    success_msg: "OS check passed: Ubuntu {{ ansible_distribution_version }}"
+
+
+# ── Stale apt state repair ────────────────────────────────────────────────────
+# If a previous failed run downloaded the Docker GPG key but did not complete
+# writing the repo list, apt update will fail with a missing key error the next
+# time. Remove the stale repo entry so it gets recreated cleanly by the
+# containerd role.
+- name: node_prep | Check if Docker GPG key exists
+  stat:
+    path: /etc/apt/keyrings/docker.gpg
+  register: docker_gpg_stat
+
+- name: node_prep | Remove stale docker.list if GPG key is absent
+  file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+  when: not docker_gpg_stat.stat.exists
+
+
+# ── Base packages ─────────────────────────────────────────────────────────────
+# Minimum set required before any Kubernetes or container runtime packages
+# can be installed. curl and gpg are needed for adding apt repositories.
+# socat is required by some kubelet internal operations.
+- name: node_prep | Install base packages
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+      - socat
+      - openssh-server
+    state: present
+    update_cache: yes
+
+
+# ── /etc/hosts ────────────────────────────────────────────────────────────────
+# Populate the new worker's hosts file with all current cluster members.
+# Required for:
+#   - Longhorn inter-node iSCSI paths (uses hostnames for replica communication)
+#   - Ansible delegate_to tasks that resolve the control plane by hostname
+#   - kubelet resolving the API server hostname during join
+- name: node_prep | Populate /etc/hosts with cluster nodes
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ item.ip }} {{ item.name }}"
+    regexp: "^{{ item.ip }}\\s"
+  loop: "{{ cluster_hosts }}"
+
+
+# ── Swap ──────────────────────────────────────────────────────────────────────
+# kubelet refuses to start if swap is active.
+# Disable it now and remove it from fstab so it stays off after a reboot.
+- name: node_prep | Disable swap now
+  command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+  changed_when: ansible_swaptotal_mb > 0
+
+- name: node_prep | Remove swap from /etc/fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '#\1'
+
+- name: node_prep | Delete swapfile if present
+  file:
+    path: /swapfile
+    state: absent
+
+
+# ── Kernel modules ────────────────────────────────────────────────────────────
+# overlay:      required by containerd for the overlayfs storage driver
+# br_netfilter: required for iptables to see bridged traffic (Calico/kube-proxy)
+# Both must be loaded now AND persisted so they survive a reboot.
+- name: node_prep | Load overlay kernel module
+  modprobe:
+    name: overlay
+    state: present
+
+- name: node_prep | Load br_netfilter kernel module
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: node_prep | Persist kernel modules across reboots
+  copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: "overlay\nbr_netfilter\n"
+
+
+# ── sysctl ────────────────────────────────────────────────────────────────────
+# Allow iptables to see traffic crossing Linux bridges (required by Calico and
+# kube-proxy) and enable IP forwarding (required for pod routing across nodes).
+- name: node_prep | Set required sysctl parameters
+  copy:
+    dest: /etc/sysctl.d/kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+
+- name: node_prep | Apply sysctl settings
+  command: sysctl --system
+  changed_when: false

@@ -1,0 +1,18 @@
+---
+# ansible-workers/roles/containerd/handlers/main.yml
+#
+# Handlers are tasks that only run when explicitly notified by another task.
+# They run exactly once at the end of the play, regardless of how many tasks
+# notify them — so if both the config and the registry tasks change in the
+# same run, containerd is still only restarted once.
+#
+# This handler is notified by:
+#   - containerd | Write hosts.toml for insecure GitLab registry
+#     (only when the registry config file actually changed)
+
+- name: restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: yes
+  become: yes

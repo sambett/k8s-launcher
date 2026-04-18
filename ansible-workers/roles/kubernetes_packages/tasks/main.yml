@@ -1,0 +1,91 @@
+---
+# ansible-workers/roles/kubernetes_packages/tasks/main.yml
+#
+# Installs the Kubernetes node packages at the exact pinned version.
+#
+# Responsibilities:
+#   - Add the Kubernetes apt repository
+#   - Install kubelet and kubeadm at the version matching the cluster
+#   - Hold both packages to prevent unintended upgrades
+#   - Enable kubelet
+#
+# Note: kubectl is intentionally omitted. Worker nodes do not need the
+# Kubernetes CLI — they only need the node agent (kubelet) and the join
+# tool (kubeadm). Installing kubectl on workers would be unnecessary
+# package bloat and could cause version confusion during troubleshooting.
+#
+# All tasks are idempotent — safe to re-run for package repair.
+
+
+# ── Derived version facts ──────────────────────────────────────────────────────
+# Build the exact apt package version strings from the base version number
+# that comes from group_vars/all.yml.
+#
+#   kubernetes_version "1.30.5"
+#     → k8s_pkg      "1.30.5-1.1"   (used in apt install)
+#     → k8s_repo_ver "v1.30"         (used in apt repo URL)
+#
+# These facts are set here rather than in group_vars so this role remains
+# self-contained — it derives what it needs from the single source of truth
+# (kubernetes_version) without requiring callers to pre-compute variants.
+- name: kubernetes_packages | Set k8s package version facts
+  set_fact:
+    k8s_pkg:      "{{ kubernetes_version }}-1.1"
+    k8s_repo_ver: "v{{ kubernetes_version.split('.')[:2] | join('.') }}"
+
+
+# ── Repository ────────────────────────────────────────────────────────────────
+# The Kubernetes apt repository is versioned by minor version (e.g. v1.30).
+# Each minor version has its own repo URL — this is how Kubernetes prevents
+# accidental minor version upgrades via apt upgrade.
+- name: kubernetes_packages | Install Kubernetes GPG key
+  shell: |
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_ver }}/deb/Release.key \
+      | gpg --batch --yes --dearmor \
+          -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: kubernetes_packages | Add Kubernetes apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: >
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
+      https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_ver }}/deb/ /
+    mode: '0644'
+
+
+# ── Install ───────────────────────────────────────────────────────────────────
+- name: kubernetes_packages | Install kubelet and kubeadm at pinned version
+  apt:
+    name:
+      - "kubelet={{ k8s_pkg }}"
+      - "kubeadm={{ k8s_pkg }}"
+    state: present
+    update_cache: yes
+
+
+# ── Version hold ──────────────────────────────────────────────────────────────
+# Prevent apt upgrade from silently upgrading Kubernetes packages.
+# A version skew between nodes breaks the cluster — kubeadm enforces a strict
+# N±1 minor version policy between control plane and workers.
+- name: kubernetes_packages | Hold kubelet and kubeadm at current version
+  dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+
+
+# ── Enable kubelet ────────────────────────────────────────────────────────────
+# Enable kubelet so it starts automatically after a reboot.
+# kubelet will fail to start here if the node has not joined yet — this is
+# expected and normal. systemd will keep retrying until kubeadm join
+# writes /etc/kubernetes/kubelet.conf, at which point kubelet starts cleanly.
+- name: kubernetes_packages | Enable kubelet
+  systemd:
+    name: kubelet
+    enabled: yes
+    state: started
+  failed_when: false

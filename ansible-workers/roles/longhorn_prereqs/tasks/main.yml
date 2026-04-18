@@ -1,0 +1,101 @@
+---
+# ansible-workers/roles/longhorn_prereqs/tasks/main.yml
+#
+# Ensures every new worker node satisfies Longhorn's OS-level requirements
+# BEFORE the node joins the cluster.
+#
+# Why before join:
+#   Longhorn's DaemonSet pod is scheduled on a node the moment it becomes Ready.
+#   If these prerequisites are not in place at that moment, the first volume
+#   attach attempt on this node will fail — often silently, with no clear error.
+#
+# This role is intentionally isolated so it can be:
+#   - Re-run independently for node repair without triggering a re-join
+#   - Kept in sync with ansible-longhorn/roles/longhorn_prereqs which runs
+#     the same tasks during initial cluster-wide Longhorn deployment
+#
+# All tasks are idempotent — safe to run multiple times.
+
+
+# ── Packages ──────────────────────────────────────────────────────────────────
+
+# open-iscsi:  provides the iSCSI initiator userspace tooling (iscsiadm, iscsid).
+#              Longhorn uses iSCSI to attach block volumes to nodes.
+# nfs-common:  required for NFS-backed backup targets in Longhorn.
+# cryptsetup:  required by Longhorn for device-mapper operations even when
+#              volume encryption is not in use. It is a documented Longhorn
+#              OS prerequisite — omitting it causes subtle CSI attach failures.
+- name: longhorn_prereqs | Install required packages
+  apt:
+    name:
+      - open-iscsi
+      - nfs-common
+      - cryptsetup
+    state: present
+    update_cache: yes
+  become: yes
+
+
+# ── iscsid service ────────────────────────────────────────────────────────────
+# open-iscsi installs iscsid but does not guarantee it is running.
+# Longhorn needs iscsid active to initiate iSCSI sessions for volume attachment.
+# Explicitly start it here rather than relying on socket activation.
+- name: longhorn_prereqs | Ensure iscsid is started and enabled
+  systemd:
+    name: iscsid
+    state: started
+    enabled: yes
+  become: yes
+
+
+# ── iscsi_tcp kernel module ───────────────────────────────────────────────────
+# iscsid provides the userspace side of iSCSI. iscsi_tcp provides the
+# kernel-level data transport. Both are required.
+#
+# Without iscsi_tcp:
+#   - iscsid starts and initiates sessions without error
+#   - Longhorn schedules replicas on this node without error
+#   - Volume attaches hang indefinitely with no useful log message
+#   - Symptom: volume stuck in "Attaching" on the new node only,
+#     working fine on all existing nodes
+#
+# Must be loaded now AND persisted so it survives a reboot.
+- name: longhorn_prereqs | Load iscsi_tcp kernel module
+  community.general.modprobe:
+    name: iscsi_tcp
+    state: present
+  become: yes
+
+- name: longhorn_prereqs | Persist iscsi_tcp kernel module across reboots
+  copy:
+    dest: /etc/modules-load.d/iscsi_tcp.conf
+    content: "iscsi_tcp\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: yes
+
+
+# ── multipathd ────────────────────────────────────────────────────────────────
+# Ubuntu 22.04 ships with multipathd active by default.
+#
+# The problem:
+#   When Longhorn attaches a volume via iSCSI, the kernel presents a new block
+#   device (e.g. /dev/sdb). multipathd monitors for new block devices and races
+#   to claim them for multipath management before Longhorn's CSI driver can use
+#   them. Once multipathd claims the device, Longhorn cannot mount it.
+#
+# Symptom:
+#   Volumes that attach and mount correctly on existing nodes (which had
+#   multipathd disabled during initial Longhorn setup) fail silently on the
+#   new node. The Longhorn UI shows the replica as scheduled but never healthy.
+#
+# failed_when: false because multipathd may not be installed on all base images.
+# This task is a no-op if the service does not exist.
+- name: longhorn_prereqs | Disable and stop multipathd
+  systemd:
+    name: multipathd
+    state: stopped
+    enabled: no
+  become: yes
+  failed_when: false

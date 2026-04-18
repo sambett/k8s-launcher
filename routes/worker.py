@@ -4,26 +4,44 @@ Streams progress as SSE so the UI shows live feedback.
 
 Add-worker flow:
   Step 1 (Python/Paramiko) — Full SSH trust setup using the password once:
-    1. Push controller public key → new worker authorized_keys
-    2. Write passwordless sudo on new worker
-    3. Verify sudo works without password
-    4. ssh-keyscan → populate controller known_hosts for new worker
-    5. Wire cplane → new worker (generate cplane keypair if missing,
-       push cplane pubkey to new worker, populate cplane known_hosts)
-    6. write_ansible_cfgs() → write ansible.cfg with StrictHostKeyChecking=no
+    1a. Read actual VM hostname, set it via hostnamectl if it does not match
+        what the operator typed. Add 127.0.1.1 <hostname> to /etc/hosts on
+        the new VM — required for kubelet to register under the correct name.
+    1b. OS version check — fail fast before installing anything.
+    1c. Push controller public key → new worker authorized_keys
+    1d. Write passwordless sudo on new worker
+    1e. Verify sudo works without password
+    1f. ssh-keyscan → populate controller known_hosts for new worker
+    1g. Wire cplane → new worker (generate cplane keypair if missing,
+        push cplane pubkey to new worker, populate cplane known_hosts)
+    1h. write_ansible_cfgs() → StrictHostKeyChecking=no in all Ansible dirs
+
   Step 2 (Ansible) — Full node config via ansible-workers/add-worker.yml
-    Installs containerd, Kubernetes packages, joins the cluster, labels node.
-  Step 3 (Python) — Update permanent inventory
+    Runs longhorn_prereqs then worker_add:
+      - Longhorn OS prerequisites (iscsi_tcp, cryptsetup, multipathd)
+      - containerd, Kubernetes packages, join, labels
 
-  After Step 1, the new worker is fully trusted by both ansiblectl and cplane.
-  The password is used exactly once and never stored.
+  Step 3 (Python) — Inventory and state updates
+    - Update generated/inventory.ini — new worker inserted inside [workers]
+    - Update cluster_hosts in generated/group_vars/all.yml — so future
+      playbook runs propagate the new node to /etc/hosts on all nodes
+    - Propagate new worker's hostname/IP to /etc/hosts on existing nodes
 
-Remove-worker flow:
+  Step 4 (Python) — Validation before declaring success
+    - Node is Ready in kubectl
+    - Longhorn has discovered the node
+    - Longhorn node has a schedulable disk
+    - calico-node DaemonSet pod is Running on the new node
+    - iscsi_tcp module is loaded on the new node
+    - multipathd is inactive on the new node
+
+Remove-worker flow (unchanged):
   (Python) — Longhorn safety check + worker count warning
   (Ansible) — Drain + delete + VM cleanup via ansible-workers/remove-worker.yml
   (Python) — Update permanent inventory
 """
 import json
+import re
 import socket
 import subprocess
 import tempfile
@@ -41,9 +59,6 @@ from core.paths import (
 from core.ssh import get_client_with_password, get_client_with_key, run_command
 from core.ansible import run_on_cp
 
-# Shared helper — writes ansible.cfg with StrictHostKeyChecking=no to every
-# Ansible project directory. Called at the end of Step 1 so it is guaranteed
-# to be in place before the add-worker Ansible playbook runs in Step 2.
 from core.ansible_cfg import write_ansible_cfgs
 
 router = APIRouter()
@@ -64,7 +79,7 @@ class RemoveWorkerRequest(BaseModel):
     ssh_user: str
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _get_registry_host() -> str:
     """Read the GitLab registry host from generated jupyterhub vars."""
@@ -80,8 +95,7 @@ def _get_registry_host() -> str:
 
 def _get_cp_info() -> dict:
     """
-    Read control plane IP and SSH user from generated files.
-    IP comes from group_vars/all.yml, SSH user comes from inventory.ini.
+    Read control plane IP, SSH user, and hostname from generated files.
     Returns empty strings if files are missing — caller handles gracefully.
     """
     cp_ip       = ""
@@ -111,11 +125,12 @@ def _get_cp_info() -> dict:
     return {"ip": cp_ip, "user": cp_user, "hostname": cp_hostname}
 
 
-def _make_inventory(cp: dict, worker_hostname: str,
-                    worker_ip: str, worker_user: str) -> str:
+def _make_worker_inventory(cp: dict, worker_hostname: str,
+                            worker_ip: str, worker_user: str) -> str:
     """
     Build a minimal inventory string for a single-worker ansible-workers run.
-    The control plane entry is needed so delegate_to tasks can reach kubectl.
+    The control plane entry is required so delegate_to tasks inside worker_add
+    can reach kubectl on the control plane.
     """
     return (
         f"[control_plane]\n"
@@ -133,7 +148,6 @@ def _make_inventory(cp: dict, worker_hostname: str,
 def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
     """
     Write temp inventory + vars files, invoke ansible-playbook, stream stdout.
-
     Temp files are always cleaned up regardless of playbook outcome.
     Yields SSE-formatted strings.
     Final yield is 'data: __PLAYBOOK_OK__' or 'data: __PLAYBOOK_FAIL__:N'.
@@ -184,13 +198,279 @@ def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
         yield f"data: __PLAYBOOK_FAIL__:{proc.returncode}\n\n"
 
 
+def _update_inventory(hostname: str, ip: str, ssh_user: str) -> str:
+    """
+    Insert the new worker into the [workers] section of generated/inventory.ini.
+
+    The previous implementation used str.replace("[all:vars]", ...) which
+    placed the new entry BETWEEN the [workers] section and [all:vars] — outside
+    any group. Ansible's INI parser puts such hosts into 'ungrouped', making
+    every future playbook run targeting the [workers] group silently exclude
+    the new node.
+
+    This implementation finds the [workers] section header and appends the new
+    line as the last entry in that section, before the next blank line or group.
+    """
+    if not INVENTORY_PATH.exists():
+        return "inventory file not found"
+
+    new_line = (
+        f"{hostname} ansible_host={ip} ansible_user={ssh_user}"
+    )
+    inv = INVENTORY_PATH.read_text()
+
+    # Idempotency check — do not add duplicates
+    if new_line in inv:
+        return f"{hostname} already in inventory — no change"
+
+    lines  = inv.splitlines()
+    result = []
+    inserted    = False
+    in_workers  = False
+
+    for i, line in enumerate(lines):
+        result.append(line)
+
+        # We are now inside the [workers] section
+        if line.strip() == "[workers]":
+            in_workers = True
+            continue
+
+        if in_workers and not inserted:
+            # A blank line or a new section header marks the end of [workers].
+            # Insert our new entry just before that boundary.
+            if line.strip() == "" or line.strip().startswith("["):
+                # Remove the line we just appended, insert new entry first,
+                # then put the boundary line back.
+                result.pop()
+                result.append(new_line)
+                result.append(line)
+                inserted    = True
+                in_workers  = False
+
+    # Edge case: [workers] is the last section with no trailing blank line
+    if in_workers and not inserted:
+        result.append(new_line)
+        inserted = True
+
+    if not inserted:
+        return f"WARNING: [workers] section not found — {hostname} not added to inventory"
+
+    INVENTORY_PATH.write_text("\n".join(result) + "\n")
+    return f"inventory updated — {hostname} added to [workers]"
+
+
+def _update_cluster_hosts(hostname: str, ip: str) -> str:
+    """
+    Append the new worker to the cluster_hosts list in
+    generated/group_vars/all.yml.
+
+    cluster_hosts is a YAML list used by multiple Ansible playbooks to
+    populate /etc/hosts on all nodes. If this list is not updated, any future
+    playbook run (ansible-longhorn, ansible-k8s, ansible-workers) will omit
+    the new node from /etc/hosts propagation across the cluster.
+
+    We do a simple line-based append rather than full YAML parsing to avoid
+    introducing a PyYAML dependency on the write path and to preserve the
+    existing file's formatting and comments exactly.
+    """
+    if not VARS_PATH.exists():
+        return "group_vars file not found"
+
+    entry = f"  - {{ name: {hostname}, ip: \"{ip}\" }}"
+    content = VARS_PATH.read_text()
+
+    # Idempotency check
+    if hostname in content and ip in content:
+        return f"{hostname} already in cluster_hosts — no change"
+
+    lines  = content.splitlines()
+    result = []
+    in_cluster_hosts = False
+    inserted         = False
+
+    for line in lines:
+        result.append(line)
+
+        if line.strip().startswith("cluster_hosts:"):
+            in_cluster_hosts = True
+            continue
+
+        if in_cluster_hosts and not inserted:
+            # A line that does NOT start with "  -" marks the end of the list
+            if not line.startswith("  -"):
+                result.insert(len(result) - 1, entry)
+                inserted         = True
+                in_cluster_hosts = False
+
+    # Edge case: cluster_hosts is the last block in the file
+    if in_cluster_hosts and not inserted:
+        result.append(entry)
+        inserted = True
+
+    if not inserted:
+        return "WARNING: cluster_hosts key not found — entry not added"
+
+    VARS_PATH.write_text("\n".join(result) + "\n")
+    return f"cluster_hosts updated — {hostname} appended"
+
+
+def _propagate_etc_hosts(hostname: str, ip: str) -> str:
+    """
+    Add the new worker's hostname/IP to /etc/hosts on all existing cluster
+    nodes (control plane + existing workers) via an Ansible ad-hoc command.
+
+    Why this is needed:
+      - Longhorn uses node hostnames for inter-replica iSCSI paths. If an
+        existing node cannot resolve the new worker's hostname, replica
+        communication fails after a volume rebalance.
+      - Ansible delegate_to tasks that resolve by hostname also depend on this.
+
+    We use the permanent generated inventory (which was just updated by
+    _update_inventory) so the control plane and all existing workers are
+    targeted. The new worker itself already has its own entry from the
+    cluster_hosts loop inside the worker_add Ansible role.
+    """
+    if not INVENTORY_PATH.exists():
+        return "inventory not found — skipping /etc/hosts propagation"
+
+    out, rc = run_on_cp(
+        f"ansible all -i {INVENTORY_PATH} "
+        f"-m lineinfile "
+        f"-a \"path=/etc/hosts line='{ip} {hostname}' state=present\" "
+        f"--become "
+        f"--extra-vars @{VARS_PATH}"
+    )
+    if rc == 0:
+        return f"/etc/hosts updated on all existing nodes with {ip} {hostname}"
+    return f"WARNING: /etc/hosts propagation partially failed (rc={rc}) — check manually"
+
+
+def _validate_new_worker(hostname: str, ip: str) -> list:
+    """
+    Run post-join validation checks via the control plane before declaring
+    success. Returns a list of result strings for display in the SSE stream.
+
+    Checks:
+      1. Node is Ready in kubectl
+      2. Longhorn has discovered the node (nodes.longhorn.io resource exists)
+      3. Longhorn node has at least one schedulable disk
+      4. calico-node DaemonSet pod is Running on the new node
+      5. iscsi_tcp kernel module is loaded on the new node
+      6. multipathd is inactive on the new node
+    """
+    results = []
+
+    # ── 1. Node Ready ──────────────────────────────────────────────────────────
+    out, rc = run_on_cp(
+        f"kubectl get node {hostname} --no-headers 2>/dev/null | awk '{{print $2}}'"
+    )
+    # Strip the Ansible ad-hoc header before reading the value
+    status = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if "Ready" in status and "NotReady" not in status:
+        results.append(f"✓ Node {hostname} is Ready")
+    else:
+        results.append(f"✗ Node {hostname} is not Ready — status: {status or 'unknown'}")
+
+    # ── 2. Longhorn node discovery ─────────────────────────────────────────────
+    out, rc = run_on_cp(
+        f"kubectl get nodes.longhorn.io {hostname} -n longhorn-system "
+        f"--no-headers 2>/dev/null | wc -l"
+    )
+    count = out.strip().splitlines()[-1].strip() if out.strip() else "0"
+    if count.isdigit() and int(count) > 0:
+        results.append(f"✓ Longhorn has discovered {hostname}")
+    else:
+        results.append(
+            f"✗ Longhorn has not discovered {hostname} yet — "
+            f"check node.longhorn.io/create-default-disk label"
+        )
+
+    # ── 3. Longhorn schedulable disk ───────────────────────────────────────────
+    out, rc = run_on_cp(
+        f"kubectl get nodes.longhorn.io {hostname} -n longhorn-system "
+        f"-o jsonpath='{{.spec.disks}}' 2>/dev/null"
+    )
+    disk_data = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if disk_data and disk_data != "{}":
+        results.append(f"✓ Longhorn disk registered on {hostname}")
+    else:
+        results.append(
+            f"⚠ Longhorn disk not yet registered on {hostname} — "
+            f"may appear within 30s as Longhorn reconciles"
+        )
+
+    # ── 4. calico-node pod Running ─────────────────────────────────────────────
+    out, rc = run_on_cp(
+        f"kubectl get pod -n calico-system -l k8s-app=calico-node "
+        f"--field-selector spec.nodeName={hostname} "
+        f"--no-headers 2>/dev/null | awk '{{print $3}}'"
+    )
+    calico_status = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if calico_status == "Running":
+        results.append(f"✓ calico-node pod is Running on {hostname}")
+    else:
+        results.append(
+            f"⚠ calico-node pod not yet Running on {hostname} "
+            f"(status: {calico_status or 'not found'}) — "
+            f"may still be pulling image"
+        )
+
+    # ── 5. iscsi_tcp module loaded ─────────────────────────────────────────────
+    # Connect directly to the new worker using key-based auth (bootstrap already
+    # established this) rather than going through the control plane.
+    try:
+        w_client = get_client_with_key(ip, None)
+    except Exception:
+        w_client = None
+
+    # We need the ssh_user to connect — read it from the inventory line for
+    # this host. Fall back to a direct check via run_on_cp ansible ad-hoc.
+    out, rc = run_on_cp(
+        f"ansible {hostname} -i {INVENTORY_PATH} "
+        f"-m shell -a 'lsmod | grep -c iscsi_tcp' "
+        f"--extra-vars @{VARS_PATH}"
+    )
+    count_str = out.strip().splitlines()[-1].strip() if out.strip() else "0"
+    if count_str.isdigit() and int(count_str) > 0:
+        results.append(f"✓ iscsi_tcp module is loaded on {hostname}")
+    else:
+        results.append(
+            f"✗ iscsi_tcp module NOT loaded on {hostname} — "
+            f"Longhorn volume attach will fail. Run: modprobe iscsi_tcp"
+        )
+
+    # ── 6. multipathd inactive ─────────────────────────────────────────────────
+    out, rc = run_on_cp(
+        f"ansible {hostname} -i {INVENTORY_PATH} "
+        f"-m shell -a 'systemctl is-active multipathd 2>/dev/null || echo inactive' "
+        f"--extra-vars @{VARS_PATH}"
+    )
+    mpd_status = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if mpd_status in ("inactive", "unknown", "failed"):
+        results.append(f"✓ multipathd is inactive on {hostname}")
+    else:
+        results.append(
+            f"✗ multipathd is active on {hostname} — "
+            f"this will interfere with Longhorn iSCSI volume attachment. "
+            f"Run: systemctl stop multipathd && systemctl disable multipathd"
+        )
+
+    return results
+
+
 # ── Add worker ────────────────────────────────────────────────────────────────
 
 def _add_worker_stream(node: NewWorker):
     """
-    Three-step worker onboarding streamed live to the browser.
+    Four-step worker onboarding streamed live to the browser.
+
+      Step 1 — Bootstrap SSH trust (Python/Paramiko)
+      Step 2 — Configure node and join cluster (Ansible)
+      Step 3 — Update inventory, group_vars, and /etc/hosts on existing nodes
+      Step 4 — Validate the node is fully operational
     """
-    TOTAL = 3
+    TOTAL = 4
 
     def _step(n, msg): return f"data: PLAY [Step {n}/{TOTAL}] {msg}\n\n"
     def _ok(msg):      return f"data: ok: {msg}\n\n"
@@ -199,10 +479,7 @@ def _add_worker_stream(node: NewWorker):
     def _done():       return "data: __DONE__\n\n"
     def _err(code):    return f"data: __ERROR__:{code}\n\n"
 
-    # ── Step 1: Full SSH trust setup ──────────────────────────────────────────
-    # Uses the password once via Paramiko. After this step the new worker is
-    # fully trusted by both ansiblectl (controller) and cplane, and Ansible
-    # can run against it with zero interactive prompts.
+    # ── Step 1: Full SSH trust setup ───────────────────────────────────────────
     yield _step(1, f"Bootstrapping SSH key and sudo on {node.ip}")
 
     pub_key = SSH_PUB_KEY_PATH.read_text().strip()
@@ -210,7 +487,73 @@ def _add_worker_stream(node: NewWorker):
     try:
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
-        # 1a. Push controller public key
+        # 1a. Hostname verification and correction
+        # ─────────────────────────────────────────
+        # Read the VM's actual current hostname. If it does not match what the
+        # operator typed in the form, set it now via hostnamectl.
+        # This MUST happen before the Ansible role runs because worker_add
+        # asserts ansible_hostname == inventory_hostname. A mismatch causes
+        # the playbook to fail 8+ minutes in with a confusing assertion error.
+        actual_hostname, _, rc = run_command(client, "hostname")
+        if actual_hostname.strip() != node.hostname.strip():
+            yield _log(
+                f"VM hostname is '{actual_hostname.strip()}', "
+                f"expected '{node.hostname}' — setting it now"
+            )
+            _, stderr, rc = run_command(
+                client,
+                f"sudo hostnamectl set-hostname {node.hostname}"
+            )
+            if rc != 0:
+                yield _fail(f"Could not set hostname: {stderr}")
+                yield _err("hostname_set")
+                return
+            yield _ok(f"Hostname set to {node.hostname}")
+        else:
+            yield _ok(f"Hostname already correct: {actual_hostname.strip()}")
+
+        # 1b. Ensure 127.0.1.1 <hostname> is in /etc/hosts on the new VM
+        # ─────────────────────────────────────────────────────────────────
+        # kubelet uses this entry to determine the node's registration name.
+        # Without it, kubelet may register under "localhost" or an unexpected
+        # name, causing the node to appear in kubectl get nodes with the wrong
+        # name and the Ansible label step to fail finding it by IP.
+        _, _, rc = run_command(
+            client,
+            f"grep -c '^127\\.0\\.1\\.1 {node.hostname}$' /etc/hosts"
+        )
+        if rc != 0:
+            _, stderr, set_rc = run_command(
+                client,
+                f"echo '127.0.1.1 {node.hostname}' | sudo tee -a /etc/hosts"
+            )
+            if set_rc != 0:
+                yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
+                yield _err("hosts_127")
+                return
+            yield _ok(f"Added 127.0.1.1 {node.hostname} to /etc/hosts")
+        else:
+            yield _ok(f"127.0.1.1 {node.hostname} already in /etc/hosts")
+
+        # 1c. OS version check
+        # ─────────────────────
+        # Fail fast before installing anything. All nodes must run the same
+        # Ubuntu LTS — Longhorn kernel modules differ between versions.
+        out, _, _ = run_command(
+            client,
+            "grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
+        )
+        os_ver = out.strip()
+        if os_ver not in ("22.04", "24.04"):
+            yield _fail(
+                f"Unsupported OS: Ubuntu {os_ver}. "
+                f"Only Ubuntu 22.04 and 24.04 are supported."
+            )
+            yield _err("os_check")
+            return
+        yield _ok(f"OS check passed: Ubuntu {os_ver}")
+
+        # 1d. Push controller public key → authorized_keys
         for cmd in [
             "mkdir -p ~/.ssh",
             "chmod 700 ~/.ssh",
@@ -225,7 +568,7 @@ def _add_worker_stream(node: NewWorker):
                 return
         yield _ok(f"SSH key installed on {node.ip}")
 
-        # 1b. Write passwordless sudo
+        # 1e. Write passwordless sudo
         # sudo -S reads password from stdin — no TTY needed in Paramiko sessions
         _, stderr, rc = run_command(
             client,
@@ -239,7 +582,7 @@ def _add_worker_stream(node: NewWorker):
             yield _err("sudo_setup")
             return
 
-        # 1c. Verify sudo works without password before closing session
+        # 1f. Verify sudo works without password
         # sudo -n is non-interactive — fails immediately if password required
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
@@ -260,9 +603,8 @@ def _add_worker_stream(node: NewWorker):
         if client:
             client.close()
 
-    # 1d. Populate controller known_hosts for the new worker
+    # 1g. Populate controller known_hosts for the new worker
     # Done after closing the Paramiko session — uses local ssh-keyscan binary.
-    # This is the programmatic equivalent of typing 'yes' at the fingerprint prompt.
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -276,26 +618,22 @@ def _add_worker_stream(node: NewWorker):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            parts = line.split()
+            parts    = line.split()
             key_blob = parts[-1] if len(parts) >= 3 else ""
             if key_blob and key_blob not in existing:
                 with open(known_hosts_path, "a") as f:
                     f.write(line + "\n")
     yield _ok(f"Controller known_hosts updated for {node.ip}")
 
-    # 1e. Wire cplane → new worker passwordless SSH
-    # The controller already has key-based access to cplane (bootstrap pushed it).
-    # We SSH into cplane, generate its keypair if missing, read its pubkey,
-    # push it to the new worker, and populate cplane's known_hosts.
+    # 1h. Wire cplane → new worker passwordless SSH
     # Non-fatal — cluster join still works if this fails, but cplane operations
-    # targeting the new worker would prompt without it.
+    # targeting the new worker (Ansible delegate_to tasks) would prompt without it.
     cp = _get_cp_info()
     if cp["ip"] and cp["user"]:
         cp_client = None
         try:
-            cp_client = get_client_with_key(cp["ip"], cp["user"], str(SSH_KEY_PATH))
+            cp_client = get_client_with_key(cp["ip"], cp["user"])
 
-            # Generate cplane keypair if it doesn't exist yet
             _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
             if rc != 0:
                 run_command(
@@ -303,17 +641,13 @@ def _add_worker_stream(node: NewWorker):
                     "ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N '' -q"
                 )
 
-            # Read cplane's public key
             cplane_pubkey, _, rc = run_command(cp_client, "cat ~/.ssh/id_ed25519.pub")
             if rc == 0 and cplane_pubkey.strip():
                 cplane_pubkey = cplane_pubkey.strip()
 
-                # Push cplane pubkey to new worker using controller key
                 w_client = None
                 try:
-                    w_client = get_client_with_key(
-                        node.ip, node.ssh_user, str(SSH_KEY_PATH)
-                    )
+                    w_client = get_client_with_key(node.ip, node.ssh_user)
                     for cmd in [
                         "mkdir -p ~/.ssh",
                         "chmod 700 ~/.ssh",
@@ -326,10 +660,9 @@ def _add_worker_stream(node: NewWorker):
                     if w_client:
                         w_client.close()
 
-                # Populate cplane known_hosts for the new worker
-                # ssh-keyscan runs ON cplane so cplane's own known_hosts is updated
                 scan_out, _, _ = run_command(
-                    cp_client, f"ssh-keyscan -H -T 5 {node.ip} 2>/dev/null"
+                    cp_client,
+                    f"ssh-keyscan -H -T 5 {node.ip} 2>/dev/null"
                 )
                 if scan_out.strip():
                     run_command(
@@ -340,7 +673,6 @@ def _add_worker_stream(node: NewWorker):
                     )
                 yield _ok(f"cplane → {node.ip} passwordless SSH wired")
         except Exception as exc:
-            # Non-fatal — log warning and continue to the Ansible step
             yield _log(f"[WARN] cplane→worker SSH wiring failed: {exc} — continuing")
         finally:
             if cp_client:
@@ -348,19 +680,18 @@ def _add_worker_stream(node: NewWorker):
     else:
         yield _log("[WARN] Could not read cplane info — skipping cplane→worker wiring")
 
-    # 1f. Write ansible.cfg to all Ansible projects
-    # Always overwrites — guarantees StrictHostKeyChecking=no is in place
-    # before Step 2 runs the add-worker playbook against this new node.
+    # 1i. Write ansible.cfg to all Ansible projects
     write_ansible_cfgs()
     yield _ok("ansible.cfg written to all Ansible projects")
 
-    # ── Step 2: Ansible configures node and joins cluster ─────────────────────
-    # Runs ansible-workers/add-worker.yml which installs containerd, Kubernetes
-    # packages, joins the cluster via kubeadm, and labels the node as a worker.
-    # All connection trust is already established by Step 1 — no prompts possible.
-    yield _step(2, f"Configuring {node.hostname} and joining cluster (~8 min)")
+    # ── Step 2: Ansible configures node and joins cluster ──────────────────────
+    # Runs ansible-workers/add-worker.yml which executes:
+    #   - longhorn_prereqs role (iscsi_tcp, cryptsetup, multipathd)
+    #   - worker_add role (containerd, k8s packages, join, labels)
+    yield _step(2, f"Configuring {node.hostname} and joining cluster (~10 min)")
 
-    # Always generate a fresh join token — avoids 24h TTL expiry silently failing
+    # Always generate a fresh join token immediately before the playbook runs.
+    # Avoids the 24h TTL expiry window silently failing the join.
     join_out, join_rc = run_on_cp(
         "kubeadm token create --print-join-command 2>/dev/null"
     )
@@ -374,13 +705,14 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok("Fresh join token generated")
 
-    cp = _get_cp_info()
-    inventory = _make_inventory(cp, node.hostname.lower(), node.ip, node.ssh_user)
+    cp        = _get_cp_info()
+    inventory = _make_worker_inventory(
+        cp, node.hostname.lower(), node.ip, node.ssh_user
+    )
 
     extra_vars: dict = {"join_command": join_lines[0]}
     registry_host = _get_registry_host()
     if registry_host:
-        # Pass GitLab registry host so the new worker can pull notebook images
         extra_vars["gitlab_registry_host"] = registry_host
 
     playbook_ok = False
@@ -402,27 +734,42 @@ def _add_worker_stream(node: NewWorker):
 
     yield _ok(f"{node.hostname} joined the cluster successfully")
 
-    # ── Step 3: Update permanent inventory ───────────────────────────────────
-    # Add the new worker to generated/inventory.ini so future playbook runs
-    # (Longhorn, JupyterHub, monitoring) automatically include it.
-    yield _step(3, "Updating inventory")
+    # ── Step 3: Update inventory, group_vars, /etc/hosts on existing nodes ─────
+    yield _step(3, "Updating cluster state")
 
-    new_line = f"{node.hostname} ansible_host={node.ip} ansible_user={node.ssh_user}"
-    if INVENTORY_PATH.exists():
-        inv = INVENTORY_PATH.read_text()
-        if new_line not in inv:
-            inv = inv.replace("[all:vars]", f"{new_line}\n\n[all:vars]")
-            INVENTORY_PATH.write_text(inv)
-            yield _ok(f"Inventory updated with {node.hostname}")
-        else:
-            yield _ok(f"{node.hostname} already in inventory — no change")
+    # 3a. Update generated/inventory.ini — insert inside [workers] section
+    inv_result = _update_inventory(node.hostname.lower(), node.ip, node.ssh_user)
+    yield _ok(inv_result)
 
-    # Print current cluster state for confirmation
+    # 3b. Update cluster_hosts in generated/group_vars/all.yml
+    # Ensures future playbook runs include this node in /etc/hosts propagation
+    gv_result = _update_cluster_hosts(node.hostname.lower(), node.ip)
+    yield _ok(gv_result)
+
+    # 3c. Propagate new worker hostname/IP to /etc/hosts on existing nodes
+    # Longhorn inter-replica iSCSI paths and Ansible delegate_to tasks
+    # that resolve by hostname both depend on this.
+    hosts_result = _propagate_etc_hosts(node.hostname.lower(), node.ip)
+    yield _ok(hosts_result)
+
+    # ── Step 4: Validation ─────────────────────────────────────────────────────
+    # Run explicit checks before declaring success. A node that passes these
+    # checks is fully operational — it can run workloads, accept Longhorn
+    # replicas, pull images from the GitLab registry, and participate in
+    # future Ansible playbook runs.
+    yield _step(4, f"Validating {node.hostname}")
+
+    validation_results = _validate_new_worker(node.hostname.lower(), node.ip)
+    for line in validation_results:
+        yield _log(line)
+
+    # Print final cluster state
     out, _ = run_on_cp("kubectl get nodes -o wide --no-headers")
     yield _log("")
-    yield _log("── Current cluster nodes ─────────────────────────")
+    yield _log("── Current cluster nodes ──────────────────────────────")
     for line in out.splitlines():
-        yield _log(line)
+        if line.strip():
+            yield _log(line)
 
     yield _done()
 
@@ -453,20 +800,27 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
 
     yield f"data: Starting removal of {hostname}...\n\n"
 
-    # ── Longhorn safety check ─────────────────────────────────────────────────
-    # Check if any volume has ALL its replicas on this node.
-    # If yes, removing it would cause data loss — abort and explain how to fix.
+    # ── Longhorn safety check ──────────────────────────────────────────────────
+    # Abort if removing this node would leave any volume with zero healthy
+    # replicas. Data loss cannot be undone — we refuse rather than warn.
     yield f"data: Checking Longhorn volume safety for {hostname}...\n\n"
     _lh_out, _lh_rc = run_on_cp(
         "kubectl -n longhorn-system get replicas -o json 2>/dev/null"
     )
-    if _lh_rc == 0 and _lh_out.strip().startswith("{"):
+    if _lh_rc == 0 and _lh_out.strip():
+        # Strip Ansible ad-hoc header before JSON parsing
+        lines = _lh_out.strip().splitlines()
+        json_start = next(
+            (i for i, l in enumerate(lines) if l.strip().startswith("{")), 0
+        )
+        json_str = "\n".join(lines[json_start:])
         try:
-            _items = json.loads(_lh_out).get("items", [])
+            _items   = json.loads(json_str).get("items", [])
             _on_node = [
-                r for r in _items if r["spec"].get("nodeID", "") == hostname
+                r for r in _items
+                if r["spec"].get("nodeID", "") == hostname
             ]
-            _vols = set(r["spec"]["volumeName"] for r in _on_node)
+            _vols    = set(r["spec"]["volumeName"] for r in _on_node)
             _faulted = []
             for _v in _vols:
                 _survivors = [
@@ -486,7 +840,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
                 for _v in _faulted:
                     yield f"data:   - {_v}\n\n"
                 yield (
-                    "data: Fix: add another worker first, or raise "
+                    "data: Fix: add another worker first, or increase "
                     "replica count in Longhorn UI.\n\n"
                 )
                 yield "data: __ERROR__:longhorn_fault_risk\n\n"
@@ -497,12 +851,13 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     else:
         yield "data: WARNING: Longhorn not available — skipping safety check\n\n"
 
-    # ── Worker count warning ──────────────────────────────────────────────────
+    # ── Worker count warning ───────────────────────────────────────────────────
     worker_count_out, _ = run_on_cp(
         "kubectl get nodes --no-headers | grep -v control-plane | wc -l"
     )
     worker_count_lines = [
-        l.strip() for l in worker_count_out.splitlines() if l.strip().isdigit()
+        l.strip() for l in worker_count_out.splitlines()
+        if l.strip().isdigit()
     ]
     worker_count = int(worker_count_lines[0]) if worker_count_lines else 0
     if worker_count <= 2:
@@ -517,11 +872,11 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         yield "data: WARNING: Proceeding in 3 seconds...\n\n"
         time.sleep(3)
 
-    # ── Ansible: cordon + drain + delete + cleanup ────────────────────────────
+    # ── Ansible: cordon + drain + delete + VM cleanup ──────────────────────────
     yield f"data: Running drain, cluster removal, and VM cleanup for {hostname}...\n\n"
 
-    cp = _get_cp_info()
-    inventory  = _make_inventory(cp, hostname, req.ip, req.ssh_user)
+    cp        = _get_cp_info()
+    inventory = _make_worker_inventory(cp, hostname, req.ip, req.ssh_user)
     extra_vars = {"target_hostname": hostname}
 
     playbook_ok = False
@@ -538,7 +893,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         else:
             yield chunk
 
-    # ── Update permanent inventory ────────────────────────────────────────────
+    # ── Update permanent inventory ─────────────────────────────────────────────
     if INVENTORY_PATH.exists():
         lines = [
             l for l in INVENTORY_PATH.read_text().splitlines()

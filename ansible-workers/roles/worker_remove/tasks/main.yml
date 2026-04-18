@@ -1,18 +1,41 @@
 ---
-# worker_remove/tasks/main.yml
+# ansible-workers/roles/worker_remove/tasks/main.yml
+#
 # Drains and removes a worker node from the cluster, then cleans up the VM.
 # Called by ansible-workers/remove-worker.yml.
-# target_hostname is passed as --extra-vars from Python.
+#
+# Variable required:
+#   target_hostname — injected by the launcher via --extra-vars
+#
+# Operation order is intentional and must not be changed:
+#   1. Cordon  — stop new pods being scheduled on the node
+#   2. Drain   — evict all existing pods gracefully
+#   3. Delete  — remove the node object from the cluster
+#   4. Longhorn node entry removal — clean up Longhorn's node registry
+#   5. VM-side cleanup — reset kubelet, kubeadm, and all related state
+#
+# All VM-side tasks use ignore_errors: yes because the node may be in a
+# partially broken state when this role runs — we want best-effort cleanup
+# rather than a hard stop on the first failure.
 
-# -- Cluster-side operations --------------------------------------------------
 
-- name: Cordon node to prevent new pod scheduling
+# ── Cluster-side operations ───────────────────────────────────────────────────
+# All kubectl tasks are delegated to the control plane because the worker
+# being removed does not have a kubeconfig.
+
+- name: worker_remove | Cordon node to prevent new pod scheduling
   command: kubectl cordon {{ target_hostname }}
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
   changed_when: true
 
-- name: Drain all pods from node
+# --ignore-daemonsets: DaemonSet pods are managed cluster-wide and will be
+#   recreated elsewhere — they do not need to be evicted manually.
+# --delete-emptydir-data: evicts pods using emptyDir volumes. Data in emptyDir
+#   is ephemeral by definition so this is safe.
+# --force: evicts pods not managed by a controller (e.g. static pods).
+# --timeout=300s: gives long-running pods up to 5 minutes to terminate cleanly.
+- name: worker_remove | Drain all pods from node
   command: >
     kubectl drain {{ target_hostname }}
     --ignore-daemonsets
@@ -23,13 +46,17 @@
   become: no
   changed_when: true
 
-- name: Delete node from Kubernetes
+- name: worker_remove | Delete node from Kubernetes
   command: kubectl delete node {{ target_hostname }}
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
   changed_when: true
 
-- name: Remove Longhorn node entry
+# Remove the Longhorn node object so Longhorn stops trying to schedule
+# replicas on a node that no longer exists. ignore_errors: yes because
+# the node may not exist in Longhorn if it was never fully registered
+# (e.g. removed before Longhorn discovered it).
+- name: worker_remove | Remove Longhorn node entry
   command: >
     kubectl delete node.longhorn.io {{ target_hostname }}
     -n longhorn-system --ignore-not-found
@@ -38,26 +65,40 @@
   changed_when: false
   ignore_errors: yes
 
-# -- VM-side cleanup ----------------------------------------------------------
 
-- name: Stop kubelet service
+# ── VM-side cleanup ───────────────────────────────────────────────────────────
+# Best-effort cleanup on the VM itself. All tasks use ignore_errors: yes
+# because the VM may be partially broken — we always want to complete as
+# much cleanup as possible rather than stopping at the first error.
+
+- name: worker_remove | Stop kubelet service
   systemd:
     name: kubelet
     state: stopped
   ignore_errors: yes
 
-- name: Disable kubelet service
+- name: worker_remove | Disable kubelet service
   systemd:
     name: kubelet
     enabled: no
   ignore_errors: yes
 
-- name: Run kubeadm reset
+# kubeadm reset -f cleans up:
+#   - /etc/kubernetes (certificates, kubeconfig, manifests)
+#   - CNI configuration
+#   - iptables rules written by kube-proxy
+#   - IPVS rules (if used)
+# It does NOT clean up the container runtime or installed packages —
+# those are left in place so the VM can be re-added without a full reprovision.
+- name: worker_remove | Run kubeadm reset
   command: kubeadm reset -f
   ignore_errors: yes
   changed_when: true
 
-- name: Clean up Kubernetes and CNI directories
+# Remove Kubernetes and CNI state directories that kubeadm reset may not
+# have fully cleaned. /var/lib/etcd is included for completeness even though
+# workers do not run etcd — it may exist from a previous control plane role.
+- name: worker_remove | Clean up Kubernetes and CNI directories
   file:
     path: "{{ item }}"
     state: absent
@@ -66,4 +107,14 @@
     - /var/lib/kubelet
     - /etc/cni/net.d
     - /var/lib/etcd
+  ignore_errors: yes
+
+# Remove the Longhorn data directory.
+# If this is not cleaned up and the VM is later re-added to the cluster,
+# Longhorn finds stale replica data on the disk and may incorrectly report
+# disk usage or fail to schedule new replicas due to apparent space conflicts.
+- name: worker_remove | Clean up Longhorn data directory
+  file:
+    path: /var/lib/longhorn
+    state: absent
   ignore_errors: yes
