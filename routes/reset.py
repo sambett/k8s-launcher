@@ -503,10 +503,15 @@ async def reset_preview():
                 (p.split("=")[1] for p in parts[1:] if p.startswith("ansible_host=")),
                 "",
             )
+            ssh_user = next(
+                (p.split("=")[1] for p in parts[1:] if p.startswith("ansible_user=")),
+                "",
+            )
             nodes.append({
                 "hostname": hostname,
                 "ip":       ip,
                 "role":     "control-plane" if current_section == "control_plane" else "worker",
+                "ssh_user": ssh_user,
             })
 
     return {"status": "ok", "nodes": nodes}

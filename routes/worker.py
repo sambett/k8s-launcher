@@ -603,7 +603,7 @@ def _add_worker_stream(node: NewWorker):
             _, stderr, set_rc = run_command(
                 client,
                 f"echo '{node.ssh_pass}' | sudo -S sh -c "
-                f""echo '127.0.1.1 {node.hostname}' >> /etc/hosts""
+                f"\"echo '127.0.1.1 {node.hostname}' >> /etc/hosts\""
             )
             if set_rc != 0:
                 yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
