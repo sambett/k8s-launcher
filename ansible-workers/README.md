@@ -26,28 +26,31 @@ a node for the first time, re-adding one that failed halfway through, or
 repairing a node that has drifted.
 
 ### Where ansible-workers fits in the platform
+
+```
 User (browser)
-│
-▼
+    │
+    ▼
 routes/worker.py          ← orchestrator: safety checks, token generation,
-│                        variable injection, SSE streaming to UI
-▼
+    │                        variable injection, SSE streaming to UI
+    ▼
 ansible-workers/          ← this project: pure node configuration
-│
-├── add-worker.yml    → node_prep → longhorn_prereqs → containerd
-│                        → kubernetes_packages → worker_join
-│
-└── remove-worker.yml → worker_remove
-│
-▼
-Worker VM             ← target: Ubuntu 22.04 or 24.04
-│
-▼
-Kubernetes cluster    ← joins via control plane (ansiblecplane)
-│
-├── Longhorn     ← discovers node via label, registers disk
-├── Calico        ← schedules DaemonSet pod on new node
-└── JupyterHub   ← can now schedule notebook pods here
+    │
+    ├── add-worker.yml    → node_prep → longhorn_prereqs → containerd
+    │                        → kubernetes_packages → worker_join
+    │
+    └── remove-worker.yml → worker_remove
+         │
+         ▼
+    Worker VM             ← target: Ubuntu 22.04 or 24.04
+         │
+         ▼
+    Kubernetes cluster    ← joins via control plane (ansiblecplane)
+         │
+         ├── Longhorn     ← discovers node via label, registers disk
+         ├── Calico        ← schedules DaemonSet pod on new node
+         └── JupyterHub   ← can now schedule notebook pods here
+```
 
 ### High-level lifecycle
 
@@ -83,7 +86,7 @@ operator's password — the only time a password is used. It:
 - Pushes the controller's public key to `authorized_keys`
 - Writes a passwordless sudo rule
 - Scans the node into `known_hosts`
-- Wires control plane → new worker SSH for Ansible delegate_to tasks
+- Wires control plane → new worker SSH for Ansible `delegate_to` tasks
 
 After this stage the password is never needed again. All subsequent
 communication is key-based.
@@ -104,7 +107,7 @@ The OS is configured so Kubernetes won't refuse to start.
 
 **Stage 2 — longhorn_prereqs**
 
-This must run BEFORE the node joins. The moment a node becomes Ready,
+This must run **before** the node joins. The moment a node becomes Ready,
 Longhorn's DaemonSet pod is scheduled on it and may immediately attempt
 a volume attach. If iSCSI isn't ready at that moment, the attach fails.
 
@@ -130,7 +133,7 @@ The container runtime is installed at the exact pinned version.
   - `SystemdCgroup = true` — must match kubelet's cgroup driver. A mismatch
     causes pod OOM kills under memory pressure.
   - `config_path = "/etc/containerd/certs.d"` — enables per-registry config.
-    Without this, the GitLab registry hosts.toml is never consulted and all
+    Without this, the GitLab registry `hosts.toml` is never consulted and all
     notebook image pulls fail with an HTTP/HTTPS mismatch error.
   - `sandbox_image` pinned — prevents the pause container version from
     drifting between nodes, which causes spurious pod restarts.
@@ -147,32 +150,33 @@ kubelet and kubeadm are installed at the exact version matching the cluster.
 - The Kubernetes apt repository for the correct minor version is added.
   Each minor version has its own repo URL — this prevents accidental minor
   version upgrades via `apt upgrade`.
-- Only `kubelet` and `kubeadm` are installed. kubectl is deliberately
+- Only `kubelet` and `kubeadm` are installed. `kubectl` is deliberately
   omitted — workers don't need the CLI and installing it risks version
   confusion during troubleshooting.
 - Both packages are held with `dpkg --set-selections`. A version skew
   between nodes breaks the cluster — kubeadm enforces strict N±1 minor
   version policy.
 - kubelet is enabled but will fail to start here. This is expected and
-  correct — systemd retries until kubeadm join writes kubelet.conf.
+  correct — systemd retries until kubeadm join writes `kubelet.conf`.
 
 **Stage 5 — worker_join**
 
 Three possible states are handled before running kubeadm join:
 
 - **Case A**: `/etc/kubernetes/kubelet.conf` absent → clean node, join normally
-- **Case B**: file present + kubelet active → already joined, skip join
+- **Case B**: file present + kubelet active → already joined, skip join (idempotent re-run)
 - **Case C**: file present + kubelet inactive → partial failed join.
   `kubeadm reset -f` cleans certificates, CNI state, and iptables rules.
   Without this, Ansible skips the join (thinking it's case B) and proceeds
   to labeling, which then fails with a confusing "node not found" error.
 
-After join, node name is resolved by InternalIP (not inventory_hostname)
+After join, node name is resolved by InternalIP (not `inventory_hostname`)
 because kubelet registers under the VM's actual hostname, which may differ.
 The lookup retries for 180 seconds — slow VMs can take over 60s to appear
 in the API server.
 
 Two labels are then applied:
+
 - `node-role.kubernetes.io/worker=worker` — required for NodeSelector rules
 - `node.longhorn.io/create-default-disk=true` — required for Longhorn to
   register this node's disk. Without it, the node is Ready in kubectl but
@@ -185,7 +189,7 @@ Two labels are then applied:
 - `/etc/hosts` propagated to all existing cluster nodes
 - Six validation checks run before declaring success:
   node Ready, Longhorn discovery, Longhorn disk, calico-node pod Running,
-  iscsi_tcp loaded, multipathd inactive
+  `iscsi_tcp` loaded, `multipathd` inactive
 
 ---
 
@@ -222,7 +226,7 @@ best-effort (`ignore_errors: yes` everywhere) because the VM may be
 partially broken. You always want maximum cleanup rather than stopping
 at the first error.
 
-The key decision: containerd and Kubernetes packages are NOT removed.
+The key decision: containerd and Kubernetes packages are **not** removed.
 This makes the VM immediately re-addable without a full reinstall.
 
 ---
@@ -250,10 +254,10 @@ kubeadm to refuse operations and kubectl to produce confusing API errors.
 
 ### Separation of concerns
 
-Each role owns exactly one layer. node_prep knows nothing about containerd.
-containerd knows nothing about Kubernetes. kubernetes_packages knows nothing
-about Longhorn. This means each role can be re-run independently for repair
-without triggering unrelated side effects.
+Each role owns exactly one layer. `node_prep` knows nothing about containerd.
+`containerd` knows nothing about Kubernetes. `kubernetes_packages` knows
+nothing about Longhorn. This means each role can be re-run independently
+for repair without triggering unrelated side effects.
 
 ### Strict vs best-effort
 
@@ -279,7 +283,7 @@ AWS EKS, GKE, and NVIDIA AI Workbench all enforce the same constraint.
 
 Workers are pure compute. The API server lives on the control plane.
 Installing kubectl on workers creates a misleading interface — it would
-work only if a kubeconfig was manually placed there, which creates a
+work only if a kubeconfig was manually placed there, which introduces a
 security concern (cluster credentials on every worker). All cluster
 operations are delegated to the control plane via `delegate_to`.
 
@@ -295,7 +299,7 @@ If `br_netfilter` isn't loaded, network policies silently break. If
 This role satisfies all of kubelet's preconditions before anything
 Kubernetes-related is installed.
 
-Skip it: kubelet crashes on start, Longhorn replicas fail intermittently,
+**Skip it:** kubelet crashes on start, Longhorn replicas fail intermittently,
 and cluster DNS may not resolve correctly between nodes.
 
 ### containerd — "Install and align the runtime with the rest of the cluster"
@@ -305,7 +309,7 @@ aligned with kubelet (cgroup driver), with the cluster's pause image version,
 and with the GitLab registry's HTTP-only setup. A default containerd install
 fails on all three counts.
 
-Skip it: kubelet has no runtime to talk to and never starts.
+**Skip it:** kubelet has no runtime to talk to and never starts.
 Wrong cgroup driver: pods OOM-kill under memory pressure with no clear cause.
 Missing registry config: all notebook image pulls fail immediately.
 
@@ -315,18 +319,18 @@ kubelet is the node agent. kubeadm is the join tool. Both must be at the
 exact same minor version as the control plane. The apt repository is
 versioned by minor version specifically to prevent accidental upgrades.
 
-Skip it: kubeadm join command doesn't exist, kubelet can't join.
+**Skip it:** kubeadm join command doesn't exist, kubelet can't join.
 Wrong version: kubeadm enforces version skew policy and refuses to join.
 
 ### longhorn_prereqs — "Prepare the node for storage attachment"
 
 Longhorn uses iSCSI to attach block volumes to nodes. iSCSI requires both
-a userspace daemon (iscsid) and a kernel module (iscsi_tcp). multipathd
+a userspace daemon (`iscsid`) and a kernel module (`iscsi_tcp`). `multipathd`
 must be disabled to prevent it from claiming Longhorn's block devices.
 This must all be in place before the node joins, because Longhorn's DaemonSet
 schedules immediately on Ready nodes.
 
-Skip it: volume attaches hang silently. The node looks healthy. Longhorn
+**Skip it:** volume attaches hang silently. The node looks healthy. Longhorn
 shows replicas as scheduled. Nothing works and there are no useful logs.
 
 ### worker_join — "Safely join, handling all possible prior states"
@@ -337,7 +341,7 @@ fresh node — it must detect and clean that state before proceeding.
 Node name resolution by IP rather than hostname makes labeling robust
 against hostname drift.
 
-Skip stale state cleanup: re-add fails with a confusing error unrelated
+**Skip stale state cleanup:** re-add fails with a confusing error unrelated
 to the actual problem. Skip the retry window: labeling races the API
 server and fails on slow VMs.
 
@@ -348,7 +352,7 @@ precondition for the next. The Longhorn node entry cleanup is the most
 commonly missed step and the one with the most subtle failure mode.
 The `/var/lib/longhorn` cleanup is what makes re-add reliable.
 
-Skip Longhorn entry removal: ghost node silently reduces effective
+**Skip Longhorn entry removal:** ghost node silently reduces effective
 replica count. Skip `/var/lib/longhorn` cleanup: re-add produces
 phantom disk usage and replica scheduling failures.
 
@@ -358,14 +362,14 @@ phantom disk usage and replica scheduling failures.
 
 ### Partial join state (Case C)
 
-**What happens:** A VM runs kubeadm join, which writes kubelet.conf, but
+**What happens:** A VM runs kubeadm join, which writes `kubelet.conf`, but
 kubelet crashes before registration completes. On re-run, a naive idempotency
 check sees the file and skips the join. Ansible proceeds to labeling, finds
 no node with that IP, and fails with "node not found" — completely obscuring
 the real problem.
 
-**How we prevent it:** Three-state detection in worker_join. If kubelet.conf
-exists but kubelet is inactive, kubeadm reset -f cleans everything and the
+**How we prevent it:** Three-state detection in `worker_join`. If `kubelet.conf`
+exists but kubelet is inactive, `kubeadm reset -f` cleans everything and the
 join runs from scratch.
 
 ### Version drift between nodes
@@ -381,25 +385,25 @@ case where a VM already has a newer version installed.
 
 ### Longhorn silent iSCSI failure
 
-**What happens:** iscsi_tcp isn't loaded. iscsid starts, iSCSI sessions
+**What happens:** `iscsi_tcp` isn't loaded. `iscsid` starts, iSCSI sessions
 initiate, Longhorn schedules replicas on the new node — all without errors.
 Volume attaches hang indefinitely. The Longhorn UI shows the replica as
 scheduled. No useful log message exists.
 
-**How we prevent it:** longhorn_prereqs explicitly loads iscsi_tcp and
-persists it. Post-join validation in routes/worker.py checks it's loaded
+**How we prevent it:** `longhorn_prereqs` explicitly loads `iscsi_tcp` and
+persists it. Post-join validation in `routes/worker.py` checks it's loaded
 and reports clearly if not.
 
 ### multipathd device theft
 
-**What happens:** multipathd is active (Ubuntu default). Longhorn attaches
-a volume via iSCSI. The kernel presents /dev/sdb. multipathd races to claim
-it for multipath management before Longhorn's CSI driver can use it. Once
-claimed, Longhorn cannot mount the device. Symptom: works on old nodes,
+**What happens:** `multipathd` is active (Ubuntu default). Longhorn attaches
+a volume via iSCSI. The kernel presents `/dev/sdb`. `multipathd` races to
+claim it for multipath management before Longhorn's CSI driver can use it.
+Once claimed, Longhorn cannot mount the device. Symptom: works on old nodes,
 silently fails on new ones.
 
-**How we prevent it:** multipathd is explicitly stopped and disabled in
-longhorn_prereqs, before the node joins.
+**How we prevent it:** `multipathd` is explicitly stopped and disabled in
+`longhorn_prereqs`, before the node joins.
 
 ### Image pull failures on new workers
 
@@ -409,29 +413,29 @@ Users spawn notebooks. The notebook pod is scheduled on the new worker.
 Image pull fails with "http: server gave HTTP response to HTTPS client".
 The failure only manifests on the specific node that was added early.
 
-**How we prevent it:** _get_registry_host() in routes/worker.py checks
-both jupyterhub-vars.yml and gitlab-outputs.json as fallback, so registry
+**How we prevent it:** `_get_registry_host()` in `routes/worker.py` checks
+both `jupyterhub-vars.yml` and `gitlab-outputs.json` as fallback, so registry
 config is written whenever GitLab exists — not just when JupyterHub exists.
 
 ### Ghost nodes after removal
 
-**What happens:** kubectl delete node removes the Kubernetes object. Longhorn
-does not receive any notification. It keeps the node.longhorn.io object and
+**What happens:** `kubectl delete node` removes the Kubernetes object. Longhorn
+does not receive any notification. It keeps the `node.longhorn.io` object and
 keeps attempting to schedule replicas there. With two workers, this silently
 halves the effective replication factor. Volumes appear healthy. They are not.
 
 **How we prevent it:** Explicit `kubectl delete node.longhorn.io` as a
-dedicated step in worker_remove, with ignore_errors to handle the case
+dedicated step in `worker_remove`, with `ignore_errors` to handle the case
 where Longhorn never registered the node.
 
 ### Stale Longhorn data on re-add
 
 **What happens:** A worker is removed. It is re-added weeks later. Longhorn
-finds /var/lib/longhorn on the disk with data from old replicas. It
+finds `/var/lib/longhorn` on the disk with data from old replicas. It
 reports incorrect disk usage and may refuse to schedule new replicas because
 it calculates the disk as over-committed.
 
-**How we prevent it:** worker_remove explicitly deletes /var/lib/longhorn.
+**How we prevent it:** `worker_remove` explicitly deletes `/var/lib/longhorn`.
 The re-add flow starts with a disk that Longhorn has never seen before.
 
 ---
@@ -447,7 +451,7 @@ Longhorn replica counts, or SSH trust setup. Python can.
 **Dynamic join token generation:**
 kubeadm tokens expire after 24 hours. If the token was generated at cluster
 init time and stored statically, any add-worker run more than 24 hours later
-silently fails. routes/worker.py generates a fresh token via `run_on_cp`
+silently fails. `routes/worker.py` generates a fresh token via `run_on_cp`
 immediately before calling the playbook — token expiry is never a concern.
 
 **Longhorn replica safety check:**
@@ -464,41 +468,47 @@ password to install the key, then hands off to Ansible which never sees
 the password.
 
 **Variable injection:**
-The join_command and gitlab_registry_host are runtime values that cannot
+The `join_command` and `gitlab_registry_host` are runtime values that cannot
 exist in static group_vars. They are injected via `--extra-vars` at the
 moment of playbook invocation.
 
 **SSE streaming:**
-Ansible's stdout is piped through subprocess.Popen and forwarded line-by-line
-to the browser as Server-Sent Events. The UI shows live progress without
-polling.
+Ansible's stdout is piped through `subprocess.Popen` and forwarded
+line-by-line to the browser as Server-Sent Events. The UI shows live
+progress without polling.
 
 ### Add-worker orchestration
-routes/worker.py _add_worker_stream()
-│
-├── Step 1: Paramiko SSH bootstrap (password-based, one time)
-│     hostname correction, sudo setup, key push, known_hosts
-│
-├── Step 2: ansible-playbook add-worker.yml
-│     --extra-vars @generated/group_vars/all.yml
-│     --extra-vars join_command=<fresh token>
-│     --extra-vars gitlab_registry_host=<if GitLab deployed>
-│
-├── Step 3: Inventory + group_vars + /etc/hosts update
-│
-└── Step 4: Six-point validation before declaring success
+
+```
+routes/worker.py  _add_worker_stream()
+    │
+    ├── Step 1: Paramiko SSH bootstrap (password-based, one time)
+    │           hostname correction, sudo setup, key push, known_hosts
+    │
+    ├── Step 2: ansible-playbook add-worker.yml
+    │           --extra-vars @generated/group_vars/all.yml
+    │           --extra-vars join_command=<fresh token>
+    │           --extra-vars gitlab_registry_host=<if GitLab deployed>
+    │
+    ├── Step 3: Inventory + group_vars + /etc/hosts update
+    │
+    └── Step 4: Six-point validation before declaring success
+```
 
 ### Remove-worker orchestration
-routes/worker.py _remove_worker_stream()
-│
-├── Longhorn replica safety check (abort if data loss risk)
-│
-├── Worker count warning (< 2 workers remaining)
-│
-├── ansible-playbook remove-worker.yml
-│     cordon → drain → delete → Longhorn cleanup → VM cleanup
-│
-└── Inventory update (remove worker entry)
+
+```
+routes/worker.py  _remove_worker_stream()
+    │
+    ├── Longhorn replica safety check (abort if data loss risk)
+    │
+    ├── Worker count warning (< 2 workers remaining)
+    │
+    ├── ansible-playbook remove-worker.yml
+    │           cordon → drain → delete → Longhorn cleanup → VM cleanup
+    │
+    └── Inventory update (remove worker entry)
+```
 
 ---
 
@@ -514,15 +524,17 @@ edge case where the version has drifted.
 
 ### What "clean state" means in this system
 
-A node is in clean state when:
+A node is in clean state when all of the following are true:
 
-- `/etc/kubernetes` does not exist (no stale certificates or kubeconfig)
-- `/var/lib/kubelet` does not exist (no stale pod state)
-- `/etc/cni/net.d` does not exist (no stale CNI config)
-- `/var/lib/longhorn` does not exist (no stale replica data)
-- iptables rules written by kube-proxy are flushed (done by kubeadm reset)
-- The node object does not exist in `kubectl get nodes`
-- The node object does not exist in Longhorn's registry
+| Path / Resource | Expected state |
+|---|---|
+| `/etc/kubernetes` | Does not exist |
+| `/var/lib/kubelet` | Does not exist |
+| `/etc/cni/net.d` | Does not exist |
+| `/var/lib/longhorn` | Does not exist |
+| iptables rules (kube-proxy) | Flushed by kubeadm reset |
+| `kubectl get node <name>` | Not found |
+| `node.longhorn.io/<name>` | Not found |
 
 A node that satisfies all seven conditions can be re-added via the add-worker
 flow and will behave identically to a brand-new VM.
@@ -533,8 +545,8 @@ Longhorn does not distinguish between "replica data from when this node was
 part of the cluster" and "new empty disk". If stale replica data exists when
 the node rejoins, Longhorn reads the metadata, calculates disk usage based on
 old replica sizes, and may refuse to schedule new replicas because the disk
-appears over-committed. The only safe state is an empty directory that
-Longhorn initializes fresh.
+appears over-committed. The only safe state is an empty path that Longhorn
+initializes fresh on first contact.
 
 ---
 
@@ -553,7 +565,7 @@ Longhorn initializes fresh.
 
 - **Version consistency is a cluster invariant.** One out-of-version node
   can break the entire cluster. Pinning + hold + single source of truth
-  (generated/group_vars/all.yml) enforce this.
+  (`generated/group_vars/all.yml`) enforce this.
 
 - **Longhorn has more state than Kubernetes.** Removing a node from kubectl
   does not remove it from Longhorn. Both must be cleaned explicitly.
