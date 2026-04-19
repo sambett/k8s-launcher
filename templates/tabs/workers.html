@@ -104,7 +104,7 @@
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
-      <button class="btn btn-primary" id="aw-btn" onclick="addWorkerNode()">
+      <button class="btn btn-primary" id="aw-btn" onclick="addWorkerNode()" disabled>
         Add worker
       </button>
       <span class="dot" id="dot-aw"></span>
@@ -113,9 +113,10 @@
 
     <div id="aw-steps" style="display:none;margin-top:1rem;
          border-top:1px solid #f0f0f0;padding-top:.75rem">
-      <div id="aw-step-1" class="aw-step">⬜ Step 1 / 3 — Bootstrap SSH key</div>
-      <div id="aw-step-2" class="aw-step">⬜ Step 2 / 3 — Configure node + join cluster</div>
-      <div id="aw-step-3" class="aw-step">⬜ Step 3 / 3 — Update inventory</div>
+      <div id="aw-step-1" class="aw-step">⬜ Step 1 / 4 — Bootstrap SSH key</div>
+      <div id="aw-step-2" class="aw-step">⬜ Step 2 / 4 — Configure node + join cluster</div>
+      <div id="aw-step-3" class="aw-step">⬜ Step 3 / 4 — Update cluster state</div>
+      <div id="aw-step-4" class="aw-step">⬜ Step 4 / 4 — Validate node</div>
     </div>
     <div id="r-addworker" style="margin-top:.75rem"></div>
   </div>
@@ -145,9 +146,13 @@
 
 <script>
 const AW_LABELS = [
-  '', 'Bootstrap SSH key', 'Configure node + join cluster', 'Update inventory',
+  '',
+  'Bootstrap SSH key',
+  'Configure node + join cluster',
+  'Update cluster state',
+  'Validate node',
 ];
-const AW_TOTAL = 3;
+const AW_TOTAL = 4;
 
 async function loadWorkerNodes() {
   checkWorkersPrereq();
@@ -261,11 +266,13 @@ function _markAwStep(n, state) {
 }
 
 async function addWorkerNode() {
+  const btn = document.getElementById('aw-btn');
+  if (btn.disabled) return;
+
   const resultEl = document.getElementById('r-addworker');
   const logEl    = document.getElementById('aw-log');
   const logCard  = document.getElementById('aw-log-card');
   const stepsEl  = document.getElementById('aw-steps');
-  const btn      = document.getElementById('aw-btn');
   const statusEl = document.getElementById('aw-status-label');
   const body = {
     ip:       document.getElementById('aw-ip').value.trim(),
@@ -307,14 +314,15 @@ async function addWorkerNode() {
           if (cur > 0) _markAwStep(cur, 'ok');
           setDot('dot-aw','ok'); statusEl.textContent = 'Complete';
           resultEl.innerHTML = '<span class="badge b-ok">✓ Worker added successfully.</span>';
-          btn.disabled = false; loadWorkerNodes();
+          checkWorkersPrereq();
+          loadWorkerNodes();
         } else if (msg.startsWith('__ERROR__')) {
           if (cur > 0) _markAwStep(cur, 'error');
           setDot('dot-aw','error'); statusEl.textContent = 'Failed';
           resultEl.innerHTML = '<span class="badge b-err">Failed: ' + msg + '</span>';
           btn.disabled = false;
         } else {
-          const m = msg.match(/\[Step (\d+)\/\d+\]/);
+          const m = msg.match(/\[Step\s+(\d+)\/\d+\]/);
           if (m) {
             const s = parseInt(m[1]);
             if (cur > 0 && s > cur) _markAwStep(cur, 'ok');
@@ -333,10 +341,11 @@ async function addWorkerNode() {
 }
 
 async function checkWorkersPrereq() {
-  const banner = document.getElementById('prereq-workers');
-  const icon   = document.getElementById('prereq-workers-icon');
-  const title  = document.getElementById('prereq-workers-title');
-  const body   = document.getElementById('prereq-workers-body');
+  const banner  = document.getElementById('prereq-workers');
+  const icon    = document.getElementById('prereq-workers-icon');
+  const title   = document.getElementById('prereq-workers-title');
+  const body    = document.getElementById('prereq-workers-body');
+  const addBtn  = document.getElementById('aw-btn');
   if (!banner) return;
   try {
     const r = await fetch('/api/platform/status');
@@ -347,16 +356,19 @@ async function checkWorkersPrereq() {
       icon.textContent  = '✅';
       title.textContent = 'Kubernetes cluster is running';
       body.textContent  = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
+      if (addBtn && !addBtn.classList.contains('aw-running')) addBtn.disabled = false;
     } else {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
       icon.textContent  = '⚠️';
       title.textContent = 'Kubernetes cluster not deployed yet';
       body.textContent  = 'This tab requires a running cluster. Complete the Kubernetes tab first.';
+      if (addBtn) addBtn.disabled = true;
     }
   } catch(e) {
     icon.textContent  = '⚠️';
     title.textContent = 'Could not check cluster status';
     body.textContent  = 'Make sure the launcher backend is running.';
+    if (addBtn) addBtn.disabled = true;
   }
 }
 </script>

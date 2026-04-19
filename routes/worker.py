@@ -167,6 +167,16 @@ def _get_cp_info() -> dict:
     return {"ip": cp_ip, "user": cp_user, "hostname": cp_hostname}
 
 
+
+def _get_worker_ssh_user(hostname: str) -> str:
+    if not INVENTORY_PATH.exists():
+        return ""
+    for line in INVENTORY_PATH.read_text().splitlines():
+        if hostname in line and "ansible_user=" in line:
+            for part in line.split():
+                if part.startswith("ansible_user="):
+                    return part.split("=", 1)[1].strip()
+    return ""
 def _make_worker_inventory(cp: dict, worker_hostname: str,
                             worker_ip: str, worker_user: str) -> str:
     """
@@ -975,7 +985,8 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     yield f"data: Running drain, cluster removal, and VM cleanup for {hostname}...\n\n"
 
     cp        = _get_cp_info()
-    inventory = _make_worker_inventory(cp, hostname, req.ip, req.ssh_user)
+    ssh_user  = _get_worker_ssh_user(hostname) or req.ssh_user or "ubuntu"
+    inventory = _make_worker_inventory(cp, hostname, req.ip, ssh_user)
     extra_vars = {"target_hostname": hostname}
 
     playbook_ok = False
