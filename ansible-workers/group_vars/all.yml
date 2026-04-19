@@ -1,11 +1,30 @@
 # ansible-workers/group_vars/all.yml
+#
 # Reference variables for standalone manual use.
-# When called by the launcher, all values are passed via:
+#
+# ── IMPORTANT — how variables actually flow at runtime ─────────────────────────
+# When called by the launcher, ALL values below are overridden via:
 #   --extra-vars @generated/group_vars/all.yml
-# Do not rely on these values in production — the launcher generates them.
+# Do not rely on these values in production — the launcher generates them fresh
+# on every "Generate configuration" click, including pause_image which is
+# derived live from the control plane via:
+#   kubeadm config images list --kubernetes-version <version> | grep pause
+#
+# These values exist for two purposes only:
+#   1. Manual playbook runs (debugging, repair) without the launcher
+#   2. Documentation of the validated baseline combination
+# ──────────────────────────────────────────────────────────────────────────────
 
 kubernetes_version: "1.30.5"
 containerd_version: "1.7.22"
+
+# pause_image must match the Kubernetes version above.
+# For 1.28.x / 1.29.x / 1.30.x → pause:3.9
+# For 1.31.x+ → pause:3.10
+# At runtime this value comes from generated/group_vars/all.yml where it is
+# derived by asking kubeadm on the control plane — never hardcoded.
+# This fallback is correct for kubernetes_version 1.30.5 above.
+pause_image: "registry.k8s.io/pause:3.9"
 
 cp_hostname: "REPLACE_WITH_CP_HOSTNAME"
 cp_ip:       "REPLACE_WITH_CP_IP"

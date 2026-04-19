@@ -1,10 +1,12 @@
 """
 routes/configure.py — Phase 3 of the setup flow.
 
-Does three things when the user clicks "Generate configuration":
+Does four things when the user clicks "Generate configuration":
 
 1. Writes generated/inventory.ini — the Ansible host list
-2. Writes generated/group_vars/all.yml — all cluster variables
+2. Writes generated/group_vars/all.yml — all cluster variables including
+   pause_image, which is derived live from the control plane via kubeadm
+   so it is always correct regardless of Kubernetes version
 3. Wires cplane → workers passwordless SSH
    The control plane needs to SSH into its own workers for kubectl delegate_to
    tasks. Since configure already knows which node is the cplane and which are
@@ -80,6 +82,78 @@ def _replica_settings(worker_count: int) -> tuple:
         return 3, "false"
 
 
+# ── Pause image derivation ─────────────────────────────────────────────────────
+
+def _get_pause_image(cp: ControlPlane, kubernetes_version: str) -> str:
+    """
+    Derive the correct pause (sandbox) container image for the given
+    Kubernetes version by asking the control plane directly.
+
+    Why this must not be hardcoded:
+      The pause image version is tied to the Kubernetes minor version.
+      Hardcoding it means the value silently breaks when kubernetes_version
+      changes — the containerd role would pin the wrong sandbox image on
+      every new worker, causing spurious pod restarts under node pressure.
+
+    How it works:
+      SSH into the control plane and run:
+        kubeadm config images list --kubernetes-version <version>
+      This is the official kubeadm command for listing required images.
+      We filter for the pause image and return it exactly as kubeadm reports it.
+      kubeadm is always present on the control plane — it was used to init
+      the cluster and is version-held at the same version as the cluster.
+
+    Fallback:
+      If the control plane is unreachable at configure time (e.g. configure
+      is re-run before the cluster is up), we derive the value from the
+      official Kubernetes release notes mapping:
+        1.28.x → pause:3.9
+        1.29.x → pause:3.9
+        1.30.x → pause:3.9
+        1.31.x → pause:3.10
+        1.32.x → pause:3.10
+      This mapping is stable — the pause image version only changes on
+      Kubernetes minor version boundaries, not patch releases.
+      The fallback is a safety net, not the primary path.
+    """
+    # ── Primary: ask kubeadm on the control plane ──────────────────────────────
+    client = None
+    try:
+        client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+        out, _, rc = run_command(
+            client,
+            f"kubeadm config images list --kubernetes-version {kubernetes_version} "
+            f"2>/dev/null | grep pause"
+        )
+        if rc == 0 and out.strip():
+            # out may contain Ansible ad-hoc noise — take the last non-empty line
+            # which will be the actual image reference e.g. registry.k8s.io/pause:3.9
+            image = out.strip().splitlines()[-1].strip()
+            if image.startswith("registry.k8s.io/pause"):
+                return image
+    except Exception:
+        # Control plane unreachable — fall through to version-derived fallback
+        pass
+    finally:
+        if client:
+            client.close()
+
+    # ── Fallback: derive from kubernetes minor version ─────────────────────────
+    # Extract minor version integer from "1.30.5" → 30
+    try:
+        minor = int(kubernetes_version.split(".")[1])
+    except (IndexError, ValueError):
+        minor = 30  # safe default if version string is malformed
+
+    # pause:3.9  → Kubernetes 1.28, 1.29, 1.30
+    # pause:3.10 → Kubernetes 1.31, 1.32+
+    # Source: https://github.com/kubernetes/kubernetes/blob/master/build/pause/CHANGELOG.md
+    if minor >= 31:
+        return "registry.k8s.io/pause:3.10"
+    else:
+        return "registry.k8s.io/pause:3.9"
+
+
 # ── File generators ────────────────────────────────────────────────────────────
 
 def _make_inventory(config: ClusterConfig) -> str:
@@ -106,11 +180,15 @@ def _make_inventory(config: ClusterConfig) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _make_group_vars(config: ClusterConfig) -> str:
+def _make_group_vars(config: ClusterConfig, pause_image: str) -> str:
     """
     Build group_vars/all.yml content from user-supplied cluster config.
     This file is the single source of truth for all Ansible roles — versions,
     network CIDRs, Longhorn settings, node hostnames and IPs.
+
+    pause_image is passed in as a parameter rather than derived here because
+    deriving it requires an SSH call to the control plane, which belongs in
+    the configure() endpoint — not inside a pure string-building function.
     """
     cp = config.control_plane
     replica_count, soft_anti = _replica_settings(len(config.workers))
@@ -159,8 +237,15 @@ longhorn_over_provisioning_pct:      150
 longhorn_min_available_pct:          25
 longhorn_node_drain_policy:          "block-if-contains-last-replica"
 longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/longhorn"
-"""
 
+# ── Container runtime ──────────────────────────────────────────────────────────
+# pause_image is derived live from the control plane via:
+#   kubeadm config images list --kubernetes-version <version> | grep pause
+# It is written here so the containerd role always pins the correct sandbox
+# image on every new worker, regardless of Kubernetes version.
+# Never hardcode this value — it changes with Kubernetes minor versions.
+pause_image: "{pause_image}"
+"""
 
 # ── cplane → workers SSH wiring ────────────────────────────────────────────────
 
@@ -300,18 +385,28 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
 async def configure(config: ClusterConfig):
     """
     Generate inventory + group_vars, wire cplane→workers SSH, write ansible.cfg.
-    All three happen atomically on every click of "Generate configuration".
+    All steps happen on every click of "Generate configuration".
+
+    pause_image is derived here — not in _make_group_vars — because it requires
+    an SSH call to the control plane. _make_group_vars is a pure string builder
+    and must not have side effects. The derived value is passed in as a parameter.
     """
-    # 1. Write generated files
+    # 1. Derive pause_image from the control plane before writing group_vars.
+    #    This ensures the value is always correct for the chosen k8s version.
+    #    _get_pause_image() falls back to a version-derived value if the
+    #    control plane is unreachable at configure time.
+    pause_image = _get_pause_image(config.control_plane, config.kubernetes_version)
+
+    # 2. Write generated files — inventory and group_vars
     INVENTORY_PATH.write_text(_make_inventory(config))
-    VARS_PATH.write_text(_make_group_vars(config))
+    VARS_PATH.write_text(_make_group_vars(config, pause_image))
     replica_count, soft_anti = _replica_settings(len(config.workers))
 
-    # 2. Write ansible.cfg to all Ansible projects (always overwrite)
+    # 3. Write ansible.cfg to all Ansible projects (always overwrite)
     #    Uses shared helper from core.ansible_cfg — same function as bootstrap.
     cfgs_written = write_ansible_cfgs()
 
-    # 3. Wire cplane → workers passwordless SSH
+    # 4. Wire cplane → workers passwordless SSH
     wire_report = _wire_cplane_to_workers(config.control_plane, config.workers)
 
     return {
@@ -323,7 +418,8 @@ async def configure(config: ClusterConfig):
         "derived": {
             "worker_count":                        len(config.workers),
             "longhorn_replica_count":              replica_count,
-            "longhorn_replica_soft_anti_affinity": soft_anti
+            "longhorn_replica_soft_anti_affinity": soft_anti,
+            "pause_image":                         pause_image,
         },
         "ansible_cfgs_written": cfgs_written,
         "cplane_to_workers":    wire_report
