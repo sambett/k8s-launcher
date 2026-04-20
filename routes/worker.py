@@ -953,6 +953,28 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         yield "data: WARNING: Longhorn not available — skipping safety check\n\n"
 
     # ── Worker count warning ───────────────────────────────────────────────────
+    # Read the configured Longhorn replica count from generated/group_vars/all.yml.
+    # This is the single source of truth — the same value used by ansible-longhorn
+    # when provisioning the StorageClass. We use it to determine whether removing
+    # this worker would leave fewer workers than replicas, which is the actual
+    # condition that causes volumes to go DEGRADED.
+    #
+    # Example: 3 workers, replica_count=2 → removing one leaves 2 workers.
+    # 2 >= 2 replicas → volumes stay healthy → no DEGRADED warning.
+    #
+    # Example: 2 workers, replica_count=2 → removing one leaves 1 worker.
+    # 1 < 2 replicas → volumes WILL go DEGRADED → warn and pause.
+    replica_count = 2  # safe default if key is missing
+    try:
+        for line in VARS_PATH.read_text().splitlines():
+            if line.strip().startswith("longhorn_replica_count:"):
+                val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                if val.isdigit():
+                    replica_count = int(val)
+                break
+    except Exception:
+        pass
+
     worker_count_out, _ = run_on_cp(
         "kubectl get nodes --no-headers | grep -v control-plane | wc -l"
     )
@@ -961,17 +983,25 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
         if l.strip().isdigit()
     ]
     worker_count = int(worker_count_lines[0]) if worker_count_lines else 0
-    if worker_count <= 2:
+    remaining = worker_count - 1
+    yield f"data: Cluster has {worker_count} worker(s), Longhorn replica_count={replica_count}.\n\n"
+    if remaining < replica_count:
         yield (
             f"data: WARNING: cluster has {worker_count} worker(s). "
-            f"Removing {hostname} will leave only {worker_count - 1} worker(s).\n\n"
+            f"Removing {hostname} will leave only {remaining} worker(s).\n\n"
         )
         yield (
-            "data: WARNING: Longhorn volumes will go DEGRADED until "
-            "a replacement worker is added.\n\n"
+            f"data: WARNING: Longhorn requires {replica_count} healthy worker(s) "
+            f"to maintain full replication. Volumes will go DEGRADED until "
+            f"a replacement worker is added.\n\n"
         )
         yield "data: WARNING: Proceeding in 3 seconds...\n\n"
         time.sleep(3)
+    else:
+        yield (
+            f"data: ok: {remaining} worker(s) remaining >= replica_count={replica_count} "
+            f"— Longhorn volumes will stay healthy.\n\n"
+        )
 
     # ── Ansible: cordon + drain + delete + VM cleanup ──────────────────────────
     yield f"data: Running drain, cluster removal, and VM cleanup for {hostname}...\n\n"
