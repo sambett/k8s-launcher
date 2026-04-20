@@ -64,7 +64,7 @@ Longhorn attaches a persistent volume → User works
 
 **Remove worker:**
 Safety check (Python) → Cordon → Drain → Delete → Longhorn cleanup →
-VM reset → Inventory update
+VM reset → cluster_hosts cleanup → /etc/hosts cleanup → Inventory update
 
 ---
 
@@ -228,6 +228,22 @@ at the first error.
 
 The key decision: containerd and Kubernetes packages are **not** removed.
 This makes the VM immediately re-addable without a full reinstall.
+
+**Step 6 — cluster_hosts cleanup**
+The removed worker's entry is deleted from `cluster_hosts` in
+`generated/group_vars/all.yml`. Without this, every future playbook run
+(ansible-longhorn, ansible-k8s, ansible-workers) reads the stale entry and
+re-writes the dead node back into `/etc/hosts` on all live nodes. If the IP
+is later reused for a different VM, this causes silent hostname resolution
+errors across the cluster.
+
+**Step 7 — /etc/hosts cleanup on remaining nodes**
+The removed worker's `ip hostname` line is deleted from `/etc/hosts` on
+every remaining cluster node via Ansible ad-hoc lineinfile. This runs before
+the inventory is updated so all remaining nodes are still reachable.
+Longhorn inter-replica iSCSI paths and Ansible delegate_to tasks both rely
+on hostname resolution — stale entries cause timeouts that are difficult to
+diagnose.
 
 ---
 
@@ -502,11 +518,13 @@ routes/worker.py  _remove_worker_stream()
     │
     ├── Longhorn replica safety check (abort if data loss risk)
     │
-    ├── Worker count warning (< 2 workers remaining)
+    ├── Worker count warning (remaining workers < longhorn_replica_count)
     │
     ├── ansible-playbook remove-worker.yml
     │           cordon → drain → delete → Longhorn cleanup → VM cleanup
     │
+    ├── Remove cluster_hosts entry from generated/group_vars/all.yml
+    ├── Remove /etc/hosts entry from all remaining cluster nodes
     └── Inventory update (remove worker entry)
 ```
 
