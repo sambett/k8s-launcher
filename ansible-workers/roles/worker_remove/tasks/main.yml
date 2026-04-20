@@ -47,7 +47,7 @@
   retries: 3
   delay: 5
   until: k8s_node_name_result.rc == 0
-  changed_when: false
+  changed_when: true
   failed_when: false
 
 # If resolution succeeded, use the real K8s name.
