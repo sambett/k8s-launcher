@@ -2,18 +2,20 @@
 
   <div class="card">
     <h2>Control plane</h2>
+    <div class="card-hint">Hostname and SSH user are enforced lowercase (RFC 1123).</div>
     <div class="field-row"><label>IP address</label>
       <input type="text" id="cp-ip" placeholder="e.g. 10.0.0.10  (control plane IP)"></div>
     <div class="field-row"><label>Hostname</label>
-      <input type="text" id="cp-hostname" placeholder="e.g. cp-01  (must match VM hostname)"></div>
+      <input type="text" id="cp-hostname" placeholder="e.g. cp-01  (must match VM hostname)" oninput="this.value=this.value.toLowerCase()"></div>
     <div class="field-row"><label>SSH user</label>
-      <input type="text" id="cp-user" placeholder="e.g. ubuntu"></div>
+      <input type="text" id="cp-user" placeholder="e.g. ubuntu" oninput="this.value=this.value.toLowerCase()"></div>
   </div>
 
   <div class="card">
     <h2>Worker nodes</h2>
     <p style="font-size:12px;color:#1565c0;background:#e3f2fd;border-radius:4px;padding:6px 10px;margin-bottom:.75rem">
       Add or remove rows as needed before generating configuration.
+      Hostnames and SSH usernames are enforced lowercase (RFC 1123).
     </p>
     <div id="workers"></div>
     <button class="btn btn-sm" style="margin-top:4px" onclick="addWorker()">+ Add worker</button>
@@ -99,8 +101,8 @@ function addWorker(ip='', hn='', user='') {
   d.className = 'node-row';
   d.innerHTML = `
     <input type="text" placeholder="e.g. 10.0.0.11" value="${ip}" class="wi">
-    <input type="text" placeholder="e.g. worker-01" value="${hn}" class="wh">
-    <input type="text" placeholder="e.g. ubuntu" value="${user}" class="wu">
+    <input type="text" placeholder="e.g. worker-01" value="${hn}" class="wh" oninput="this.value=this.value.toLowerCase()">
+    <input type="text" placeholder="e.g. ubuntu" value="${user}" class="wu" oninput="this.value=this.value.toLowerCase()">
     <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
   document.getElementById('workers').appendChild(d);
 }

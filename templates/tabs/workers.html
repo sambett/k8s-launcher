@@ -93,6 +93,7 @@
     <div class="field-row">
       <label>Hostname</label>
       <input type="text" id="aw-hostname" placeholder="e.g. worker-03"/>
+      <span style="font-size:11px;color:#1565c0;margin-top:2px;display:block">ⓘ This will be set as the actual VM hostname via hostnamectl. Lowercase only (RFC 1123).</span>
     </div>
     <div class="field-row">
       <label>SSH user</label>
@@ -371,4 +372,8 @@ async function checkWorkersPrereq() {
     if (addBtn) addBtn.disabled = true;
   }
 }
+
+document.getElementById('aw-hostname').addEventListener('input', function() {
+    this.value = this.value.toLowerCase();
+});
 </script>

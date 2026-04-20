@@ -52,7 +52,7 @@
       </div>
       <div class="field-row">
         <label>SSH user</label>
-        <input type="text" id="ctrl-user" placeholder="e.g. ubuntu">
+        <input type="text" id="ctrl-user" placeholder="e.g. ubuntu" oninput="this.value=this.value.toLowerCase()">
       </div>
       <div class="field-row">
         <label>SSH password</label>
@@ -70,6 +70,7 @@
     <div class="card-hint">
       Fill in the IP, hostname, and SSH user for each cluster node.
       The password is used once to push the SSH key — it is never saved anywhere.
+      Hostnames and SSH usernames are enforced lowercase (RFC 1123).
     </div>
     <div id="bnodes"></div>
     <button class="btn btn-sm" style="margin-top:4px" onclick="addBNode()">+ Add node</button>
@@ -146,8 +147,8 @@ function addBNode(ip='', hn='', user='') {
   d.className = 'node-row';
   d.innerHTML = `
     <input type="text" placeholder="e.g. 10.0.0.10  (node IP)" value="${ip}" class="bi">
-    <input type="text" placeholder="e.g. cp-01  (hostname)" value="${hn}" class="bh">
-    <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu">
+    <input type="text" placeholder="e.g. cp-01  (hostname)" value="${hn}" class="bh" oninput="this.value=this.value.toLowerCase()">
+    <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu" oninput="this.value=this.value.toLowerCase()">
     <input type="password" placeholder="SSH password (used once)" class="bp">
     <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
   document.getElementById('bnodes').appendChild(d);

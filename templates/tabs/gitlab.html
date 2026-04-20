@@ -11,7 +11,7 @@
     <div class="field-row"><label>GitLab VM IP</label>
       <input type="text" id="gl-ip" placeholder="e.g. 10.0.0.20  (GitLab VM IP)"></div>
     <div class="field-row"><label>SSH user</label>
-      <input type="text" id="gl-user" placeholder="e.g. ubuntu"></div>
+      <input type="text" id="gl-user" placeholder="e.g. ubuntu" oninput="this.value=this.value.toLowerCase()"></div>
     <div class="field-row"><label>SSH password</label>
       <input type="password" id="gl-pass" placeholder="one-time, never stored"></div>
     <button class="btn btn-primary" style="margin-top:.5rem"
