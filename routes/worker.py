@@ -38,9 +38,11 @@ Add-worker flow:
     - iscsi_tcp module is loaded on the new node
     - multipathd is inactive on the new node
 
-Remove-worker flow (unchanged):
+Remove-worker flow:
   (Python) — Longhorn safety check + worker count warning
   (Ansible) — Drain + delete + VM cleanup via ansible-workers/remove-worker.yml
+  (Python) — Remove cluster_hosts entry from generated/group_vars/all.yml
+  (Python) — Remove /etc/hosts entry from all remaining cluster nodes
   (Python) — Update permanent inventory
 """
 import json
@@ -72,7 +74,9 @@ router = APIRouter()
 #   Helpers             _get_registry_host, _get_cp_info,
 #                       _make_worker_inventory, _call_playbook,
 #                       _update_inventory, _update_cluster_hosts,
-#                       _propagate_etc_hosts, _validate_new_worker
+#                       _remove_cluster_hosts,
+#                       _propagate_etc_hosts, _depropagete_etc_hosts,
+#                       _validate_new_worker
 #   Add-worker          _add_worker_stream → POST /api/cluster/add-worker
 #   Remove-worker       _remove_worker_stream → POST /api/cluster/remove-worker
 #
@@ -167,7 +171,6 @@ def _get_cp_info() -> dict:
     return {"ip": cp_ip, "user": cp_user, "hostname": cp_hostname}
 
 
-
 def _get_worker_ssh_user(hostname: str) -> str:
     if not INVENTORY_PATH.exists():
         return ""
@@ -177,6 +180,8 @@ def _get_worker_ssh_user(hostname: str) -> str:
                 if part.startswith("ansible_user="):
                     return part.split("=", 1)[1].strip()
     return ""
+
+
 def _make_worker_inventory(cp: dict, worker_hostname: str,
                             worker_ip: str, worker_user: str) -> str:
     """
@@ -367,6 +372,47 @@ def _update_cluster_hosts(hostname: str, ip: str) -> str:
     return f"cluster_hosts updated — {hostname} appended"
 
 
+def _remove_cluster_hosts(hostname: str, ip: str) -> str:
+    """
+    Remove a worker's entry from the cluster_hosts list in
+    generated/group_vars/all.yml.
+
+    Mirror of _update_cluster_hosts — called on worker removal to prevent
+    ghost entries that cause every future playbook run to re-write a dead
+    node back into /etc/hosts on all live nodes.
+
+    Matches on both hostname AND ip so a partial match (e.g. a different
+    worker that happens to share a hostname prefix) is never removed.
+
+    Safe to call if the entry is already absent — idempotent.
+    """
+    if not VARS_PATH.exists():
+        return "group_vars file not found — skipping cluster_hosts cleanup"
+
+    content = VARS_PATH.read_text()
+
+    # Fast path: nothing to do
+    if hostname not in content and ip not in content:
+        return f"{hostname} not found in cluster_hosts — no change"
+
+    lines   = content.splitlines()
+    # Drop any line that contains both the hostname AND the ip.
+    # The entry format written by _update_cluster_hosts is:
+    #   "  - { name: <hostname>, ip: \"<ip>\" }"
+    # Matching both fields prevents accidental removal of unrelated entries.
+    filtered = [
+        line for line in lines
+        if not (hostname in line and ip in line)
+    ]
+
+    if len(filtered) == len(lines):
+        return f"{hostname}/{ip} not found as a combined entry — no change"
+
+    removed_count = len(lines) - len(filtered)
+    VARS_PATH.write_text("\n".join(filtered) + "\n")
+    return f"cluster_hosts updated — {hostname} removed ({removed_count} line(s) dropped)"
+
+
 def _propagate_etc_hosts(hostname: str, ip: str) -> str:
     """
     Add the new worker's hostname/IP to /etc/hosts on all existing cluster
@@ -406,6 +452,50 @@ def _propagate_etc_hosts(hostname: str, ip: str) -> str:
     return (
         f"WARNING: /etc/hosts propagation partially failed "
         f"(rc={result.returncode}) — check manually"
+    )
+
+
+def _depropagete_etc_hosts(hostname: str, ip: str) -> str:
+    """
+    Remove a worker's hostname/IP entry from /etc/hosts on all remaining
+    cluster nodes.
+
+    Mirror of _propagate_etc_hosts — called on worker removal to prevent
+    stale entries that could cause hostname resolution to a non-existent or
+    repurposed IP on every remaining node.
+
+    Uses regexp matching on the IP address so the line is removed regardless
+    of any trailing whitespace or comment variations. Safe if the entry is
+    already absent (lineinfile state=absent is idempotent).
+
+    Targets the permanent inventory (remaining nodes after removal) — the
+    removed worker's entry will be cleaned from the inventory in the next
+    step, so it is not targeted here and cannot cause an SSH error.
+    """
+    if not INVENTORY_PATH.exists():
+        return "inventory not found — skipping /etc/hosts cleanup"
+
+    result = subprocess.run(
+        [
+            "ansible", "all",
+            "-i", str(INVENTORY_PATH),
+            "-m", "lineinfile",
+            "-a", (
+                f"path=/etc/hosts "
+                f"regexp='^{ip}\\s' "
+                f"state=absent"
+            ),
+            "--become",
+            "--extra-vars", f"@{VARS_PATH}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return f"/etc/hosts entry for {hostname} ({ip}) removed from all remaining nodes"
+    return (
+        f"WARNING: /etc/hosts cleanup partially failed "
+        f"(rc={result.returncode}) — entry for {hostname} ({ip}) may remain on some nodes"
     )
 
 
@@ -495,10 +585,6 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         capture_output=True,
         text=True,
     )
-    # Ansible ad-hoc output: last non-empty line is the command result.
-    # Empty output means Ansible could not reach the node — report that
-    # explicitly rather than falling back to "0" which looks like a module
-    # check result when it is actually a connection failure.
     iscsi_out = (iscsi_result.stdout + iscsi_result.stderr).strip()
     if not iscsi_out:
         results.append(
@@ -515,7 +601,6 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
             )
 
     # ── 6. multipathd inactive ─────────────────────────────────────────────────
-    # Same pattern — direct subprocess from ansiblectl, not via run_on_cp.
     mpd_result = subprocess.run(
         [
             "ansible", hostname,
@@ -575,12 +660,6 @@ def _add_worker_stream(node: NewWorker):
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
         # 1a. Hostname verification and correction
-        # ─────────────────────────────────────────
-        # Read the VM's actual current hostname. If it does not match what the
-        # operator typed in the form, set it now via hostnamectl.
-        # This MUST happen before the Ansible role runs because node_prep
-        # asserts ansible_hostname == inventory_hostname. A mismatch causes
-        # the playbook to fail 8+ minutes in with a confusing assertion error.
         actual_hostname, _, rc = run_command(client, "hostname")
         if actual_hostname.strip() != node.hostname.strip():
             yield _log(
@@ -600,11 +679,6 @@ def _add_worker_stream(node: NewWorker):
             yield _ok(f"Hostname already correct: {actual_hostname.strip()}")
 
         # 1b. Ensure 127.0.1.1 <hostname> is in /etc/hosts on the new VM
-        # ─────────────────────────────────────────────────────────────────
-        # kubelet uses this entry to determine the node's registration name.
-        # Without it, kubelet may register under "localhost" or an unexpected
-        # name, causing the node to appear in kubectl get nodes with the wrong
-        # name and the Ansible label step to fail finding it by IP.
         _, _, rc = run_command(
             client,
             f"grep -c '^127\\.0\\.1\\.1 {node.hostname}$' /etc/hosts"
@@ -624,11 +698,6 @@ def _add_worker_stream(node: NewWorker):
             yield _ok(f"127.0.1.1 {node.hostname} already in /etc/hosts")
 
         # 1c. OS version check
-        # ─────────────────────
-        # Fail fast before installing anything. All nodes must run the same
-        # Ubuntu LTS — Longhorn kernel modules differ between versions.
-        # Check both ID (must be ubuntu) and VERSION_ID (must be supported)
-        # so a Debian system that reports VERSION_ID=22.04 is caught early.
         os_id_out, _, _ = run_command(
             client,
             "grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
@@ -671,7 +740,6 @@ def _add_worker_stream(node: NewWorker):
         yield _ok(f"SSH key installed on {node.ip}")
 
         # 1e. Write passwordless sudo
-        # sudo -S reads password from stdin — no TTY needed in Paramiko sessions
         _, stderr, rc = run_command(
             client,
             f"echo '{node.ssh_pass}' | sudo -S bash -c "
@@ -685,7 +753,6 @@ def _add_worker_stream(node: NewWorker):
             return
 
         # 1f. Verify sudo works without password
-        # sudo -n is non-interactive — fails immediately if password required
         _, _, verify_rc = run_command(client, "sudo -n whoami")
         if verify_rc != 0:
             yield _fail("Sudo verification failed — sudoers entry may not have applied")
@@ -706,7 +773,6 @@ def _add_worker_stream(node: NewWorker):
             client.close()
 
     # 1g. Populate controller known_hosts for the new worker
-    # Done after closing the Paramiko session — uses local ssh-keyscan binary.
     known_hosts_path = Path.home() / ".ssh" / "known_hosts"
     known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
     known_hosts_path.touch(exist_ok=True)
@@ -728,8 +794,6 @@ def _add_worker_stream(node: NewWorker):
     yield _ok(f"Controller known_hosts updated for {node.ip}")
 
     # 1h. Wire cplane → new worker passwordless SSH
-    # Non-fatal — cluster join still works if this fails, but cplane operations
-    # targeting the new worker (Ansible delegate_to tasks) would prompt without it.
     cp = _get_cp_info()
     if cp["ip"] and cp["user"]:
         cp_client = None
@@ -787,13 +851,8 @@ def _add_worker_stream(node: NewWorker):
     yield _ok("ansible.cfg written to all Ansible projects")
 
     # ── Step 2: Ansible configures node and joins cluster ──────────────────────
-    # Runs ansible-workers/add-worker.yml which executes:
-    #   - longhorn_prereqs role (iscsi_tcp, cryptsetup, multipathd)
-    #   - worker_join role handles the actual cluster join and labeling
     yield _step(2, f"Configuring {node.hostname} and joining cluster (~10 min)")
 
-    # Always generate a fresh join token immediately before the playbook runs.
-    # Avoids the 24h TTL expiry window silently failing the join.
     join_out, join_rc = run_on_cp(
         "kubeadm token create --print-join-command 2>/dev/null"
     )
@@ -839,10 +898,6 @@ def _add_worker_stream(node: NewWorker):
     # ── Step 3: Update inventory, group_vars, /etc/hosts on existing nodes ─────
     yield _step(3, "Updating cluster state")
 
-    # 3a. Update generated/inventory.ini — insert inside [workers] section
-    # Treat WARNING returns as hard failures — if the [workers] section is
-    # missing the inventory is corrupt and future playbook runs will skip
-    # this node entirely. Better to abort visibly than continue silently.
     inv_result = _update_inventory(node.hostname.lower(), node.ip, node.ssh_user)
     if inv_result.startswith("WARNING"):
         yield _fail(inv_result)
@@ -850,22 +905,13 @@ def _add_worker_stream(node: NewWorker):
         return
     yield _ok(inv_result)
 
-    # 3b. Update cluster_hosts in generated/group_vars/all.yml
-    # Ensures future playbook runs include this node in /etc/hosts propagation
     gv_result = _update_cluster_hosts(node.hostname.lower(), node.ip)
     yield _ok(gv_result)
 
-    # 3c. Propagate new worker hostname/IP to /etc/hosts on existing nodes
-    # Longhorn inter-replica iSCSI paths and Ansible delegate_to tasks
-    # that resolve by hostname both depend on this.
     hosts_result = _propagate_etc_hosts(node.hostname.lower(), node.ip)
     yield _ok(hosts_result)
 
     # ── Step 4: Validation ─────────────────────────────────────────────────────
-    # Run explicit checks before declaring success. A node that passes these
-    # checks is fully operational — it can run workloads, accept Longhorn
-    # replicas, pull images from the GitLab registry, and participate in
-    # future Ansible playbook runs.
     yield _step(4, f"Validating {node.hostname}")
 
     validation_results = _validate_new_worker(node.hostname.lower(), node.ip)
@@ -901,7 +947,9 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
        any volume with zero healthy replicas (data loss prevention)
     2. Worker count warning — warn if cluster drops below 2 workers
     3. Ansible playbook — cordon, drain, delete node, kubeadm reset, cleanup
-    4. Update permanent inventory
+    4. Remove cluster_hosts entry from generated/group_vars/all.yml
+    5. Remove /etc/hosts entry from all remaining cluster nodes
+    6. Update permanent inventory
     """
     import time
 
@@ -910,14 +958,11 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     yield f"data: Starting removal of {hostname}...\n\n"
 
     # ── Longhorn safety check ──────────────────────────────────────────────────
-    # Abort if removing this node would leave any volume with zero healthy
-    # replicas. Data loss cannot be undone — we refuse rather than warn.
     yield f"data: Checking Longhorn volume safety for {hostname}...\n\n"
     _lh_out, _lh_rc = run_on_cp(
         "kubectl -n longhorn-system get replicas -o json 2>/dev/null"
     )
     if _lh_rc == 0 and _lh_out.strip():
-        # Strip Ansible ad-hoc header before JSON parsing
         lines = _lh_out.strip().splitlines()
         json_start = next(
             (i for i, l in enumerate(lines) if l.strip().startswith("{")), 0
@@ -999,11 +1044,27 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
                 f"data: WARNING: playbook exited {rc} — "
                 "node may need manual cleanup but proceeding.\n\n"
             )
-            playbook_ok = True  # still clean up inventory
+            playbook_ok = True  # still clean up state
         else:
             yield chunk
 
+    # ── Remove cluster_hosts entry ─────────────────────────────────────────────
+    # Must run BEFORE inventory cleanup so VARS_PATH is still intact.
+    # Prevents future playbook runs from re-writing a dead node back into
+    # /etc/hosts on all live nodes.
+    ch_result = _remove_cluster_hosts(hostname, req.ip)
+    yield f"data: ok: {ch_result}\n\n"
+
+    # ── Remove /etc/hosts entry from remaining nodes ───────────────────────────
+    # Runs BEFORE inventory cleanup so the remaining nodes are still reachable
+    # via the current inventory. The removed worker is no longer in the cluster
+    # (kubectl delete ran in Ansible) so it will not be targeted by Ansible.
+    deprop_result = _depropagete_etc_hosts(hostname, req.ip)
+    yield f"data: ok: {deprop_result}\n\n"
+
     # ── Update permanent inventory ─────────────────────────────────────────────
+    # Runs last — after /etc/hosts cleanup, which still needs the inventory
+    # to know which nodes to target.
     if INVENTORY_PATH.exists():
         lines = [
             l for l in INVENTORY_PATH.read_text().splitlines()
