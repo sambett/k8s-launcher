@@ -4,19 +4,70 @@
 # Drains and removes a worker node from the cluster, then cleans up the VM.
 # Called by ansible-workers/remove-worker.yml.
 #
-# Variable required:
+# Variables required:
 #   target_hostname — injected by the launcher via --extra-vars
+#                     used as fallback if IP resolution fails (re-run safety)
 #
 # Operation order is intentional and must not be changed:
-#   1. Cordon  — stop new pods being scheduled on the node
-#   2. Drain   — evict all existing pods gracefully
-#   3. Delete  — remove the node object from the cluster
-#   4. Longhorn node entry removal — clean up Longhorn's node registry
-#   5. VM-side cleanup — reset kubelet, kubeadm, and all related state
+#   1. Resolve actual K8s node name by IP (not by target_hostname string)
+#   2. Cordon  — stop new pods being scheduled on the node
+#   3. Drain   — evict all existing pods gracefully
+#   4. Delete  — remove the node object from the cluster
+#   5. Longhorn node entry removal — clean up Longhorn's node registry
+#   6. VM-side cleanup — reset kubelet, kubeadm, and all related state
 #
 # All VM-side tasks use ignore_errors: yes because the node may be in a
 # partially broken state when this role runs — we want best-effort cleanup
 # rather than a hard stop on the first failure.
+
+
+# ── Resolve actual K8s node name by IP ───────────────────────────────────────
+# target_hostname is the name the operator typed in the UI.
+# The actual K8s node name was registered by kubelet at join time from the
+# VM's real hostname — which may differ in casing or content.
+#
+# Matching by InternalIP is unambiguous: the IP cannot drift independently
+# of the node object the way a string name can.
+#
+# failed_when: false — if the node is already deleted (idempotent re-run),
+# this returns empty output without aborting. We fall back to target_hostname.
+#
+# Retry window: 3 × 5s = 15s.
+# For removal this is a short window — the node should be visible in the API
+# server immediately. Retries only guard against transient API server hiccups.
+- name: worker_remove | Resolve actual K8s node name by IP
+  shell: >-
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+    | grep '{{ ansible_host }}'
+    | awk '{print $1}'
+  register: k8s_node_name_result
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
+  retries: 3
+  delay: 5
+  until: k8s_node_name_result.rc == 0
+  changed_when: false
+  failed_when: false
+
+# If resolution succeeded, use the real K8s name.
+# If it failed or returned empty (node already gone on re-run), fall back to
+# target_hostname so the remaining tasks still attempt cleanup idempotently.
+- name: worker_remove | Set effective node name
+  set_fact:
+    effective_node_name: >-
+      {{
+        k8s_node_name_result.stdout | trim
+        if (k8s_node_name_result.rc == 0 and k8s_node_name_result.stdout | trim != '')
+        else target_hostname
+      }}
+
+- name: worker_remove | Log resolved node name
+  debug:
+    msg: >-
+      Targeting K8s node '{{ effective_node_name }}'
+      (resolved from IP {{ ansible_host }},
+      inventory name was '{{ target_hostname }}')
 
 
 # ── Cluster-side operations ───────────────────────────────────────────────────
@@ -24,7 +75,7 @@
 # being removed does not have a kubeconfig.
 
 - name: worker_remove | Cordon node to prevent new pod scheduling
-  command: kubectl cordon {{ target_hostname }}
+  command: kubectl cordon {{ effective_node_name }}
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
   changed_when: true
@@ -37,7 +88,7 @@
 # --timeout=300s: gives long-running pods up to 5 minutes to terminate cleanly.
 - name: worker_remove | Drain all pods from node
   command: >
-    kubectl drain {{ target_hostname }}
+    kubectl drain {{ effective_node_name }}
     --ignore-daemonsets
     --delete-emptydir-data
     --force
@@ -47,22 +98,23 @@
   changed_when: true
 
 - name: worker_remove | Delete node from Kubernetes
-  command: kubectl delete node {{ target_hostname }}
+  command: kubectl delete node {{ effective_node_name }} --ignore-not-found
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
   changed_when: true
 
 # Remove the Longhorn node object so Longhorn stops trying to schedule
-# replicas on a node that no longer exists. ignore_errors: yes because
-# the node may not exist in Longhorn if it was never fully registered
-# (e.g. removed before Longhorn discovered it).
+# replicas on a node that no longer exists.
+# Uses effective_node_name — the real name Longhorn tracks internally.
+# ignore_errors: yes because the node may not exist in Longhorn if it was
+# never fully registered (e.g. removed before Longhorn discovered it).
 - name: worker_remove | Remove Longhorn node entry
   command: >
-    kubectl delete node.longhorn.io {{ target_hostname }}
+    kubectl delete node.longhorn.io {{ effective_node_name }}
     -n longhorn-system --ignore-not-found
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
-  changed_when: false
+  changed_when: true
   ignore_errors: yes
 
 
