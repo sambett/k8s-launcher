@@ -105,19 +105,11 @@ def _get_registry_host() -> str:
     Read the GitLab registry host for containerd insecure registry config.
 
     Primary source:   generated/jupyterhub-vars.yml
-                      Present when JupyterHub has been deployed.
-
     Fallback source:  generated/gitlab-outputs.json
-                      Present when GitLab has been deployed but JupyterHub
-                      has not yet. Without this fallback, a worker added
-                      before JupyterHub is deployed gets no hosts.toml and
-                      fails ImagePullBackOff when notebooks are later
-                      scheduled on it — with no obvious link to add-worker.
     """
     from core.paths import JUPYTERHUB_VARS_PATH, GITLAB_OUTPUTS_PATH
     import json as _json
 
-    # Primary: jupyterhub vars
     try:
         for line in JUPYTERHUB_VARS_PATH.read_text().splitlines():
             if line.strip().startswith("jhub_registry_host:"):
@@ -127,7 +119,6 @@ def _get_registry_host() -> str:
     except Exception:
         pass
 
-    # Fallback: gitlab outputs
     try:
         data = _json.loads(GITLAB_OUTPUTS_PATH.read_text())
         val = data.get("gitlab_registry_host", "")
@@ -205,7 +196,6 @@ def _make_worker_inventory(cp: dict, worker_hostname: str,
 def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
     """
     Write temp inventory + vars files, invoke ansible-playbook, stream stdout.
-    Temp files are always cleaned up regardless of playbook outcome.
     Yields SSE-formatted strings.
     Final yield is 'data: __PLAYBOOK_OK__' or 'data: __PLAYBOOK_FAIL__:N'.
     """
@@ -258,54 +248,38 @@ def _call_playbook(playbook: str, inventory: str, extra_vars: dict):
 def _update_inventory(hostname: str, ip: str, ssh_user: str) -> str:
     """
     Insert the new worker into the [workers] section of generated/inventory.ini.
-
-    The previous implementation used str.replace("[all:vars]", ...) which
-    placed the new entry BETWEEN the [workers] section and [all:vars] — outside
-    any group. Ansible's INI parser puts such hosts into 'ungrouped', making
-    every future playbook run targeting the [workers] group silently exclude
-    the new node.
-
-    This implementation finds the [workers] section header and appends the new
-    line as the last entry in that section, before the next blank line or group.
+    Finds the [workers] section header and appends the new line as the last
+    entry in that section, before the next blank line or group header.
     """
     if not INVENTORY_PATH.exists():
         return "inventory file not found"
 
-    new_line = (
-        f"{hostname} ansible_host={ip} ansible_user={ssh_user}"
-    )
+    new_line = f"{hostname} ansible_host={ip} ansible_user={ssh_user}"
     inv = INVENTORY_PATH.read_text()
 
-    # Idempotency check — do not add duplicates
     if new_line in inv:
         return f"{hostname} already in inventory — no change"
 
     lines  = inv.splitlines()
     result = []
-    inserted    = False
-    in_workers  = False
+    inserted   = False
+    in_workers = False
 
     for i, line in enumerate(lines):
         result.append(line)
 
-        # We are now inside the [workers] section
         if line.strip() == "[workers]":
             in_workers = True
             continue
 
         if in_workers and not inserted:
-            # A blank line or a new section header marks the end of [workers].
-            # Insert our new entry just before that boundary.
             if line.strip() == "" or line.strip().startswith("["):
-                # Remove the line we just appended, insert new entry first,
-                # then put the boundary line back.
                 result.pop()
                 result.append(new_line)
                 result.append(line)
-                inserted    = True
-                in_workers  = False
+                inserted   = True
+                in_workers = False
 
-    # Edge case: [workers] is the last section with no trailing blank line
     if in_workers and not inserted:
         result.append(new_line)
         inserted = True
@@ -321,15 +295,6 @@ def _update_cluster_hosts(hostname: str, ip: str) -> str:
     """
     Append the new worker to the cluster_hosts list in
     generated/group_vars/all.yml.
-
-    cluster_hosts is a YAML list used by multiple Ansible playbooks to
-    populate /etc/hosts on all nodes. If this list is not updated, any future
-    playbook run (ansible-longhorn, ansible-k8s, ansible-workers) will omit
-    the new node from /etc/hosts propagation across the cluster.
-
-    We do a simple line-based append rather than full YAML parsing to avoid
-    introducing a PyYAML dependency on the write path and to preserve the
-    existing file's formatting and comments exactly.
     """
     if not VARS_PATH.exists():
         return "group_vars file not found"
@@ -337,7 +302,6 @@ def _update_cluster_hosts(hostname: str, ip: str) -> str:
     entry = f"  - {{ name: {hostname}, ip: \"{ip}\" }}"
     content = VARS_PATH.read_text()
 
-    # Idempotency check
     if hostname in content and ip in content:
         return f"{hostname} already in cluster_hosts — no change"
 
@@ -354,13 +318,11 @@ def _update_cluster_hosts(hostname: str, ip: str) -> str:
             continue
 
         if in_cluster_hosts and not inserted:
-            # A line that does NOT start with "  -" marks the end of the list
             if not line.startswith("  -"):
                 result.insert(len(result) - 1, entry)
                 inserted         = True
                 in_cluster_hosts = False
 
-    # Edge case: cluster_hosts is the last block in the file
     if in_cluster_hosts and not inserted:
         result.append(entry)
         inserted = True
@@ -381,25 +343,18 @@ def _remove_cluster_hosts(hostname: str, ip: str) -> str:
     ghost entries that cause every future playbook run to re-write a dead
     node back into /etc/hosts on all live nodes.
 
-    Matches on both hostname AND ip so a partial match (e.g. a different
-    worker that happens to share a hostname prefix) is never removed.
-
-    Safe to call if the entry is already absent — idempotent.
+    Matches on both hostname AND ip so a partial match never removes an
+    unrelated entry. Safe to call if the entry is already absent.
     """
     if not VARS_PATH.exists():
         return "group_vars file not found — skipping cluster_hosts cleanup"
 
     content = VARS_PATH.read_text()
 
-    # Fast path: nothing to do
     if hostname not in content and ip not in content:
         return f"{hostname} not found in cluster_hosts — no change"
 
-    lines   = content.splitlines()
-    # Drop any line that contains both the hostname AND the ip.
-    # The entry format written by _update_cluster_hosts is:
-    #   "  - { name: <hostname>, ip: \"<ip>\" }"
-    # Matching both fields prevents accidental removal of unrelated entries.
+    lines    = content.splitlines()
     filtered = [
         line for line in lines
         if not (hostname in line and ip in line)
@@ -416,21 +371,7 @@ def _remove_cluster_hosts(hostname: str, ip: str) -> str:
 def _propagate_etc_hosts(hostname: str, ip: str) -> str:
     """
     Add the new worker's hostname/IP to /etc/hosts on all existing cluster
-    nodes (control plane + existing workers) via a direct Ansible ad-hoc call.
-
-    Why this is needed:
-      - Longhorn uses node hostnames for inter-replica iSCSI paths. If an
-        existing node cannot resolve the new worker's hostname, replica
-        communication fails after a volume rebalance.
-      - Ansible delegate_to tasks that resolve by hostname also depend on this.
-
-    Why subprocess.run and NOT run_on_cp:
-      run_on_cp executes its argument as a shell command on ansiblecplane.
-      INVENTORY_PATH is a local path on ansiblectl — it does not exist on
-      ansiblecplane. Running "ansible all -i /home/ansiblectl/..." as a shell
-      command on the control plane would fail with "No such file or directory".
-      subprocess.run executes Ansible directly from ansiblectl where the
-      inventory file actually lives.
+    nodes via Ansible ad-hoc lineinfile.
     """
     if not INVENTORY_PATH.exists():
         return "inventory not found — skipping /etc/hosts propagation"
@@ -460,17 +401,12 @@ def _depropagete_etc_hosts(hostname: str, ip: str) -> str:
     Remove a worker's hostname/IP entry from /etc/hosts on all remaining
     cluster nodes.
 
-    Mirror of _propagate_etc_hosts — called on worker removal to prevent
-    stale entries that could cause hostname resolution to a non-existent or
-    repurposed IP on every remaining node.
+    Mirror of _propagate_etc_hosts — called on worker removal.
+    Uses regexp on the IP so the line is removed regardless of trailing
+    content. Safe if the entry is already absent (state=absent is idempotent).
 
-    Uses regexp matching on the IP address so the line is removed regardless
-    of any trailing whitespace or comment variations. Safe if the entry is
-    already absent (lineinfile state=absent is idempotent).
-
-    Targets the permanent inventory (remaining nodes after removal) — the
-    removed worker's entry will be cleaned from the inventory in the next
-    step, so it is not targeted here and cannot cause an SSH error.
+    Runs against the permanent inventory BEFORE the removed worker's entry
+    is wiped from it, so only remaining live nodes are targeted.
     """
     if not INVENTORY_PATH.exists():
         return "inventory not found — skipping /etc/hosts cleanup"
@@ -506,7 +442,7 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
 
     Checks:
       1. Node is Ready in kubectl
-      2. Longhorn has discovered the node (nodes.longhorn.io resource exists)
+      2. Longhorn has discovered the node
       3. Longhorn node has at least one schedulable disk
       4. calico-node DaemonSet pod is Running on the new node
       5. iscsi_tcp kernel module is loaded on the new node
@@ -518,7 +454,6 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
     out, rc = run_on_cp(
         f"kubectl get node {hostname} --no-headers 2>/dev/null | awk '{{print $2}}'"
     )
-    # Strip the Ansible ad-hoc header before reading the value
     status = out.strip().splitlines()[-1].strip() if out.strip() else ""
     if "Ready" in status and "NotReady" not in status:
         results.append(f"✓ Node {hostname} is Ready")
@@ -570,10 +505,6 @@ def _validate_new_worker(hostname: str, ip: str) -> list:
         )
 
     # ── 5. iscsi_tcp module loaded ─────────────────────────────────────────────
-    # Run Ansible ad-hoc directly from ansiblectl (this process) targeting the
-    # new worker. We cannot use run_on_cp here because run_on_cp executes on
-    # ansiblecplane — INVENTORY_PATH is a local path on ansiblectl and does
-    # not exist on the control plane.
     iscsi_result = subprocess.run(
         [
             "ansible", hostname,
@@ -641,6 +572,15 @@ def _add_worker_stream(node: NewWorker):
       Step 2 — Configure node and join cluster (Ansible)
       Step 3 — Update inventory, group_vars, and /etc/hosts on existing nodes
       Step 4 — Validate the node is fully operational
+
+    Hostname canonicalisation:
+      node.hostname is lowercased once at the top of this function and the
+      canonical form is used everywhere: hostnamectl, /etc/hosts 127.0.1.1,
+      inventory, cluster_hosts, validation. This ensures the VM hostname,
+      the K8s node name (registered by kubelet from the VM hostname), and all
+      downstream consumers are identical — preventing kubectl "not found" errors
+      caused by case mismatches between what kubelet registered and what Python
+      sends to kubectl.
     """
     TOTAL = 4
 
@@ -651,6 +591,14 @@ def _add_worker_stream(node: NewWorker):
     def _done():       return "data: __DONE__\n\n"
     def _err(code):    return f"data: __ERROR__:{code}\n\n"
 
+    # ── Canonicalise hostname once ─────────────────────────────────────────────
+    # Lowercase at ingestion so the VM hostname, the K8s node name, the
+    # inventory entry, and all kubectl operations all use the same string.
+    # RFC 1123 requires hostnames to be lowercase. kubelet registers the node
+    # under whatever hostname the VM reports — if that differs in case from
+    # what Python later sends to kubectl, every node lookup fails.
+    hostname = node.hostname.strip().lower()
+
     # ── Step 1: Full SSH trust setup ───────────────────────────────────────────
     yield _step(1, f"Bootstrapping SSH key and sudo on {node.ip}")
 
@@ -660,42 +608,44 @@ def _add_worker_stream(node: NewWorker):
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
         # 1a. Hostname verification and correction
+        # Use the canonical lowercase hostname for hostnamectl so the VM
+        # hostname, K8s node name, and all downstream references are identical.
         actual_hostname, _, rc = run_command(client, "hostname")
-        if actual_hostname.strip() != node.hostname.strip():
+        if actual_hostname.strip() != hostname:
             yield _log(
                 f"VM hostname is '{actual_hostname.strip()}', "
-                f"expected '{node.hostname}' — setting it now"
+                f"expected '{hostname}' — setting it now"
             )
             _, stderr, rc = run_command(
                 client,
-                f"echo '{node.ssh_pass}' | sudo -S hostnamectl set-hostname {node.hostname}"
+                f"echo '{node.ssh_pass}' | sudo -S hostnamectl set-hostname {hostname}"
             )
             if rc != 0:
                 yield _fail(f"Could not set hostname: {stderr}")
                 yield _err("hostname_set")
                 return
-            yield _ok(f"Hostname set to {node.hostname}")
+            yield _ok(f"Hostname set to {hostname}")
         else:
             yield _ok(f"Hostname already correct: {actual_hostname.strip()}")
 
         # 1b. Ensure 127.0.1.1 <hostname> is in /etc/hosts on the new VM
         _, _, rc = run_command(
             client,
-            f"grep -c '^127\\.0\\.1\\.1 {node.hostname}$' /etc/hosts"
+            f"grep -c '^127\\.0\\.1\\.1 {hostname}$' /etc/hosts"
         )
         if rc != 0:
             _, stderr, set_rc = run_command(
                 client,
                 f"echo '{node.ssh_pass}' | sudo -S sh -c "
-                f"\"echo '127.0.1.1 {node.hostname}' >> /etc/hosts\""
+                f"\"echo '127.0.1.1 {hostname}' >> /etc/hosts\""
             )
             if set_rc != 0:
                 yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
                 yield _err("hosts_127")
                 return
-            yield _ok(f"Added 127.0.1.1 {node.hostname} to /etc/hosts")
+            yield _ok(f"Added 127.0.1.1 {hostname} to /etc/hosts")
         else:
-            yield _ok(f"127.0.1.1 {node.hostname} already in /etc/hosts")
+            yield _ok(f"127.0.1.1 {hostname} already in /etc/hosts")
 
         # 1c. OS version check
         os_id_out, _, _ = run_command(
@@ -851,7 +801,7 @@ def _add_worker_stream(node: NewWorker):
     yield _ok("ansible.cfg written to all Ansible projects")
 
     # ── Step 2: Ansible configures node and joins cluster ──────────────────────
-    yield _step(2, f"Configuring {node.hostname} and joining cluster (~10 min)")
+    yield _step(2, f"Configuring {hostname} and joining cluster (~10 min)")
 
     join_out, join_rc = run_on_cp(
         "kubeadm token create --print-join-command 2>/dev/null"
@@ -867,9 +817,7 @@ def _add_worker_stream(node: NewWorker):
     yield _ok("Fresh join token generated")
 
     cp        = _get_cp_info()
-    inventory = _make_worker_inventory(
-        cp, node.hostname.lower(), node.ip, node.ssh_user
-    )
+    inventory = _make_worker_inventory(cp, hostname, node.ip, node.ssh_user)
 
     extra_vars: dict = {"join_command": join_lines[0]}
     registry_host = _get_registry_host()
@@ -893,32 +841,31 @@ def _add_worker_stream(node: NewWorker):
         yield _err("playbook")
         return
 
-    yield _ok(f"{node.hostname} joined the cluster successfully")
+    yield _ok(f"{hostname} joined the cluster successfully")
 
     # ── Step 3: Update inventory, group_vars, /etc/hosts on existing nodes ─────
     yield _step(3, "Updating cluster state")
 
-    inv_result = _update_inventory(node.hostname.lower(), node.ip, node.ssh_user)
+    inv_result = _update_inventory(hostname, node.ip, node.ssh_user)
     if inv_result.startswith("WARNING"):
         yield _fail(inv_result)
         yield _err("inventory_update")
         return
     yield _ok(inv_result)
 
-    gv_result = _update_cluster_hosts(node.hostname.lower(), node.ip)
+    gv_result = _update_cluster_hosts(hostname, node.ip)
     yield _ok(gv_result)
 
-    hosts_result = _propagate_etc_hosts(node.hostname.lower(), node.ip)
+    hosts_result = _propagate_etc_hosts(hostname, node.ip)
     yield _ok(hosts_result)
 
     # ── Step 4: Validation ─────────────────────────────────────────────────────
-    yield _step(4, f"Validating {node.hostname}")
+    yield _step(4, f"Validating {hostname}")
 
-    validation_results = _validate_new_worker(node.hostname.lower(), node.ip)
+    validation_results = _validate_new_worker(hostname, node.ip)
     for line in validation_results:
         yield _log(line)
 
-    # Print final cluster state
     out, _ = run_on_cp("kubectl get nodes -o wide --no-headers")
     yield _log("")
     yield _log("── Current cluster nodes ──────────────────────────────")
@@ -953,7 +900,7 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
     """
     import time
 
-    hostname = req.hostname.lower()
+    hostname = req.hostname.strip().lower()
 
     yield f"data: Starting removal of {hostname}...\n\n"
 
@@ -1049,22 +996,14 @@ def _remove_worker_stream(req: RemoveWorkerRequest):
             yield chunk
 
     # ── Remove cluster_hosts entry ─────────────────────────────────────────────
-    # Must run BEFORE inventory cleanup so VARS_PATH is still intact.
-    # Prevents future playbook runs from re-writing a dead node back into
-    # /etc/hosts on all live nodes.
     ch_result = _remove_cluster_hosts(hostname, req.ip)
     yield f"data: ok: {ch_result}\n\n"
 
     # ── Remove /etc/hosts entry from remaining nodes ───────────────────────────
-    # Runs BEFORE inventory cleanup so the remaining nodes are still reachable
-    # via the current inventory. The removed worker is no longer in the cluster
-    # (kubectl delete ran in Ansible) so it will not be targeted by Ansible.
     deprop_result = _depropagete_etc_hosts(hostname, req.ip)
     yield f"data: ok: {deprop_result}\n\n"
 
     # ── Update permanent inventory ─────────────────────────────────────────────
-    # Runs last — after /etc/hosts cleanup, which still needs the inventory
-    # to know which nodes to target.
     if INVENTORY_PATH.exists():
         lines = [
             l for l in INVENTORY_PATH.read_text().splitlines()
