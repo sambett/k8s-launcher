@@ -607,47 +607,7 @@ def _add_worker_stream(node: NewWorker):
     try:
         client = get_client_with_password(node.ip, node.ssh_user, node.ssh_pass)
 
-        # 1a. Hostname verification and correction
-        # Use the canonical lowercase hostname for hostnamectl so the VM
-        # hostname, K8s node name, and all downstream references are identical.
-        actual_hostname, _, rc = run_command(client, "hostname")
-        if actual_hostname.strip() != hostname:
-            yield _log(
-                f"VM hostname is '{actual_hostname.strip()}', "
-                f"expected '{hostname}' — setting it now"
-            )
-            _, stderr, rc = run_command(
-                client,
-                f"echo '{node.ssh_pass}' | sudo -S hostnamectl set-hostname {hostname}"
-            )
-            if rc != 0:
-                yield _fail(f"Could not set hostname: {stderr}")
-                yield _err("hostname_set")
-                return
-            yield _ok(f"Hostname set to {hostname}")
-        else:
-            yield _ok(f"Hostname already correct: {actual_hostname.strip()}")
-
-        # 1b. Ensure 127.0.1.1 <hostname> is in /etc/hosts on the new VM
-        _, _, rc = run_command(
-            client,
-            f"grep -c '^127\\.0\\.1\\.1 {hostname}$' /etc/hosts"
-        )
-        if rc != 0:
-            _, stderr, set_rc = run_command(
-                client,
-                f"echo '{node.ssh_pass}' | sudo -S sh -c "
-                f"\"echo '127.0.1.1 {hostname}' >> /etc/hosts\""
-            )
-            if set_rc != 0:
-                yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
-                yield _err("hosts_127")
-                return
-            yield _ok(f"Added 127.0.1.1 {hostname} to /etc/hosts")
-        else:
-            yield _ok(f"127.0.1.1 {hostname} already in /etc/hosts")
-
-        # 1c. OS version check
+        # 1a. OS version check — fail fast before mutating any state on the VM.
         os_id_out, _, _ = run_command(
             client,
             "grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
@@ -673,6 +633,46 @@ def _add_worker_stream(node: NewWorker):
             yield _err("os_check")
             return
         yield _ok(f"OS check passed: Ubuntu {os_ver}")
+
+        # 1b. Hostname verification and correction
+        # Use the canonical lowercase hostname for hostnamectl so the VM
+        # hostname, K8s node name, and all downstream references are identical.
+        actual_hostname, _, rc = run_command(client, "hostname")
+        if actual_hostname.strip() != hostname:
+            yield _log(
+                f"VM hostname is '{actual_hostname.strip()}', "
+                f"expected '{hostname}' — setting it now"
+            )
+            _, stderr, rc = run_command(
+                client,
+                f"echo '{node.ssh_pass}' | sudo -S hostnamectl set-hostname {hostname}"
+            )
+            if rc != 0:
+                yield _fail(f"Could not set hostname: {stderr}")
+                yield _err("hostname_set")
+                return
+            yield _ok(f"Hostname set to {hostname}")
+        else:
+            yield _ok(f"Hostname already correct: {actual_hostname.strip()}")
+
+        # 1c. Ensure 127.0.1.1 <hostname> is in /etc/hosts on the new VM
+        _, _, rc = run_command(
+            client,
+            f"grep -c '^127\\.0\\.1\\.1 {hostname}$' /etc/hosts"
+        )
+        if rc != 0:
+            _, stderr, set_rc = run_command(
+                client,
+                f"echo '{node.ssh_pass}' | sudo -S sh -c "
+                f"\"echo '127.0.1.1 {hostname}' >> /etc/hosts\""
+            )
+            if set_rc != 0:
+                yield _fail(f"Could not set 127.0.1.1 entry: {stderr}")
+                yield _err("hosts_127")
+                return
+            yield _ok(f"Added 127.0.1.1 {hostname} to /etc/hosts")
+        else:
+            yield _ok(f"127.0.1.1 {hostname} already in /etc/hosts")
 
         # 1d. Push controller public key → authorized_keys
         for cmd in [
