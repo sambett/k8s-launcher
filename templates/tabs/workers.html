@@ -19,8 +19,12 @@
         onclick="loadWorkerNodes()">↺ Refresh</button>
     </h2>
     <p class="card-hint">
-      All nodes currently in the cluster. Use the Remove button to drain
-      and remove a worker. The control-plane row has no actions.
+      All nodes currently in the cluster. Use the <strong>Remove</strong> button to drain
+      and remove a worker. The control-plane row has no actions.<br>
+      A <strong style="color:#e65100">👻 ghost</strong> node appears when a VM was added to
+      the inventory during a failed join attempt but never actually joined the cluster —
+      use <strong style="color:#e65100">Remove ghost</strong> to clean it from the inventory.
+      This does <em>not</em> touch the cluster.
     </p>
     <div id="worker-nodes-table">
       <span style="color:#888;font-size:13px">Loading...</span>
