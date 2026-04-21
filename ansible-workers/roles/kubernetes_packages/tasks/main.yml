@@ -63,6 +63,7 @@
       - "kubeadm={{ k8s_pkg }}"
     state: present
     update_cache: yes
+    allow_downgrade: true
 
 
 # ── Version hold ──────────────────────────────────────────────────────────────
