@@ -1,0 +1,24 @@
+---
+# ansible-workers/reset-vm.yml
+#
+# Wipes all Kubernetes state from a VM that is NOT a cluster member.
+# Called by routes/worker.py when the operator clicks "Reset VM".
+#
+# Use this when a VM has:
+#   - Failed a kubeadm join midway and has stale /etc/kubernetes state
+#   - A newer kubelet/kubeadm version that blocks a pinned-version install
+#   - Any leftover k8s config from a previous cluster that was never cleaned
+#
+# This playbook has NO cluster-side operations.
+# It never contacts the control plane and requires no kubeconfig.
+#
+# Usage (via launcher — do not run manually):
+#   ansible-playbook -i /tmp/worker-reset-<hostname>.ini reset-vm.yml
+#
+# No --extra-vars required — the role is fully self-contained.
+
+- name: Reset worker VM to clean Kubernetes-free state
+  hosts: workers
+  become: yes
+  roles:
+    - vm_reset

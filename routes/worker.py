@@ -1053,3 +1053,176 @@ async def remove_worker_endpoint(req: RemoveWorkerRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Reset VM ──────────────────────────────────────────────────────────────────
+
+class ResetVmRequest(BaseModel):
+    ip:       str
+    hostname: str
+    ssh_user: str
+    ssh_pass: str
+
+
+def _make_reset_inventory(hostname: str, ip: str, ssh_user: str) -> str:
+    """
+    Minimal inventory for reset-vm.yml.
+    Only [workers] — no control_plane group needed because the vm_reset
+    role has zero delegate_to tasks and never contacts the cluster.
+    """
+    return (
+        f"[workers]\n"
+        f"{hostname} ansible_host={ip} ansible_user={ssh_user}\n"
+        "\n"
+        "[all:vars]\n"
+        "ansible_python_interpreter=/usr/bin/python3\n"
+        f"ansible_ssh_private_key_file={SSH_KEY_PATH}\n"
+    )
+
+
+def _reset_vm_stream(req: ResetVmRequest):
+    """
+    Two-step VM reset streamed live to the browser.
+
+      Step 1 (Python/Paramiko) — Re-establish SSH trust:
+        Push controller public key → authorized_keys
+        Write passwordless sudo
+        Verify sudo works
+        ssh-keyscan → controller known_hosts
+        write_ansible_cfgs()
+
+      Step 2 (Ansible) — Run ansible-workers/reset-vm.yml:
+        Stops kubelet, kubeadm reset -f, purges kubelet/kubeadm/kubectl,
+        removes k8s apt repo and GPG key, flushes iptables, cleans CNI
+        interfaces and state directories.
+        All tasks are best-effort (ignore_errors: yes in the role).
+
+    No state file changes — a VM being reset was never successfully joined
+    so it must not be in inventory.ini or group_vars/all.yml.
+    If it somehow is, remove it manually from those files.
+    """
+    def _ok(msg):   return f"data: ok: {msg}\n\n"
+    def _fail(msg): return f"data: FAILED: {msg}\n\n"
+    def _log(msg):  return f"data: {msg}\n\n"
+    def _err(code): return f"data: __ERROR__:{code}\n\n"
+
+    hostname = req.hostname.strip().lower()
+
+    # ── Step 1: SSH trust ──────────────────────────────────────────────────────
+    yield _log(f"PLAY [Step 1/2] Establishing SSH trust on {req.ip}")
+
+    pub_key = SSH_PUB_KEY_PATH.read_text().strip()
+    client  = None
+    try:
+        client = get_client_with_password(req.ip, req.ssh_user, req.ssh_pass)
+
+        # Push controller public key → authorized_keys
+        for cmd in [
+            "mkdir -p ~/.ssh",
+            "chmod 700 ~/.ssh",
+            f"echo '{pub_key}' >> ~/.ssh/authorized_keys",
+            "sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys",
+            "chmod 600 ~/.ssh/authorized_keys",
+        ]:
+            _, stderr, rc = run_command(client, cmd)
+            if rc != 0:
+                yield _fail(f"SSH key push failed: {cmd} — {stderr}")
+                yield _err("ssh_key")
+                return
+        yield _ok(f"SSH key installed on {req.ip}")
+
+        # Write passwordless sudo
+        _, stderr, rc = run_command(
+            client,
+            f"echo '{req.ssh_pass}' | sudo -S bash -c "
+            f"\"echo '{req.ssh_user} ALL=(ALL) NOPASSWD:ALL' "
+            f"> /etc/sudoers.d/ansible-nopasswd && "
+            f"chmod 440 /etc/sudoers.d/ansible-nopasswd\""
+        )
+        if rc != 0:
+            yield _fail(f"Passwordless sudo setup failed — {stderr}")
+            yield _err("sudo_setup")
+            return
+
+        # Verify sudo works without password
+        _, _, verify_rc = run_command(client, "sudo -n whoami")
+        if verify_rc != 0:
+            yield _fail("Sudo verification failed — sudoers entry did not apply")
+            yield _err("sudo_verify")
+            return
+        yield _ok(f"Passwordless sudo confirmed on {req.ip}")
+
+    except paramiko.AuthenticationException:
+        yield _fail("Authentication failed — check the SSH password.")
+        yield _err("auth")
+        return
+    except (socket.timeout, paramiko.SSHException) as exc:
+        yield _fail(f"Cannot reach {req.ip}: {exc}")
+        yield _err("connection")
+        return
+    finally:
+        if client:
+            client.close()
+
+    # Populate controller known_hosts for this IP
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.touch(exist_ok=True)
+    scan = subprocess.run(
+        ["ssh-keyscan", "-H", "-T", "5", req.ip],
+        capture_output=True, text=True
+    )
+    if scan.returncode == 0 and scan.stdout.strip():
+        existing = known_hosts_path.read_text()
+        for line in scan.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts    = line.split()
+            key_blob = parts[-1] if len(parts) >= 3 else ""
+            if key_blob and key_blob not in existing:
+                with open(known_hosts_path, "a") as f:
+                    f.write(line + "\n")
+    yield _ok(f"Controller known_hosts updated for {req.ip}")
+
+    write_ansible_cfgs()
+    yield _ok("ansible.cfg written to all Ansible projects")
+
+    # ── Step 2: Ansible — wipe all Kubernetes state ────────────────────────────
+    yield _log(f"PLAY [Step 2/2] Wiping Kubernetes state on {hostname} (~2 min)")
+
+    inventory   = _make_reset_inventory(hostname, req.ip, req.ssh_user)
+    playbook_ok = False
+
+    for chunk in _call_playbook("reset-vm.yml", inventory, {}):
+        if chunk == "data: __PLAYBOOK_OK__\n\n":
+            playbook_ok = True
+        elif chunk.startswith("data: __PLAYBOOK_FAIL__"):
+            rc = chunk.strip().split(":")[-1]
+            # The vm_reset role uses ignore_errors: yes on every task so
+            # a non-zero exit here means Ansible itself failed (e.g. host
+            # unreachable, syntax error) — not that a cleanup task failed.
+            yield _fail(f"Ansible exited {rc} — see log above")
+            yield _err("playbook")
+            return
+        else:
+            yield chunk
+
+    if not playbook_ok:
+        yield _fail("Playbook did not complete — see log above")
+        yield _err("playbook")
+        return
+
+    yield _ok(f"{hostname} is clean — all Kubernetes state removed")
+    yield _log("")
+    yield _log("VM is ready. You can now use Add Worker to re-join it.")
+    yield "data: __DONE__\n\n"
+
+
+@router.post("/api/cluster/reset-vm")
+async def reset_vm_endpoint(req: ResetVmRequest):
+    return StreamingResponse(
+        _reset_vm_stream(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

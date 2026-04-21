@@ -127,6 +127,58 @@
     <div class="log" id="aw-log">Waiting for job to start...</div>
   </div>
 
+  <!-- Reset VM — wipe stale Kubernetes state from a VM that failed to join -->
+  <div class="card" style="border-color:#ffe082">
+    <h2 style="color:#e65100">🔧 Reset Worker VM</h2>
+    <p class="card-hint">
+      Use this when a VM has stale Kubernetes state — a failed join, wrong
+      package version, or leftover config from a previous cluster.
+      <strong>Only use on VMs that are NOT currently cluster members.</strong>
+      This does not touch the cluster. After reset, use Add Worker to re-join.
+    </p>
+
+    <div style="display:flex;gap:12px;align-items:flex-start;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 14px;margin-bottom:1rem;font-size:12.5px;color:#5d4037;line-height:1.5">
+      <span style="font-size:18px;flex-shrink:0">⚠️</span>
+      <div>
+        <strong>This operation is destructive and irreversible on the target VM.</strong><br>
+        It will purge kubelet, kubeadm, kubectl and all related state.
+        Verify the IP before proceeding.
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>IP address</label>
+      <input type="text" id="rv-ip" placeholder="e.g. 10.110.8.5"/>
+    </div>
+    <div class="field-row">
+      <label>Hostname</label>
+      <input type="text" id="rv-hostname" placeholder="e.g. w1-temp"/>
+    </div>
+    <div class="field-row">
+      <label>SSH user</label>
+      <input type="text" id="rv-user" placeholder="e.g. user"/>
+    </div>
+    <div class="field-row">
+      <label>Password</label>
+      <input type="password" id="rv-pass" placeholder="one-time — never stored"/>
+    </div>
+
+    <div class="field-row" style="margin-bottom:.75rem">
+      <label style="color:#e65100">Type RESET to confirm</label>
+      <input type="text" id="rv-confirm"
+        placeholder="RESET" style="max-width:180px;border-color:#ffe082"/>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-sm" id="rv-btn"
+        style="background:#e65100;color:#fff;border:none"
+        onclick="doResetVm()">Reset VM</button>
+      <span class="dot" id="dot-rv"></span>
+      <span id="rv-status-label" style="font-size:12px;color:#666"></span>
+    </div>
+    <div class="log" id="rv-log" style="margin-top:.75rem;display:none;height:220px"></div>
+  </div>
+
 </div>
 
 <style>
@@ -376,4 +428,75 @@ async function checkWorkersPrereq() {
 document.getElementById('aw-hostname').addEventListener('input', function() {
     this.value = this.value.toLowerCase();
 });
+async function doResetVm() {
+  const confirmVal = document.getElementById('rv-confirm').value;
+  const logEl      = document.getElementById('rv-log');
+  const statEl     = document.getElementById('rv-status-label');
+
+  if (confirmVal !== 'RESET') {
+    statEl.textContent = 'Type RESET to confirm.';
+    return;
+  }
+
+  const body = {
+    ip:       document.getElementById('rv-ip').value.trim(),
+    hostname: document.getElementById('rv-hostname').value.trim(),
+    ssh_user: document.getElementById('rv-user').value.trim(),
+    ssh_pass: document.getElementById('rv-pass').value,
+  };
+
+  if (!body.ip || !body.hostname || !body.ssh_user || !body.ssh_pass) {
+    statEl.textContent = 'Fill in all four fields.';
+    return;
+  }
+
+  document.getElementById('rv-pass').value = '';
+  logEl.style.display = 'block';
+  logEl.innerHTML = '';
+  statEl.textContent = 'Connecting to ' + body.ip + '…';
+  setDot('dot-rv', 'running');
+  document.getElementById('rv-btn').disabled = true;
+
+  try {
+    const resp = await fetch('/api/cluster/reset-vm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split('\n\n'); buf = events.pop();
+      for (const ev of events) {
+        const lines = ev.split('\n').filter(l => l.startsWith('data: '));
+        if (!lines.length) continue;
+        const msg = lines[lines.length - 1].slice(6);
+        if (msg === '__DONE__') {
+          setDot('dot-rv', 'ok');
+          statEl.textContent = 'Complete — VM is clean';
+          document.getElementById('rv-btn').disabled = false;
+          document.getElementById('rv-confirm').value = '';
+        } else if (msg.startsWith('__ERROR__')) {
+          setDot('dot-rv', 'error');
+          statEl.textContent = 'Failed';
+          makeLogLine('ERROR: ' + msg, logEl);
+          document.getElementById('rv-btn').disabled = false;
+        } else {
+          makeLogLine(msg, logEl);
+        }
+      }
+    }
+  } catch (e) {
+    setDot('dot-rv', 'error');
+    statEl.textContent = 'Failed';
+    makeLogLine('Request failed: ' + e, logEl);
+    document.getElementById('rv-btn').disabled = false;
+  }
+}
+
 </script>

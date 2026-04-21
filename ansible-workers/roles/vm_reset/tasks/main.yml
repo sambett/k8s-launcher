@@ -1,0 +1,194 @@
+---
+# ansible-workers/roles/vm_reset/tasks/main.yml
+#
+# Wipes all Kubernetes state from a VM that is NOT a cluster member.
+# Use this for VMs that failed a join, have stale packages from a previous
+# attempt, or need to be re-prepared before Add Worker is run again.
+#
+# This role has NO cluster-side operations — no kubectl, no delegate_to,
+# no control plane involvement. It runs only on the target VM itself.
+#
+# Operation order is intentional:
+#   1. Stop kubelet early — prevents it from fighting cleanup steps
+#   2. kubeadm reset — cleans certs, CNI config, iptables rules
+#   3. Directory wipe — removes anything kubeadm reset leaves behind
+#   4. Package removal — removes kubelet/kubeadm/kubectl so apt can
+#      reinstall the correct pinned version cleanly on the next attempt
+#   5. Apt repo cleanup — removes k8s apt source + GPG key so the next
+#      apt-get update fetches a clean repo state
+#   6. Iptables flush — removes any stale kube-proxy rules
+#   7. CNI interface cleanup — removes virtual interfaces left by CNI
+#   8. Final apt cleanup — removes orphaned dependency packages
+#
+# All tasks use ignore_errors: yes — the VM may be partially broken and
+# we always prefer best-effort full cleanup over stopping at first failure.
+# The goal is a VM indistinguishable from a fresh Ubuntu install with
+# respect to Kubernetes state.
+#
+# Intentionally NOT touched:
+#   - containerd  — runtime is correct, add-worker will reconfigure it
+#   - iSCSI/iscsi_tcp — kernel module and service are fine, keep them
+#   - swap config  — already disabled, no need to re-do
+#   - base OS packages (curl, gpg, etc.) — safe to keep
+
+
+# ── 1. Stop Kubernetes services ───────────────────────────────────────────────
+
+- name: vm_reset | Stop kubelet service
+  systemd:
+    name: kubelet
+    state: stopped
+  ignore_errors: yes
+
+- name: vm_reset | Disable kubelet service
+  systemd:
+    name: kubelet
+    enabled: no
+  ignore_errors: yes
+
+
+# ── 2. kubeadm reset ──────────────────────────────────────────────────────────
+# Cleans up:
+#   - /etc/kubernetes (certs, kubeconfig, manifests)
+#   - CNI configuration under /etc/cni
+#   - iptables rules written by kube-proxy
+#   - IPVS rules if ipvs mode was used
+# Does NOT clean packages or apt sources — we handle those below.
+
+- name: vm_reset | Run kubeadm reset
+  command: kubeadm reset -f
+  ignore_errors: yes
+  changed_when: true
+
+
+# ── 3. Directory wipe ─────────────────────────────────────────────────────────
+# Remove state directories that kubeadm reset may not have fully cleaned.
+
+- name: vm_reset | Remove Kubernetes and CNI state directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes
+    - /var/lib/kubelet
+    - /etc/cni
+    - /opt/cni
+    - /var/lib/cni
+    - /var/lib/etcd
+    - /var/lib/longhorn
+    - /run/flannel
+  ignore_errors: yes
+
+
+# ── 4. Package removal ────────────────────────────────────────────────────────
+# Unhold before purge — apt refuses to remove held packages without this.
+# Purge removes config files in addition to binaries, giving a truly clean
+# state for the next install.
+
+- name: vm_reset | Unhold Kubernetes packages
+  command: apt-mark unhold kubelet kubeadm kubectl
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Remove Kubernetes packages
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+      - kubernetes-cni
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+
+# ── 5. Apt repo and key cleanup ───────────────────────────────────────────────
+# Remove the Kubernetes apt source and GPG key so the next apt-get update
+# fetches a completely fresh repo state. Without this, a stale cache can
+# still resolve a newer version and cause the downgrade error again.
+
+- name: vm_reset | Remove Kubernetes apt source file
+  file:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    state: absent
+  ignore_errors: yes
+
+- name: vm_reset | Remove Kubernetes GPG key
+  file:
+    path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    state: absent
+  ignore_errors: yes
+
+- name: vm_reset | Refresh apt cache after repo removal
+  apt:
+    update_cache: yes
+  ignore_errors: yes
+
+
+# ── 6. Iptables flush ─────────────────────────────────────────────────────────
+# kube-proxy writes rules across the filter, nat, and mangle tables.
+# Flush all three so the next join starts from a clean iptables state.
+
+- name: vm_reset | Flush iptables filter table
+  command: iptables -F
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Delete iptables custom chains (filter)
+  command: iptables -X
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Flush iptables nat table
+  command: iptables -t nat -F
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Delete iptables custom chains (nat)
+  command: iptables -t nat -X
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Flush iptables mangle table
+  command: iptables -t mangle -F
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Delete iptables custom chains (mangle)
+  command: iptables -t mangle -X
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Clear IPVS tables if ipvsadm is present
+  command: ipvsadm --clear
+  ignore_errors: yes
+  changed_when: true
+
+
+# ── 7. CNI virtual interface cleanup ─────────────────────────────────────────
+# Delete virtual network interfaces left behind by CNI plugins.
+# These linger even after kubeadm reset and block a clean re-join.
+
+- name: vm_reset | Delete cni0 interface
+  command: ip link delete cni0
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Delete flannel.1 interface
+  command: ip link delete flannel.1
+  ignore_errors: yes
+  changed_when: true
+
+- name: vm_reset | Delete tunl0 interface
+  command: ip link delete tunl0
+  ignore_errors: yes
+  changed_when: true
+
+
+# ── 8. Final apt cleanup ──────────────────────────────────────────────────────
+
+- name: vm_reset | Remove orphaned dependency packages
+  apt:
+    autoremove: yes
+    purge: yes
+  ignore_errors: yes
