@@ -1226,3 +1226,161 @@ async def reset_vm_endpoint(req: ResetVmRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Node reconciliation ───────────────────────────────────────────────────────
+# Cross-references inventory.ini (what the UI thinks exists) against
+# kubectl get nodes (what the cluster actually has).
+# Returns every node tagged with in_cluster and in_inventory so the UI
+# can distinguish live nodes from ghost entries.
+
+class RemoveGhostRequest(BaseModel):
+    hostname: str
+    ip:       str
+
+
+@router.get("/api/cluster/nodes/reconcile")
+async def reconcile_nodes():
+    """
+    Returns the merged view of inventory + kubectl node list.
+
+    Each entry has:
+      hostname, ip, role, ssh_user,
+      in_inventory (bool) — present in generated/inventory.ini
+      in_cluster   (bool) — present in kubectl get nodes
+
+    Ghost nodes: in_inventory=True, in_cluster=False
+    Orphan nodes: in_inventory=False, in_cluster=True (informational only)
+    """
+    from fastapi.responses import JSONResponse
+
+    # ── Read inventory ─────────────────────────────────────────────────────────
+    inv_nodes = []
+    if INVENTORY_PATH.exists():
+        in_workers = False
+        for line in INVENTORY_PATH.read_text().splitlines():
+            if line.strip() == "[workers]":
+                in_workers = True
+                continue
+            if line.strip().startswith("["):
+                in_workers = False
+                continue
+            if in_workers and line.strip() and not line.strip().startswith("#"):
+                parts    = line.split()
+                hostname = parts[0]
+                ip       = ""
+                user     = ""
+                for p in parts[1:]:
+                    if p.startswith("ansible_host="):
+                        ip = p.split("=", 1)[1]
+                    if p.startswith("ansible_user="):
+                        user = p.split("=", 1)[1]
+                inv_nodes.append({
+                    "hostname": hostname,
+                    "ip":       ip,
+                    "ssh_user": user,
+                })
+
+    # ── Read kubectl nodes ─────────────────────────────────────────────────────
+    # Returns lines: NAME  STATUS  ROLES  AGE  VERSION  INTERNAL-IP ...
+    kubectl_nodes = {}   # hostname → internal_ip
+    out, rc = run_on_cp(
+        "kubectl get nodes -o wide --no-headers 2>/dev/null"
+    )
+    if rc == 0 and out.strip():
+        for line in out.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 6:
+                name = parts[0].lower()
+                ip   = parts[5]   # INTERNAL-IP column in -o wide
+                kubectl_nodes[name] = ip
+
+    # ── Build merged list ──────────────────────────────────────────────────────
+    result   = []
+    seen     = set()
+
+    # Inventory nodes — check if each is also in kubectl
+    for n in inv_nodes:
+        hn = n["hostname"].lower()
+        seen.add(hn)
+        in_cluster = hn in kubectl_nodes
+        result.append({
+            "hostname":     hn,
+            "ip":           n["ip"],
+            "role":         "worker",
+            "ssh_user":     n["ssh_user"],
+            "in_inventory": True,
+            "in_cluster":   in_cluster,
+        })
+
+    # kubectl nodes not in inventory (orphans — informational)
+    cp_hostname = ""
+    try:
+        for line in VARS_PATH.read_text().splitlines():
+            if line.strip().startswith("cp_hostname:"):
+                cp_hostname = line.split(":", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+
+    for hn, ip in kubectl_nodes.items():
+        if hn in seen:
+            continue
+        # Determine role from kubectl output
+        role = "control-plane" if hn == cp_hostname.lower() else "worker"
+        result.append({
+            "hostname":     hn,
+            "ip":           ip,
+            "role":         role,
+            "ssh_user":     "",
+            "in_inventory": False,
+            "in_cluster":   True,
+        })
+
+    return JSONResponse({"nodes": result})
+
+
+@router.post("/api/cluster/remove-ghost")
+async def remove_ghost(req: RemoveGhostRequest):
+    """
+    Removes a ghost node (in inventory but not in cluster) from:
+      - generated/inventory.ini
+      - generated/group_vars/all.yml  (cluster_hosts list)
+
+    Does NOT touch the cluster. Safe to call on any node that is confirmed
+    absent from kubectl get nodes.
+    """
+    from fastapi.responses import JSONResponse
+
+    hostname = req.hostname.strip().lower()
+    removed  = []
+
+    # Remove from inventory.ini
+    if INVENTORY_PATH.exists():
+        lines   = INVENTORY_PATH.read_text().splitlines()
+        cleaned = [l for l in lines
+                   if not (hostname in l.lower() and req.ip in l)]
+        if len(cleaned) < len(lines):
+            INVENTORY_PATH.write_text("\n".join(cleaned) + "\n")
+            removed.append("inventory.ini")
+
+    # Remove from cluster_hosts in group_vars/all.yml
+    if VARS_PATH.exists():
+        lines   = VARS_PATH.read_text().splitlines()
+        cleaned = [l for l in lines
+                   if not (hostname in l and req.ip in l)]
+        if len(cleaned) < len(lines):
+            VARS_PATH.write_text("\n".join(cleaned) + "\n")
+            removed.append("group_vars/all.yml")
+
+    if removed:
+        return JSONResponse({
+            "status":  "ok",
+            "message": f"{hostname} removed from: {', '.join(removed)}"
+        })
+    return JSONResponse({
+        "status":  "not_found",
+        "message": f"{hostname} / {req.ip} not found in state files"
+    })

@@ -212,30 +212,44 @@ async function loadWorkerNodes() {
   const el = document.getElementById('worker-nodes-table');
   el.innerHTML = '<span style="color:#888;font-size:13px">Loading...</span>';
   try {
-    const r = await fetch('/api/reset/preview');
+    const r = await fetch('/api/cluster/nodes/reconcile');
     const d = await r.json();
-    if (d.status === 'no_inventory') {
-      el.innerHTML = '<span class="badge b-warn">No cluster configured yet.</span>';
-      return;
-    }
     if (!d.nodes || !d.nodes.length) {
-      el.innerHTML = '<span class="badge b-warn">No nodes found in inventory.</span>';
+      el.innerHTML = '<span class="badge b-warn">No nodes found. Is the cluster running?</span>';
       return;
     }
+    const ghostCount = d.nodes.filter(n => n.in_inventory && !n.in_cluster).length;
     el.innerHTML = `
+      ${ghostCount > 0 ? `<div style="background:#fff3e0;border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;color:#92400e;">
+        ⚠️ <strong>${ghostCount} ghost node(s) detected</strong> — present in inventory but not in the cluster.
+        Use <strong>Remove ghost</strong> to clean them up.
+      </div>` : ''}
       <table class="data-table">
-        <thead><tr><th>Hostname</th><th>IP</th><th>Role</th><th>Action</th></tr></thead>
+        <thead><tr><th>Hostname</th><th>IP</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
-          ${d.nodes.map(n => `<tr>
-            <td><span class="mono">${n.hostname}</span></td>
-            <td style="color:#666">${n.ip}</td>
-            <td><span class="badge ${n.role === 'control-plane' ? 'b-info' : 'b-warn'}">${n.role}</span></td>
-            <td>${n.role === 'worker'
-              ? `<button class="btn btn-sm btn-danger"
-                   onclick="openRemoveWorker('${n.hostname}','${n.ip}','${n.ssh_user||'ubuntu'}')">Remove</button>`
-              : '<span style="color:#bbb;font-size:12px">—</span>'
-            }</td>
-          </tr>`).join('')}
+          ${d.nodes.map(n => {
+            const isGhost   = n.in_inventory && !n.in_cluster;
+            const isOrphan  = !n.in_inventory && n.in_cluster;
+            const statusBadge = isGhost
+              ? '<span class="badge" style="background:#fff3e0;color:#e65100;border:1px solid #ffcc80">👻 ghost</span>'
+              : isOrphan
+              ? '<span class="badge" style="background:#f3e5f5;color:#6a1b9a;border:1px solid #ce93d8">⚠ not in inventory</span>'
+              : '<span class="badge b-ok">✓ live</span>';
+            const action = n.role === 'control-plane'
+              ? '<span style="color:#bbb;font-size:12px">—</span>'
+              : isGhost
+              ? `<button class="btn btn-sm" style="background:#ff8f00;color:#fff;border:none"
+                   onclick="removeGhost('${n.hostname}','${n.ip}')">Remove ghost</button>`
+              : `<button class="btn btn-sm btn-danger"
+                   onclick="openRemoveWorker('${n.hostname}','${n.ip}','${n.ssh_user||'ubuntu'}')">Remove</button>`;
+            return `<tr style="${isGhost ? 'background:#fffde7' : ''}">
+              <td><span class="mono">${n.hostname}</span></td>
+              <td style="color:#666">${n.ip}</td>
+              <td><span class="badge ${n.role === 'control-plane' ? 'b-info' : 'b-warn'}">${n.role}</span></td>
+              <td>${statusBadge}</td>
+              <td>${action}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>`;
   } catch(e) {
