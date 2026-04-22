@@ -180,7 +180,12 @@
       + _badge(cOk, false, cOk ? '\u2713 configured' : '\u2717 not configured')
       + '</td>'
       + '<td style="padding:.6rem 1rem;color:#666;font-size:.8rem">'
-      + (cOk ? 'nvidia-container-runtime set as default' : 'not configured for NVIDIA runtime')
+      + (cOk
+          ? 'configured — ' + (d.containerd.config_path &&
+              d.containerd.config_path !== 'not found in /etc/containerd/'
+              ? d.containerd.config_path
+              : 'nvidia-container-runtime set as default')
+          : 'not configured for NVIDIA runtime')
       + '</td>'
       + '<td style="padding:.6rem 1rem">' + cAction + '</td>'
       + '</tr>'
@@ -227,39 +232,74 @@
   };
 
   window.fixNodeContainerd = function (node) {
-    var fl = document.getElementById('prereq-fix-log');
+    var fl    = document.getElementById('prereq-fix-log');
     var tbody = document.getElementById('prereq-tbody');
-    fl.style.display  = 'block';
-    fl.style.color    = '#d4d4d4';
-    fl.textContent    = 'Configuring containerd NVIDIA runtime on ' + node + '... (this takes ~10s)';
-    // Disable fix button while running
+
+    // Reset log to streaming mode
+    fl.style.display    = 'block';
+    fl.style.color      = '#d4d4d4';
+    fl.style.background = '#1e1e1e';
+    fl.style.padding    = '.6rem .9rem';
+    fl.style.borderRadius = '6px';
+    fl.style.maxHeight  = '180px';
+    fl.style.overflowY  = 'auto';
+    fl.style.fontFamily = 'monospace';
+    fl.style.fontSize   = '.78rem';
+    fl.style.lineHeight = '1.6';
+    fl.style.whiteSpace = 'pre-wrap';
+    fl.innerHTML = '';
+
+    // Disable every action button in the prereq table while fix runs
     var btns = tbody ? tbody.querySelectorAll('button') : [];
     btns.forEach(function(b) { b.disabled = true; });
-    fetch('/api/extensions/gpu/fix-node', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({node_name: node})
-    })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.success) {
-          fl.style.color = '#4ec9b0';
-          fl.textContent = '\u2713 ' + d.message + ' Re-checking in 2s...';
-          setTimeout(function() {
-            fl.style.display = 'none';
-            window.checkNodePrereqs();
-          }, 2000);
-        } else {
-          fl.style.color = '#f44747';
-          fl.textContent = '\u2717 ' + d.message;
-          btns.forEach(function(b) { b.disabled = false; });
-        }
-      })
-      .catch(function(e) {
-        fl.style.color = '#f44747';
-        fl.textContent = 'Error: ' + String(e);
+
+    function _line(text, color) {
+      var d = document.createElement('div');
+      if (color) d.style.color = color;
+      d.textContent = text;
+      fl.appendChild(d);
+      fl.scrollTop = fl.scrollHeight;
+    }
+
+    _line('Connecting to ' + node + '…', '#569cd6');
+
+    var es = new EventSource(
+      '/api/extensions/gpu/fix-node/stream?node=' + encodeURIComponent(node)
+    );
+
+    es.onmessage = function(ev) {
+      var msg = ev.data;
+      if (msg === '__DONE__') {
+        es.close();
+        _line('\u2713 Configuration complete — re-checking…', '#4ec9b0');
+        setTimeout(function() {
+          fl.innerHTML     = '';
+          fl.style.display = 'none';
+          window.checkNodePrereqs();
+        }, 2000);
+        return;
+      }
+      if (msg.startsWith('__ERROR__')) {
+        es.close();
+        var code = msg.split(':')[1] || 'unknown';
+        _line('\u2717 Failed (exit ' + code + ') — see output above', '#f44747');
         btns.forEach(function(b) { b.disabled = false; });
-      });
+        return;
+      }
+      // Colour-code Ansible output
+      var color = '#d4d4d4';
+      if (/CHANGED|changed:/.test(msg))              color = '#ce9178';
+      if (/SUCCESS|ok:|\u2713|configured/.test(msg)) color = '#4ec9b0';
+      if (/FAILED|ERROR|fatal|\u2717/.test(msg))    color = '#f44747';
+      if (/Resolved|Target node|Connecting/.test(msg)) color = '#569cd6';
+      _line(msg, color);
+    };
+
+    es.onerror = function() {
+      es.close();
+      _line('\u2717 Connection lost — is the launcher running?', '#f44747');
+      btns.forEach(function(b) { b.disabled = false; });
+    };
   };
 
   document.addEventListener('DOMContentLoaded', window.loadPrereqNodes);
