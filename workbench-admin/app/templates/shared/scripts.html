@@ -1,0 +1,64 @@
+<script>
+function toggleTheme() {
+  var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  var next = isLight ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('wa-theme', next);
+  var lbl = document.getElementById('theme-label');
+  var btn = document.getElementById('theme-btn');
+  if (next === 'light') {
+    if (lbl) lbl.textContent = '\U0001F319 Dark';
+    if (btn) btn.title = 'Switch to dark mode';
+  } else {
+    if (lbl) lbl.textContent = '\u2600 Light';
+    if (btn) btn.title = 'Switch to light mode';
+  }
+}
+
+function nav(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  el.classList.add('active');
+  if (name === 'groups')     onGroupsPageShow();
+  if (name === 'users')      onUsersPageShow();
+  if (name === 'profiles')   loadProfiles();
+  if (name === 'new')        { loadGroups(); loadRepos(); }
+  if (name === 'settings')   { loadTokenStatus(); loadSettingsInfo(); }
+  if (name === 'images')     { loadImportRepos(); loadRegistryImages(); }
+  if (name === 'gpu')        { if (typeof initGpuTab       === 'function') initGpuTab(); }
+  if (name === 'gpu-policy') { if (typeof initGpuPolicyTab === 'function') initGpuPolicyTab(); }
+}
+
+function showMsg(el, text, ok) {
+  el.textContent   = text;
+  el.style.color   = ok ? '#68d391' : '#fc8181';
+  el.style.display = text ? 'inline' : 'none';
+  if (ok && text) setTimeout(() => el.style.display = 'none', 5000);
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  var saved = localStorage.getItem('wa-theme') || 'dark';
+  if (saved === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    var lbl = document.getElementById('theme-label');
+    var btn = document.getElementById('theme-btn');
+    if (lbl) lbl.textContent = '\U0001F319 Dark';
+    if (btn) btn.title = 'Switch to dark mode';
+  }
+  loadProfiles();
+  const nameInput = document.getElementById('f-name');
+  if (nameInput) {
+    nameInput.addEventListener('input', function() {
+      document.getElementById('f-slug').value = this.value
+        .toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,48);
+    });
+  }
+});
+</script>
