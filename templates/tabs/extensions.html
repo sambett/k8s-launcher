@@ -13,19 +13,260 @@
     </div>
   </div>
 
-  <!-- Host OS requirements info banner -->
-  <div style="display:flex;align-items:flex-start;gap:10px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.8;background:#e3f2fd;border:1px solid #90caf9;border-left:4px solid #1565c0;color:#0d47a1;">
-    <span style="font-size:16px;flex-shrink:0;margin-top:1px">ℹ</span>
-    <div>
-      <strong>Host OS requirements — installed on each GPU worker node, not by this launcher</strong><br>
-      <span class="mono">NVIDIA Driver</span> — installed for your GPU hardware (any version compatible with your GPU)<br>
-      <span class="mono">NVIDIA Container Toolkit ≥ 1.7.0</span> — bridges containerd to the GPU driver<br>
-      <span style="font-size:12px;color:#1565c0">
-        The device plugin registers GPUs in Kubernetes — but pods cannot use them without these host OS components.
-        The plugin version is independent of your Kubernetes version.
-      </span>
+  <!-- GPU Node Prerequisites Checker -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem;flex-wrap:wrap">
+      <h2 style="margin:0;flex:1">GPU Node Prerequisites</h2>
+      <select id="prereq-node-select"
+        style="border:1px solid #ddd;border-radius:4px;padding:5px 9px;
+               font-size:13px;min-width:180px">
+        <option value="">Loading nodes...</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="checkNodePrereqs()">Check</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadPrereqNodes()">&#8634; Refresh</button>
+      <span id="prereq-check-status" style="font-size:.82rem;color:#666"></span>
     </div>
+    <p style="font-size:.82rem;color:#888;margin-bottom:1rem;line-height:1.6">
+      Driver and toolkit must be installed manually on the node.
+      The containerd runtime configuration is the only step this platform fixes automatically.
+    </p>
+
+    <div id="prereq-results" style="display:none">
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <thead>
+          <tr style="background:#f5f5f5;border-bottom:2px solid #e0e0e0">
+            <th style="padding:.5rem 1rem;text-align:left;color:#555;font-size:.72rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+                       width:200px">Component</th>
+            <th style="padding:.5rem 1rem;text-align:left;color:#555;font-size:.72rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+                       width:130px">Status</th>
+            <th style="padding:.5rem 1rem;text-align:left;color:#555;font-size:.72rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.05em">
+                       Detail</th>
+            <th style="padding:.5rem 1rem;width:160px"></th>
+          </tr>
+        </thead>
+        <tbody id="prereq-tbody"></tbody>
+      </table>
+      <div id="prereq-all-ok"
+        style="display:none;margin-top:.75rem;padding:.6rem 1rem;
+               background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;
+               font-size:.82rem;color:#2e7d32">
+        &#10003; All prerequisites satisfied &#8212;
+        proceed to <strong>Device Plugin install</strong> below.
+      </div>
+    </div>
+
+    <div id="prereq-fix-log"
+      style="display:none;margin-top:.75rem;background:#1e1e1e;color:#d4d4d4;
+             border-radius:6px;padding:.75rem 1rem;font-family:monospace;
+             font-size:.78rem;line-height:1.6;white-space:pre-wrap"></div>
   </div>
+
+<script>
+(function () {
+
+  function _e(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function _badge(ok, warn, label) {
+    var cls = ok ? 'b-ok' : warn ? 'b-warn' : 'b-err';
+    return '<span class="badge ' + cls + '">' + label + '</span>';
+  }
+
+  function _codeBlock(lines) {
+    return '<div style="margin-top:.5rem;font-family:monospace;background:#1e1e1e;'
+      + 'color:#d4d4d4;border-radius:4px;padding:.55rem .9rem;font-size:.73rem;line-height:1.8">'
+      + lines.map(function(l) { return '<div>' + _e(l) + '</div>'; }).join('')
+      + '</div>';
+  }
+
+  function _fixBox(title, lines) {
+    return '<div style="margin-top:.5rem;background:#fff8e1;border:1px solid #ffe082;'
+      + 'border-radius:5px;padding:.6rem .9rem;font-size:.78rem;color:#5d4037">'
+      + '<strong>' + title + '</strong>'
+      + _codeBlock(lines)
+      + '</div>';
+  }
+
+  function _driverFix() {
+    return _fixBox('Run on the node, then reboot:', [
+      'sudo apt install nvidia-driver-525',
+      'sudo reboot',
+      'nvidia-smi   # verify after reboot'
+    ]);
+  }
+
+  function _toolkitFix(outdated) {
+    if (outdated) {
+      return _fixBox('Upgrade on the node:', [
+        'sudo apt update && sudo apt install --only-upgrade nvidia-container-toolkit'
+      ]);
+    }
+    return _fixBox('Install on the node:', [
+      'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey',
+      '  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg',
+      'curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list',
+      '  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list',
+      'sudo apt update && sudo apt install -y nvidia-container-toolkit'
+    ]);
+  }
+
+  function _renderResults(d) {
+    var rows = [];
+    var allOk = true;
+
+    // ── NVIDIA Driver ───────────────────────────────────────────────────────
+    var dOk = d.driver.status === 'ok';
+    if (!dOk) allOk = false;
+    rows.push(
+      '<tr style="border-bottom:1px solid #f0f0f0">'
+      + '<td style="padding:.6rem 1rem;font-weight:500;color:#333;white-space:nowrap">NVIDIA Driver</td>'
+      + '<td style="padding:.6rem 1rem">' + _badge(dOk, false, dOk ? '\u2713 installed' : '\u2717 not detected') + '</td>'
+      + '<td style="padding:.6rem 1rem;color:#666;font-size:.8rem">'
+      + (dOk
+          ? 'v' + _e(d.driver.version) + (d.driver.gpu_name ? ' \u2014 ' + _e(d.driver.gpu_name) : '')
+          : 'nvidia-smi returned nothing')
+      + '</td><td></td></tr>'
+    );
+    if (!dOk) {
+      rows.push(
+        '<tr style="border-bottom:1px solid #f0f0f0">'
+        + '<td colspan="4" style="padding:0 1rem .75rem">' + _driverFix() + '</td>'
+        + '</tr>'
+      );
+    }
+
+    // ── Container Toolkit ───────────────────────────────────────────────────
+    var tOk  = d.toolkit.status === 'ok';
+    var tOut = d.toolkit.status === 'outdated';
+    if (!tOk) allOk = false;
+    rows.push(
+      '<tr style="border-bottom:1px solid #f0f0f0">'
+      + '<td style="padding:.6rem 1rem;font-weight:500;color:#333;white-space:nowrap">Container Toolkit</td>'
+      + '<td style="padding:.6rem 1rem">'
+      + _badge(tOk, tOut, tOk ? '\u2713 installed' : tOut ? '\u26a0 outdated' : '\u2717 missing')
+      + '</td>'
+      + '<td style="padding:.6rem 1rem;color:#666;font-size:.8rem">'
+      + (tOk  ? 'v' + _e(d.toolkit.version) + ' (\u22651.7.0 \u2713)'
+        : tOut ? 'v' + _e(d.toolkit.version) + ' \u2014 upgrade to \u22651.7.0'
+        : 'not installed')
+      + '</td><td></td></tr>'
+    );
+    if (!tOk) {
+      rows.push(
+        '<tr style="border-bottom:1px solid #f0f0f0">'
+        + '<td colspan="4" style="padding:0 1rem .75rem">' + _toolkitFix(tOut) + '</td>'
+        + '</tr>'
+      );
+    }
+
+    // ── containerd runtime ──────────────────────────────────────────────────
+    var cOk = d.containerd.status === 'ok';
+    if (!cOk) allOk = false;
+    var cAction = '';
+    if (!cOk) {
+      cAction = d.containerd.fixable
+        ? '<button class="btn btn-sm btn-success" onclick="fixNodeContainerd(\''
+          + _e(d.node) + '\')">Fix automatically \u2192</button>'
+        : '<span style="font-size:.78rem;color:#9e9e9e">install toolkit first</span>';
+    }
+    rows.push(
+      '<tr>'
+      + '<td style="padding:.6rem 1rem;font-weight:500;color:#333;white-space:nowrap">containerd runtime</td>'
+      + '<td style="padding:.6rem 1rem">'
+      + _badge(cOk, false, cOk ? '\u2713 configured' : '\u2717 not configured')
+      + '</td>'
+      + '<td style="padding:.6rem 1rem;color:#666;font-size:.8rem">'
+      + (cOk ? 'nvidia-container-runtime set as default' : 'not configured for NVIDIA runtime')
+      + '</td>'
+      + '<td style="padding:.6rem 1rem">' + cAction + '</td>'
+      + '</tr>'
+    );
+
+    document.getElementById('prereq-tbody').innerHTML = rows.join('');
+    document.getElementById('prereq-results').style.display = 'block';
+    document.getElementById('prereq-all-ok').style.display = allOk ? 'block' : 'none';
+  }
+
+  // ── Public API ─────────────────────────────────────────────────────────────
+
+  window.loadPrereqNodes = function () {
+    var sel = document.getElementById('prereq-node-select');
+    sel.innerHTML = '<option value="">Loading...</option>';
+    fetch('/api/extensions/nodes')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var w = (d.nodes || []).filter(function(n) { return n.role === 'worker'; });
+        sel.innerHTML = w.length
+          ? '<option value="">\u2014 select a worker node \u2014</option>'
+            + w.map(function(n) {
+                return '<option value="' + _e(n.name) + '">' + _e(n.name) + '</option>';
+              }).join('')
+          : '<option value="">No worker nodes found</option>';
+      })
+      .catch(function() { sel.innerHTML = '<option value="">Error loading nodes</option>'; });
+  };
+
+  window.checkNodePrereqs = function () {
+    var node = document.getElementById('prereq-node-select').value;
+    var st   = document.getElementById('prereq-check-status');
+    var fl   = document.getElementById('prereq-fix-log');
+    if (!node) { st.textContent = 'Select a node first.'; return; }
+    st.textContent = 'Checking...';
+    document.getElementById('prereq-results').style.display = 'none';
+    document.getElementById('prereq-all-ok').style.display  = 'none';
+    // Only hide fix log if it's showing an error (not a success message)
+    if (fl.style.color !== 'rgb(78, 201, 176)') fl.style.display = 'none';
+    fetch('/api/extensions/gpu/node-prereqs?node=' + encodeURIComponent(node))
+      .then(function(r) { return r.json(); })
+      .then(function(d) { st.textContent = ''; _renderResults(d); })
+      .catch(function(e) { st.textContent = 'Error: ' + String(e); });
+  };
+
+  window.fixNodeContainerd = function (node) {
+    var fl = document.getElementById('prereq-fix-log');
+    var tbody = document.getElementById('prereq-tbody');
+    fl.style.display  = 'block';
+    fl.style.color    = '#d4d4d4';
+    fl.textContent    = 'Configuring containerd NVIDIA runtime on ' + node + '... (this takes ~10s)';
+    // Disable fix button while running
+    var btns = tbody ? tbody.querySelectorAll('button') : [];
+    btns.forEach(function(b) { b.disabled = true; });
+    fetch('/api/extensions/gpu/fix-node', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({node_name: node})
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.success) {
+          fl.style.color = '#4ec9b0';
+          fl.textContent = '\u2713 ' + d.message + ' Re-checking in 2s...';
+          setTimeout(function() {
+            fl.style.display = 'none';
+            window.checkNodePrereqs();
+          }, 2000);
+        } else {
+          fl.style.color = '#f44747';
+          fl.textContent = '\u2717 ' + d.message;
+          btns.forEach(function(b) { b.disabled = false; });
+        }
+      })
+      .catch(function(e) {
+        fl.style.color = '#f44747';
+        fl.textContent = 'Error: ' + String(e);
+        btns.forEach(function(b) { b.disabled = false; });
+      });
+  };
+
+  document.addEventListener('DOMContentLoaded', window.loadPrereqNodes);
+
+}());
+</script>
+
 
   <!-- Device Plugin install card -->
   <div class="card">
@@ -295,77 +536,6 @@ async function loadGfdNodes() {
   }
 }
 
-async function loadNodesForGpu() {
-  const sel = document.getElementById('gpu-node-select');
-  sel.innerHTML = '<option value="">Loading...</option>';
-  try {
-    const r = await fetch('/api/extensions/nodes');
-    const d = await r.json();
-    const workers = (d.nodes || []).filter(n => n.role === 'worker');
-    sel.innerHTML = workers.length
-      ? workers.map(n => `<option value="${n.name}">${n.name}</option>`).join('')
-      : '<option value="">No workers found</option>';
-  } catch(e) { sel.innerHTML = '<option value="">Error</option>'; }
-}
-
-async function labelGpuNode() {
-  const node = document.getElementById('gpu-node-select').value;
-  const el   = document.getElementById('r-gpu-label');
-  if (!node) { el.innerHTML = '<span class="badge b-warn">Select a node first.</span>'; return; }
-  el.innerHTML = '<span class="badge b-run">Labeling...</span>';
-  const r = await fetch('/api/extensions/gpu/label-node', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ node_name: node }),
-  });
-  const d = await r.json();
-  el.innerHTML = d.status === 'ok'
-    ? `<span class="badge b-ok">${d.message}</span>`
-    : `<span class="badge b-err">${d.message}</span>`;
-  if (d.status === 'ok') loadGpuNodes();
-}
-
-async function unlabelGpuNode() {
-  const node = document.getElementById('gpu-node-select').value;
-  const el   = document.getElementById('r-gpu-label');
-  if (!node) { el.innerHTML = '<span class="badge b-warn">Select a node first.</span>'; return; }
-  if (!confirm(`Remove GPU label from ${node}?\nIt will no longer receive GPU workloads.`)) return;
-  el.innerHTML = '<span class="badge b-run">Removing label...</span>';
-  const r = await fetch('/api/extensions/gpu/unlabel-node', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ node_name: node }),
-  });
-  const d = await r.json();
-  el.innerHTML = d.status === 'ok'
-    ? `<span class="badge b-ok">${d.message}</span>`
-    : `<span class="badge b-err">${d.message}</span>`;
-  if (d.status === 'ok') loadGpuNodes();
-}
-
-async function loadGpuNodes() {
-  const el = document.getElementById('gpu-nodes-table');
-  try {
-    const r = await fetch('/api/extensions/gpu/nodes');
-    const d = await r.json();
-    if (!d.nodes || !d.nodes.length) {
-      el.innerHTML = '<span style="color:#888;font-size:13px">No nodes carry the accelerator=nvidia label.</span>';
-      return;
-    }
-    el.innerHTML = `<table class="data-table">
-      <thead><tr><th>Node</th><th>Status</th><th>GPU availability</th></tr></thead>
-      <tbody>${d.nodes.map(n => `
-        <tr>
-          <td><span class="mono">${n.name}</span></td>
-          <td><span class="badge ${n.status === 'Ready' ? 'b-ok' : 'b-warn'}">${n.status}</span></td>
-          <td>${parseInt(n.gpu_count) > 0
-            ? `<span class="badge b-ok">${n.gpu_count} GPU${parseInt(n.gpu_count) > 1 ? 's' : ''} available</span>`
-            : `<span class="badge b-warn" title="Node labeled but NVIDIA driver not active yet">no driver</span>`
-          }</td>
-        </tr>`).join('')}
-      </tbody></table>`;
-  } catch(e) {
-    el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`;
-  }
-}
 
 async function checkExtensionsPrereq() {
   const banner = document.getElementById('prereq-extensions');

@@ -464,6 +464,106 @@ async def gfd_nodes():
     return {"nodes": nodes}
 
 
+
+
+# ── Node prerequisites check + fix ─────────────────────────────────────────
+
+def _run_on_node(node: str, cmd: str, become: bool = False, timeout: int = 60):
+    """Run a shell command on a specific cluster node via Ansible ad-hoc."""
+    import subprocess as _s
+    from core.paths import INVENTORY_PATH as _I, VARS_PATH as _V
+    args = ["ansible", node, "-i", str(_I), "-m", "shell", "-a", cmd,
+            "--extra-vars", f"@{_V}"]
+    if become:
+        args.append("--become")
+    try:
+        r = _s.run(args, capture_output=True, text=True, timeout=timeout)
+        lines = [
+            l.strip() for l in (r.stdout + r.stderr).splitlines()
+            if l.strip()
+            and "| CHANGED |" not in l and "| SUCCESS |" not in l
+            and "| rc=" not in l and not l.startswith("WARNING")
+        ]
+        return (lines[-1] if lines else ""), r.returncode
+    except Exception as e:
+        return str(e), 1
+
+
+@router.get("/api/extensions/gpu/node-prereqs")
+async def gpu_node_prereqs(node: str):
+    """
+    Check GPU prerequisites on a specific worker node:
+      1. NVIDIA driver     — via nvidia-smi
+      2. Container Toolkit — via nvidia-ctk --version (min 1.7.0)
+      3. containerd config — grep nvidia-container-runtime in config.toml
+    """
+    import re as _re
+    result = {"node": node}
+
+    # 1. Driver
+    drv, _ = _run_on_node(
+        node,
+        "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null | head -1 || echo NOT_FOUND"
+    )
+    if drv and drv != "NOT_FOUND" and "," in drv:
+        parts = [p.strip() for p in drv.split(",", 1)]
+        result["driver"] = {"status": "ok", "version": parts[0], "gpu_name": parts[1] if len(parts) > 1 else ""}
+    elif drv and drv != "NOT_FOUND":
+        result["driver"] = {"status": "ok", "version": drv, "gpu_name": ""}
+    else:
+        result["driver"] = {"status": "missing", "version": "", "gpu_name": ""}
+
+    # 2. Container Toolkit
+    ctk, _ = _run_on_node(
+        node,
+        "nvidia-ctk --version 2>/dev/null | head -1 || echo NOT_FOUND"
+    )
+    if ctk and ctk != "NOT_FOUND":
+        m = _re.search(r"(\d+\.\d+\.\d+)", ctk)
+        ver = m.group(1) if m else ""
+        meets = False
+        if ver:
+            try:
+                meets = [int(x) for x in ver.split(".")] >= [1, 7, 0]
+            except Exception:
+                pass
+        result["toolkit"] = {"status": "ok" if meets else "outdated", "version": ver, "meets_minimum": meets}
+    else:
+        result["toolkit"] = {"status": "missing", "version": "", "meets_minimum": False}
+
+    # 3. containerd NVIDIA runtime
+    ctd, _ = _run_on_node(
+        node,
+        "grep -c nvidia-container-runtime /etc/containerd/config.toml 2>/dev/null || echo 0"
+    )
+    try:
+        configured = int(ctd.strip()) > 0
+    except Exception:
+        configured = False
+
+    result["containerd"] = {
+        "status": "ok" if configured else "not_configured",
+        "fixable": result["toolkit"]["status"] == "ok",
+    }
+    return result
+
+
+@router.post("/api/extensions/gpu/fix-node")
+async def fix_gpu_node(body: NodeAction):
+    """Configure containerd NVIDIA runtime on a specific GPU worker node."""
+    out, rc = _run_on_node(
+        body.node_name,
+        "nvidia-ctk runtime configure --runtime=containerd --set-as-default && systemctl restart containerd",
+        become=True,
+        timeout=120,
+    )
+    if rc == 0:
+        return {"success": True,
+                "message": f"containerd NVIDIA runtime configured on {body.node_name}. Ready to install the device plugin."}
+    return {"success": False,
+            "message": out or "Command failed — verify nvidia-ctk is installed on the node."}
+
+
 # ── GET /api/extensions/nodes ──────────────────────────────────────────────
 @router.get("/api/extensions/nodes")
 async def list_nodes():

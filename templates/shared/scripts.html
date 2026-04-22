@@ -20,9 +20,8 @@ function showTab(name, btn) {
   if (name === 'workers')    { if (typeof loadWorkerNodes     === 'function') loadWorkerNodes(); }
   if (name === 'extensions') {
     if (typeof loadGpuStatus    === 'function') loadGpuStatus();
-    if (typeof loadGpuNodes     === 'function') loadGpuNodes();
-    if (typeof loadNodesForGpu  === 'function') loadNodesForGpu();
     if (typeof loadGpuVersions  === 'function') loadGpuVersions();
+    if (typeof loadPrereqNodes  === 'function') loadPrereqNodes();
   }
   if (name === 'monitoring') { if (typeof loadMonitoringStatus === 'function') loadMonitoringStatus(); }
   if (name === 'kyverno') {
