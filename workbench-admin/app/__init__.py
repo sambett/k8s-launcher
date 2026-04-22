@@ -13,6 +13,7 @@ def create_app():
     from app.routes.settings   import bp as settings_bp
     from app.routes.images     import bp as images_bp
     from app.routes.groups     import bp as groups_bp
+    from app.routes.gpu        import bp as gpu_bp
     from app.routes.gpu_policy import bp as gpu_policy_bp
 
     app.register_blueprint(profiles_bp)
@@ -20,6 +21,7 @@ def create_app():
     app.register_blueprint(settings_bp)
     app.register_blueprint(images_bp)
     app.register_blueprint(groups_bp)
+    app.register_blueprint(gpu_bp)
     app.register_blueprint(gpu_policy_bp)
 
     @app.route("/")

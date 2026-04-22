@@ -11,6 +11,7 @@ function nav(name, el) {
   if (name === 'settings')   { loadTokenStatus(); loadSettingsInfo(); }
   if (name === 'images')     { loadImportRepos(); loadRegistryImages(); }
   // Single entry point — sequences status + policy + groups with no race condition
+  if (name === 'gpu')        { if (typeof initGpuTab       === 'function') initGpuTab(); }
   if (name === 'gpu-policy') { if (typeof initGpuPolicyTab === 'function') initGpuPolicyTab(); }
 }
 

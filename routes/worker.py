@@ -1255,31 +1255,39 @@ async def reconcile_nodes():
     from fastapi.responses import JSONResponse
 
     # ── Read inventory ─────────────────────────────────────────────────────────
-    inv_nodes = []
+    # Read both [workers] and [control_plane] sections.
+    # [control_plane] entries are added to the seen set so they are never
+    # flagged as "not in inventory" — the control plane is simply not a
+    # worker and has no action buttons.
+    inv_nodes        = []   # workers only — shown with action buttons
+    inv_cp_hostnames = set() # control plane hostnames — added to seen set
+
     if INVENTORY_PATH.exists():
-        in_workers = False
+        current_section = ""
         for line in INVENTORY_PATH.read_text().splitlines():
-            if line.strip() == "[workers]":
-                in_workers = True
+            stripped = line.strip()
+            if stripped.startswith("["):
+                current_section = stripped.strip("[]").lower()
                 continue
-            if line.strip().startswith("["):
-                in_workers = False
+            if not stripped or stripped.startswith("#"):
                 continue
-            if in_workers and line.strip() and not line.strip().startswith("#"):
-                parts    = line.split()
-                hostname = parts[0]
-                ip       = ""
-                user     = ""
-                for p in parts[1:]:
-                    if p.startswith("ansible_host="):
-                        ip = p.split("=", 1)[1]
-                    if p.startswith("ansible_user="):
-                        user = p.split("=", 1)[1]
+            parts    = stripped.split()
+            hostname = parts[0].lower()
+            ip       = ""
+            user     = ""
+            for p in parts[1:]:
+                if p.startswith("ansible_host="):
+                    ip = p.split("=", 1)[1]
+                if p.startswith("ansible_user="):
+                    user = p.split("=", 1)[1]
+            if current_section == "workers":
                 inv_nodes.append({
                     "hostname": hostname,
                     "ip":       ip,
                     "ssh_user": user,
                 })
+            elif current_section == "control_plane":
+                inv_cp_hostnames.add(hostname)
 
     # ── Read kubectl nodes ─────────────────────────────────────────────────────
     # Returns lines: NAME  STATUS  ROLES  AGE  VERSION  INTERNAL-IP ...
@@ -1302,6 +1310,8 @@ async def reconcile_nodes():
     result   = []
     seen     = set()
 
+    # Pre-populate seen with control plane hostnames so they are never
+
     # Inventory nodes — check if each is also in kubectl
     for n in inv_nodes:
         hn = n["hostname"].lower()
@@ -1316,7 +1326,10 @@ async def reconcile_nodes():
             "in_cluster":   in_cluster,
         })
 
-    # kubectl nodes not in inventory (orphans — informational)
+    # kubectl nodes not in inventory.
+    # The control plane lives under [control_plane] in inventory, not [workers].
+    # Mark it in_inventory=True so it never gets an orphan badge —
+    # it simply shows with role=control-plane and no action button.
     cp_hostname = ""
     try:
         for line in VARS_PATH.read_text().splitlines():
@@ -1328,14 +1341,13 @@ async def reconcile_nodes():
     for hn, ip in kubectl_nodes.items():
         if hn in seen:
             continue
-        # Determine role from kubectl output
-        role = "control-plane" if hn == cp_hostname.lower() else "worker"
+        is_cp = (hn == cp_hostname.lower())
         result.append({
             "hostname":     hn,
             "ip":           ip,
-            "role":         role,
+            "role":         "control-plane" if is_cp else "worker",
             "ssh_user":     "",
-            "in_inventory": False,
+            "in_inventory": is_cp,
             "in_cluster":   True,
         })
 

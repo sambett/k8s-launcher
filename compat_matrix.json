@@ -43,21 +43,18 @@
   "nvidia_device_plugin": [
     {
       "version": "v0.17.4",
-      "k8s_min": "1.29",
-      "k8s_max": "1.31",
-      "notes": "Recommended for K8s 1.30.x \u2014 latest stable"
+      "notes": "Compatible with all Kubernetes versions >= 1.10",
+      "toolkit_min": "1.7.0"
     },
     {
       "version": "v0.17.0",
-      "k8s_min": "1.29",
-      "k8s_max": "1.31",
-      "notes": "Stable for K8s 1.30.x"
+      "notes": "Compatible with all Kubernetes versions >= 1.10",
+      "toolkit_min": "1.7.0"
     },
     {
       "version": "v0.16.2",
-      "k8s_min": "1.27",
-      "k8s_max": "1.30",
-      "notes": "Previous stable release"
+      "notes": "Compatible with all Kubernetes versions >= 1.10",
+      "toolkit_min": "1.7.0"
     }
   ],
   "kube_prometheus_stack": [

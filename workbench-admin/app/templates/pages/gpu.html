@@ -1,0 +1,291 @@
+<div id="page-gpu" class="page">
+
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem">
+    <div>
+      <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Management</h2>
+      <p style="margin:0;color:#64748b;font-size:.85rem;line-height:1.6">
+        Hardware detected from GPU Feature Discovery (GFD) labels.<br>
+        Set minimum CPU and RAM floors — used by profile creation and enforced by Kyverno.
+      </p>
+    </div>
+    <button class="btn btn-ghost" onclick="loadGpuInventory()"
+      style="font-size:.82rem;padding:.35rem .9rem;flex-shrink:0;margin-top:.2rem">
+      ↺ Re-scan cluster
+    </button>
+  </div>
+
+  <!-- Section 1: Cluster inventory -->
+  <div class="card" style="margin-bottom:1.25rem">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#e2e8f0;flex:1">
+        Cluster GPU inventory
+      </h3>
+      <span style="font-size:.75rem;color:#4a5568">read-only — populated by GFD</span>
+    </div>
+    <div style="background:#0f1117;border-left:3px solid #7c6af7;border-radius:0 5px 5px 0;
+                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
+      Only nodes with <code style="font-size:.78rem;color:#a78bfa">nvidia.com/gpu.present=true</code>
+      labels appear here. Labels are written automatically when you install the device plugin
+      with GFD enabled in the k8s-launcher.
+    </div>
+    <div id="gpu-inventory-table">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Section 2: Compatibility matrix -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#e2e8f0;flex:1">
+        Compatibility matrix
+      </h3>
+      <span style="font-size:.75rem;color:#4a5568">one row per GPU model</span>
+    </div>
+    <div style="background:#0f1117;border-left:3px solid #7c6af7;border-radius:0 5px 5px 0;
+                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
+      Set the minimum CPU cores and RAM that must go with each GPU type.
+      These become the floor in the profile creation form — users can increase them but not go below.
+      The CUDA ceiling is read from the host driver via GFD and is not editable here.
+    </div>
+
+    <div id="gpu-matrix-empty"
+      style="display:none;padding:2rem;text-align:center;color:#4a5568;font-size:.85rem;line-height:2">
+      No GPU hardware detected in the cluster.<br>
+      <span style="font-size:.8rem">
+        Install the device plugin with GFD enabled in the
+        <strong style="color:#7c6af7">k8s-launcher → GPU tab</strong>,
+        then click Re-scan cluster above.
+      </span>
+    </div>
+
+    <div id="gpu-matrix-table" style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;min-width:600px">
+        <thead id="gpu-matrix-thead" style="display:none">
+          <tr style="background:#13151f;border-bottom:2px solid #2d3148">
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">GPU model</th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">CUDA ceiling</th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">GPU memory</th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+              Min CPU <span style="font-weight:400;color:#4a5568">(cores)</span>
+            </th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+              Min RAM <span style="font-weight:400;color:#4a5568">(e.g. 8Gi)</span>
+            </th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">Example node</th>
+          </tr>
+        </thead>
+        <tbody id="gpu-matrix-tbody"></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="saveGpuMatrix()"
+        id="gpu-matrix-save-btn" style="display:none;padding:.5rem 1.5rem;font-size:.9rem;font-weight:600">
+        Save Matrix
+      </button>
+      <span id="gpu-matrix-msg" style="font-size:.85rem"></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var _inventory = { nodes: [], models: [] };
+  var _savedMatrix = {};  // gpu_model -> {min_cpu, min_ram}
+
+  var S_INPUT = [
+    'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
+    'border-radius:5px', 'padding:.4rem .65rem', 'font-size:.875rem', 'width:100%'
+  ].join(';');
+
+  function _esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function _renderInventory(nodes) {
+    var el = document.getElementById('gpu-inventory-table');
+    var gpuNodes = nodes.filter(function(n) { return n.gfd_active; });
+
+    if (!gpuNodes.length) {
+      el.innerHTML =
+        '<div class="empty" style="padding:1.5rem">No GPU nodes detected — ' +
+        'no nodes carry GFD labels yet.</div>';
+      return;
+    }
+
+    el.innerHTML =
+      '<table style="width:100%;border-collapse:collapse;font-size:.82rem">' +
+      '<thead><tr style="background:#13151f;border-bottom:1px solid #2d3148">' +
+      '<th style="padding:.5rem 1rem;text-align:left;color:#64748b;font-size:.75rem;font-weight:600">Node</th>' +
+      '<th style="padding:.5rem 1rem;text-align:left;color:#64748b;font-size:.75rem;font-weight:600">GPU model</th>' +
+      '<th style="padding:.5rem 1rem;text-align:left;color:#64748b;font-size:.75rem;font-weight:600">CUDA ceiling</th>' +
+      '<th style="padding:.5rem 1rem;text-align:left;color:#64748b;font-size:.75rem;font-weight:600">GPU memory</th>' +
+      '<th style="padding:.5rem 1rem;text-align:left;color:#64748b;font-size:.75rem;font-weight:600">Allocatable</th>' +
+      '</tr></thead><tbody>' +
+      gpuNodes.map(function(n) {
+        return '<tr style="border-bottom:1px solid #1e2235">' +
+          '<td style="padding:.5rem 1rem;color:#e2e8f0;font-weight:500;font-family:monospace">' + _esc(n.name) + '</td>' +
+          '<td style="padding:.5rem 1rem">' +
+            '<span style="background:#2d2860;color:#a78bfa;border-radius:4px;padding:2px 8px;font-size:.78rem">' +
+            _esc(n.gpu_product || '—') + '</span></td>' +
+          '<td style="padding:.5rem 1rem">' +
+            (n.cuda_ceiling
+              ? '<span style="background:#1a3326;color:#68d391;border-radius:4px;padding:2px 8px;font-size:.78rem">CUDA ' + _esc(n.cuda_ceiling) + '</span>'
+              : '<span style="color:#4a5568">—</span>') +
+          '</td>' +
+          '<td style="padding:.5rem 1rem;color:#94a3b8;font-size:.8rem">' + _esc(n.gpu_memory || '—') + '</td>' +
+          '<td style="padding:.5rem 1rem">' +
+            (parseInt(n.allocatable) > 0
+              ? '<span style="color:#68d391;font-size:.8rem">✓ ' + n.allocatable + ' GPU</span>'
+              : '<span style="color:#f59e0b;font-size:.8rem">plugin starting...</span>') +
+          '</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table>';
+  }
+
+  function _renderMatrix(models) {
+    var tbody  = document.getElementById('gpu-matrix-tbody');
+    var thead  = document.getElementById('gpu-matrix-thead');
+    var empty  = document.getElementById('gpu-matrix-empty');
+    var saveBtn = document.getElementById('gpu-matrix-save-btn');
+
+    if (!models.length) {
+      tbody.innerHTML  = '';
+      thead.style.display = 'none';
+      empty.style.display = 'block';
+      saveBtn.style.display = 'none';
+      return;
+    }
+
+    empty.style.display   = 'none';
+    thead.style.display   = '';
+    saveBtn.style.display = '';
+
+    tbody.innerHTML = models.map(function(m) {
+      var saved    = _savedMatrix[m.gpu_model] || {};
+      var minCpu   = saved.min_cpu  || '';
+      var minRam   = saved.min_ram  || '';
+
+      return '<tr style="border-bottom:1px solid #1e2235" data-model="' + _esc(m.gpu_model) + '">' +
+        '<td style="padding:.65rem 1rem">' +
+          '<div style="font-weight:600;color:#e2e8f0;font-size:.875rem">' + _esc(m.gpu_model) + '</div>' +
+          '<div style="font-size:.72rem;color:#4a5568;margin-top:2px">' +
+            'node_selector: nvidia.com/gpu.product=' + _esc(m.gpu_model) +
+          '</div>' +
+        '</td>' +
+        '<td style="padding:.65rem 1rem">' +
+          (m.cuda_ceiling
+            ? '<span style="background:#1a3326;color:#68d391;border-radius:4px;padding:3px 10px;font-size:.8rem">CUDA ' + _esc(m.cuda_ceiling) + '</span>'
+            : '<span style="color:#4a5568;font-size:.8rem">—</span>') +
+        '</td>' +
+        '<td style="padding:.65rem 1rem;color:#94a3b8;font-size:.82rem">' + _esc(m.gpu_memory || '—') + '</td>' +
+        '<td style="padding:.65rem 1rem">' +
+          '<input type="number" min="1" max="128" class="matrix-cpu" ' +
+          'value="' + _esc(String(minCpu)) + '" placeholder="e.g. 4" ' +
+          'style="' + S_INPUT + ';max-width:90px">' +
+        '</td>' +
+        '<td style="padding:.65rem 1rem">' +
+          '<input type="text" class="matrix-ram" ' +
+          'value="' + _esc(String(minRam)) + '" placeholder="e.g. 8Gi" ' +
+          'style="' + S_INPUT + ';max-width:110px">' +
+        '</td>' +
+        '<td style="padding:.65rem 1rem;color:#64748b;font-size:.8rem;font-family:monospace">' +
+          _esc(m.example_node) +
+        '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  window.loadGpuInventory = async function () {
+    document.getElementById('gpu-inventory-table').innerHTML =
+      '<div class="empty">Scanning cluster...</div>';
+
+    try {
+      var inv = await (await fetch('/api/gpu/inventory')).json();
+      _inventory = inv;
+      _renderInventory(inv.nodes || []);
+      _renderMatrix(inv.models || []);
+    } catch (e) {
+      document.getElementById('gpu-inventory-table').innerHTML =
+        '<div class="empty" style="color:#fc8181">Error: ' + String(e) + '</div>';
+    }
+  };
+
+  window.loadGpuMatrix = async function () {
+    try {
+      var d = await (await fetch('/api/gpu/matrix')).json();
+      _savedMatrix = {};
+      (d.matrix || []).forEach(function(e) {
+        _savedMatrix[e.gpu_model] = e;
+      });
+      // Re-render matrix rows with saved values if inventory already loaded
+      if (_inventory.models.length) {
+        _renderMatrix(_inventory.models);
+      }
+    } catch (e) {
+      console.warn('Could not load GPU matrix:', e);
+    }
+  };
+
+  window.saveGpuMatrix = async function () {
+    var msg = document.getElementById('gpu-matrix-msg');
+    var matrix = [];
+
+    document.querySelectorAll('#gpu-matrix-tbody tr[data-model]').forEach(function(tr) {
+      var model  = tr.getAttribute('data-model');
+      var cpuEl  = tr.querySelector('.matrix-cpu');
+      var ramEl  = tr.querySelector('.matrix-ram');
+      var inv    = (_inventory.models || []).find(function(m) { return m.gpu_model === model; }) || {};
+
+      matrix.push({
+        gpu_model:            model,
+        cuda_ceiling:         inv.cuda_ceiling  || '',
+        gpu_memory:           inv.gpu_memory    || '',
+        min_cpu:              parseInt(cpuEl ? cpuEl.value : '0') || 0,
+        min_ram:              ramEl ? ramEl.value.trim() : '',
+        node_selector_key:   'nvidia.com/gpu.product',
+        node_selector_value:  model,
+      });
+    });
+
+    msg.textContent = 'Saving...'; msg.style.color = '#94a3b8';
+
+    try {
+      var resp = await fetch('/api/gpu/matrix', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ matrix: matrix })
+      });
+      var d = await resp.json();
+      if (d.success) {
+        msg.textContent = '✓ ' + d.message; msg.style.color = '#68d391';
+        // Refresh saved values
+        d.matrix && (d.matrix.forEach(function(e) { _savedMatrix[e.gpu_model] = e; }));
+        setTimeout(function() { if (msg.textContent.startsWith('✓')) msg.textContent = ''; }, 4000);
+      } else {
+        msg.textContent = '✗ ' + (d.error || 'Failed'); msg.style.color = '#fc8181';
+      }
+    } catch (e) {
+      msg.textContent = '✗ Network error: ' + String(e); msg.style.color = '#fc8181';
+    }
+  };
+
+  window.initGpuTab = async function () {
+    await window.loadGpuMatrix();
+    await window.loadGpuInventory();
+  };
+
+}());
+</script>
