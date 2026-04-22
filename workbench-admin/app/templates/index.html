@@ -4,12 +4,17 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>AI Workbench — Admin Dashboard</title>
+<script>(function(){var t=localStorage.getItem('wa-theme');if(t==='light')document.documentElement.setAttribute('data-theme','light');}());</script>
 {% include "shared/styles.html" %}
 </head>
 <body>
 <header>
   <div class="logo">⚙ AI Workbench</div>
   <div class="sub">Admin Dashboard</div>
+  <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn" title="Switch to light mode">
+    <div class="toggle-track"><div class="toggle-thumb"></div></div>
+    <span id="theme-label">☀ Light</span>
+  </button>
 </header>
 <div class="layout">
   <nav>
