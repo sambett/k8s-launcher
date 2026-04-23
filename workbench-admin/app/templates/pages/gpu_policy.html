@@ -4,128 +4,123 @@
               margin-bottom:1.5rem;gap:1rem">
     <div>
       <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Access Policies</h2>
-      <p style="margin:0;color:#64748b;font-size:.85rem;line-height:1.6">
-        Control which GitLab groups may spawn GPU notebooks.<br>
-        Groups with <strong style="color:#fc8181">no GPU types allowed</strong>
-        are blocked by Kyverno at the admission level — no pod reaches the scheduler.<br>
-        Groups not listed here are <strong style="color:#68d391">unrestricted</strong>.
+      <p style="margin:0;color:#64748b;font-size:.85rem;line-height:1.7">
+        Two dynamic policies enforce GPU access.<br>
+        <strong style="color:#fc8181">Blocked groups</strong> — zero GPU access, denied at admission.<br>
+        <strong style="color:#68d391">Type restrictions</strong> — group may only use listed GPU types.<br>
+        Groups in neither section are <strong style="color:#94a3b8">unrestricted</strong>.
       </p>
     </div>
-    <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0;padding-top:.2rem">
-      <span class="dot" id="kv-dot"></span>
-      <span id="kv-badge" class="badge b-warn"
-        style="min-width:80px;text-align:center">checking…</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()"
-        title="Refresh Kyverno status">↺</button>
+    <div style="display:flex;flex-direction:column;gap:.4rem;align-items:flex-end;
+                flex-shrink:0;padding-top:.2rem">
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <span class="dot" id="dot-block"></span>
+        <span style="font-size:.75rem;color:#64748b;min-width:100px">Block policy</span>
+        <span id="badge-block" class="badge b-warn" style="min-width:70px;text-align:center">checking…</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <span class="dot" id="dot-types"></span>
+        <span style="font-size:.75rem;color:#64748b;min-width:100px">Types policy</span>
+        <span id="badge-types" class="badge b-warn" style="min-width:70px;text-align:center">checking…</span>
+      </div>
     </div>
   </div>
 
-  <!-- No GPU hardware banner -->
-  <div id="no-gpu-banner"
-    style="display:none;background:#1a1500;border:1px solid #f59e0b;
-           border-left:4px solid #f59e0b;border-radius:6px;
-           padding:.85rem 1.1rem;margin-bottom:1.25rem;
-           font-size:.85rem;color:#fbbf24;line-height:1.6">
-    ⚠ No GPU models found in the compatibility matrix.<br>
-    <span style="font-size:.8rem;color:#94a3b8">
-      Go to <strong style="color:#a78bfa">GPU Management → Compatibility Matrix</strong>
-      and save at least one GPU model before defining access policies.
-    </span>
-  </div>
-
+  <!-- Section 1: Blocked Groups -->
   <div class="card" style="margin-bottom:1.25rem">
-    <div style="display:flex;align-items:center;gap:.75rem;
-                margin-bottom:.9rem;flex-wrap:wrap">
-      <h3 style="margin:0;font-size:.95rem;font-weight:600;
-                 color:#e2e8f0;flex:1">Group Access Rules</h3>
-      <button class="btn btn-ghost"
-        style="font-size:.82rem;padding:.35rem .9rem"
-        onclick="loadPolicyPage()">
-        ↺ Refresh
-      </button>
-      <button class="btn btn-primary"
-        style="font-size:.82rem;padding:.35rem .9rem"
-        onclick="addGroupRow()">
-        + Add group
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#fc8181;flex:1">
+        🚫 Blocked Groups
+      </h3>
+      <span style="font-size:.75rem;color:#4a5568">feeds jupyterhub-gpu-block policy</span>
+    </div>
+    <div style="background:#0f1117;border-left:3px solid #fc8181;border-radius:0 5px 5px 0;
+                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
+      Groups listed here are denied <strong style="color:#fc8181">all GPU pods</strong>
+      at the Kubernetes admission level. CPU pods are unaffected.
+    </div>
+
+    <div style="display:flex;gap:.5rem;margin-bottom:.75rem;align-items:center">
+      <select id="block-group-select" style="flex:1;max-width:280px;background:#0f1117;
+              color:#e2e8f0;border:1px solid #2d3148;border-radius:5px;
+              padding:.45rem .7rem;font-size:.875rem">
+        <option value="">— select group to block —</option>
+      </select>
+      <button class="btn btn-sm" onclick="addBlockedGroup()"
+        style="background:#2d1515;color:#fc8181;border:1px solid #c53030;white-space:nowrap">
+        + Block Group
       </button>
     </div>
 
-    <div style="background:#0f1117;border-left:3px solid #7c6af7;
-                border-radius:0 5px 5px 0;padding:.6rem 1rem;
-                margin-bottom:1rem;font-size:.82rem;
-                color:#94a3b8;line-height:1.7">
-      Each row defines which GPU types a group is allowed to use.
-      <span style="color:#fc8181;font-weight:600">No GPU types selected</span>
-      = Kyverno blocks all GPU pods from that group.
-      Groups with no row here are unrestricted.
-    </div>
-
-    <div id="policy-table-wrap" style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;min-width:400px"
-             id="policy-table">
-        <thead id="policy-thead" style="display:none">
-          <tr style="background:#13151f;border-bottom:2px solid #2d3148">
-            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;
-                       font-size:.75rem;font-weight:600;
-                       text-transform:uppercase;letter-spacing:.06em;
-                       min-width:180px">GitLab Group</th>
-            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;
-                       font-size:.75rem;font-weight:600;
-                       text-transform:uppercase;letter-spacing:.06em">
-              Allowed GPU Types
-            </th>
-            <th style="padding:.65rem 1rem;width:80px;text-align:center"></th>
-          </tr>
-        </thead>
-        <tbody id="policy-rows">
-          <tr id="empty-row">
-            <td colspan="3"
-              style="padding:2.5rem;text-align:center;
-                     color:#4a5568;font-size:.875rem;line-height:2">
-              No rules defined yet.<br>
-              <span style="font-size:.8rem">
-                Click <strong style="color:#7c6af7">↺ Refresh</strong> to load
-                existing rules, or <strong style="color:#7c6af7">+ Add group</strong>
-                to restrict a group.
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div id="blocked-list" style="display:flex;flex-direction:column;gap:.35rem">
+      <div id="blocked-empty" style="color:#4a5568;font-size:.82rem;font-style:italic;
+                                      padding:.5rem 0">
+        No groups blocked — all groups have GPU access by default.
+      </div>
     </div>
   </div>
 
+  <!-- Section 2: GPU Type Restrictions -->
+  <div class="card" style="margin-bottom:1.25rem">
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#68d391;flex:1">
+        🎯 GPU Type Restrictions
+      </h3>
+      <span style="font-size:.75rem;color:#4a5568">feeds jupyterhub-gpu-types policy</span>
+    </div>
+    <div style="background:#0f1117;border-left:3px solid #68d391;border-radius:0 5px 5px 0;
+                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
+      Groups listed here may <strong style="color:#68d391">only use the listed GPU types</strong>.
+      Requesting any other type is denied at admission.
+      Groups not listed are unrestricted on GPU type.
+    </div>
+
+    <div style="display:flex;gap:.5rem;margin-bottom:.75rem;align-items:center">
+      <select id="type-group-select" style="flex:1;max-width:280px;background:#0f1117;
+              color:#e2e8f0;border:1px solid #2d3148;border-radius:5px;
+              padding:.45rem .7rem;font-size:.875rem">
+        <option value="">— select group to restrict —</option>
+      </select>
+      <button class="btn btn-sm btn-primary" onclick="addTypeRow()"
+        style="white-space:nowrap">
+        + Add Restriction
+      </button>
+    </div>
+
+    <div id="type-empty" style="color:#4a5568;font-size:.82rem;font-style:italic;
+                                  padding:.5rem 0;display:none">
+      No type restrictions — groups with GPU access may use any type.
+    </div>
+
+    <table id="type-table" style="width:100%;border-collapse:collapse;display:none">
+      <thead>
+        <tr style="background:#13151f;border-bottom:2px solid #2d3148">
+          <th style="padding:.6rem 1rem;text-align:left;color:#68d391;font-size:.72rem;
+                     font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+                     min-width:160px">Group</th>
+          <th style="padding:.6rem 1rem;text-align:left;color:#68d391;font-size:.72rem;
+                     font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+            Allowed GPU Types</th>
+          <th style="padding:.6rem 1rem;width:60px"></th>
+        </tr>
+      </thead>
+      <tbody id="type-rows"></tbody>
+    </table>
+  </div>
+
+  <!-- Save -->
   <div class="card">
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
       <button class="btn btn-primary" onclick="savePolicy()"
         style="padding:.5rem 1.5rem;font-size:.9rem;font-weight:600">
         Save &amp; Apply to Cluster
       </button>
+      <button class="btn btn-ghost" onclick="loadPolicyPage()"
+        style="font-size:.85rem">↺ Refresh</button>
       <span id="save-msg" style="font-size:.85rem"></span>
     </div>
     <div id="save-detail" class="log-box"
-      style="display:none;margin-top:.75rem;max-height:140px;font-size:.78rem">
-    </div>
-  </div>
-
-  <!-- Delete confirmation modal -->
-  <div id="del-modal"
-    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
-           z-index:500;align-items:center;justify-content:center">
-    <div style="background:#1a1d2e;border:2px solid #e53e3e;border-radius:10px;
-                padding:1.75rem 2rem;max-width:420px;width:90%;
-                box-shadow:0 25px 60px rgba(0,0,0,.6)">
-      <h3 style="margin:0 0 .6rem;color:#fc8181;font-size:1.05rem">Remove Rule?</h3>
-      <p id="del-msg"
-        style="margin:0 0 1.5rem;color:#94a3b8;font-size:.875rem;line-height:1.7">
-      </p>
-      <div style="display:flex;gap:.75rem;justify-content:flex-end">
-        <button class="btn btn-ghost" onclick="cancelDelete()"
-          style="font-size:.875rem;padding:.4rem 1.1rem">Cancel</button>
-        <button class="btn btn-danger" onclick="confirmDelete()"
-          style="font-size:.875rem;padding:.4rem 1.1rem">Yes, remove</button>
-      </div>
-    </div>
+      style="display:none;margin-top:.75rem;max-height:120px;font-size:.78rem"></div>
   </div>
 
 </div>
@@ -134,297 +129,291 @@
 (function () {
   'use strict';
 
-  // ── State ──────────────────────────────────────────────────────────────────
-  var _gpuModels       = [];   // ["NVIDIA-A2", "NVIDIA-A100", ...]
-  var _groups          = [];   // ["internship-students", "admins", ...]
-  var _pendingDeleteTr = null;
-
-  var S_SEL = [
-    'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
-    'border-radius:5px', 'padding:.45rem .7rem',
-    'font-size:.875rem', 'width:100%'
-  ].join(';');
+  var _gpuModels = [];
+  var _allGroups = [];
 
   function _esc(s) {
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // ── Fetch GPU models from compat matrix ────────────────────────────────────
+  // ── Status ─────────────────────────────────────────────────────────────────
+  window.loadKvStatus = async function () {
+    try {
+      var d = await (await fetch('/api/gpu-policy/status')).json();
+      _setStatus('block', d.block_policy);
+      _setStatus('types', d.types_policy);
+    } catch(e) {
+      ['block','types'].forEach(function(k) {
+        document.getElementById('badge-'+k).textContent = 'error';
+        document.getElementById('badge-'+k).className   = 'badge b-err';
+        document.getElementById('dot-'+k).className     = 'dot error';
+      });
+    }
+  };
+
+  function _setStatus(key, s) {
+    var badge = document.getElementById('badge-'+key);
+    var dot   = document.getElementById('dot-'+key);
+    if (!s.exists) {
+      badge.textContent = 'not applied'; badge.className = 'badge b-warn';
+      dot.className = 'dot';
+    } else if (s.ready) {
+      badge.textContent = '✓ active'; badge.className = 'badge b-ok';
+      dot.className = 'dot ok';
+    } else {
+      badge.textContent = 'syncing…'; badge.className = 'badge b-run';
+      dot.className = 'dot running';
+    }
+  }
+
+  // ── Data loading ────────────────────────────────────────────────────────────
   async function _fetchGpuModels() {
     try {
       var d = await (await fetch('/api/gpu/matrix')).json();
-      _gpuModels = (d.matrix || [])
-        .map(function(m) { return m.gpu_model; })
-        .filter(Boolean);
-    } catch (e) {
-      _gpuModels = [];
-    }
-
-    var banner = document.getElementById('no-gpu-banner');
-    if (banner) banner.style.display = _gpuModels.length ? 'none' : 'block';
-    return _gpuModels;
+      _gpuModels = (d.matrix || []).map(function(m) { return m.gpu_model; }).filter(Boolean);
+    } catch(e) { _gpuModels = []; }
   }
 
-  // ── Fetch available groups from profiles ConfigMap ─────────────────────────
   async function _fetchGroups() {
     try {
       var d = await (await fetch('/api/gpu-policy/available-groups')).json();
-      _groups = Array.isArray(d.groups) ? d.groups : [];
-    } catch (e) {
-      _groups = [];
-    }
-    return _groups;
+      _allGroups = Array.isArray(d.groups) ? d.groups : [];
+    } catch(e) { _allGroups = []; }
   }
 
-  // ── Build pill-based GPU type picker for a row ──────────────────────────────
-  // Each GPU model is a toggleable pill. Selected = accent color, unselected = grey.
-  // Scales cleanly to any number of GPU types — no horizontal overflow.
-  function _buildCheckboxes(allowedTypes) {
-    if (!_gpuModels.length) {
-      return '<span style="color:#4a5568;font-size:.8rem;font-style:italic">' +
-             'No GPU models in matrix — add one in GPU Management first.</span>';
-    }
-    return '<div class="gpu-pill-picker" style="display:flex;flex-wrap:wrap;gap:.4rem">' +
-      _gpuModels.map(function(model) {
-        var active = allowedTypes.indexOf(model) !== -1;
-        return '<button type="button" class="gpu-pill' + (active ? ' active' : '') + '"' +
-               ' data-model="' + _esc(model) + '"' +
-               ' onclick="toggleGpuPill(this)"' +
-               ' style="' + _pillStyle(active) + '">' +
-               _esc(model) +
-               '</button>';
-      }).join('') +
-    '</div>';
+  function _populateGroupSelects() {
+    ['block-group-select','type-group-select'].forEach(function(id) {
+      var sel = document.getElementById(id);
+      var placeholder = id === 'block-group-select'
+        ? '— select group to block —'
+        : '— select group to restrict —';
+      sel.innerHTML = '<option value="">' + placeholder + '</option>' +
+        _allGroups.map(function(g) {
+          return '<option value="' + _esc(g) + '">' + _esc(g) + '</option>';
+        }).join('');
+    });
   }
 
-  function _pillStyle(active) {
-    return active
-      ? 'background:#2d2860;color:#a78bfa;border:1.5px solid #7c6af7;' +
-        'border-radius:20px;padding:3px 12px;font-size:.78rem;cursor:pointer;' +
-        'font-weight:600;transition:all .15s;white-space:nowrap'
-      : 'background:#1a1d2e;color:#4a5568;border:1.5px solid #2d3148;' +
-        'border-radius:20px;padding:3px 12px;font-size:.78rem;cursor:pointer;' +
-        'font-weight:400;transition:all .15s;white-space:nowrap';
-  }
-
-  window.toggleGpuPill = function (btn) {
-    var active = btn.classList.toggle('active');
-    btn.style.cssText = _pillStyle(active);
+  // ── Blocked groups ──────────────────────────────────────────────────────────
+  window.addBlockedGroup = function () {
+    var sel = document.getElementById('block-group-select');
+    var grp = sel.value.trim();
+    if (!grp) return;
+    if (document.getElementById('block-item-' + CSS.escape(grp))) return;
+    _renderBlockedItem(grp);
+    sel.value = '';
+    _updateBlockedEmpty();
   };
 
-  // ── Rebuild group dropdown in a row ───────────────────────────────────────
-  function _buildGroupSelect(current) {
-    var opts = ['<option value="">— select group —</option>'];
-    _groups.forEach(function(g) {
-      opts.push(
-        '<option value="' + _esc(g) + '"' +
-        (g === current ? ' selected' : '') + '>' + _esc(g) + '</option>'
-      );
-    });
-    if (current && _groups.indexOf(current) === -1) {
-      opts.push(
-        '<option value="' + _esc(current) + '" selected>' +
-        _esc(current) + ' (no profile)</option>'
-      );
-    }
-    return opts.join('');
+  function _renderBlockedItem(grp) {
+    document.getElementById('blocked-empty').style.display = 'none';
+    var div = document.createElement('div');
+    div.id = 'block-item-' + grp;
+    div.style.cssText = 'display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;' +
+      'background:#2d1515;border:1px solid #c53030;border-radius:6px;font-size:.85rem';
+    div.innerHTML =
+      '<span style="color:#fc8181;font-size:1rem">🚫</span>' +
+      '<span style="color:#e2e8f0;font-weight:500;flex:1">' + _esc(grp) + '</span>' +
+      '<button onclick="removeBlockedGroup(\'' + _esc(grp) + '\')" ' +
+      'style="background:none;border:1px solid #c53030;color:#fc8181;border-radius:4px;' +
+      'padding:2px 10px;cursor:pointer;font-size:.78rem">Remove</button>';
+    document.getElementById('blocked-list').appendChild(div);
   }
 
-  // ── Append one row to the table ────────────────────────────────────────────
-  function _appendRow(group, allowedTypes) {
-    var empty = document.getElementById('empty-row');
-    if (empty) empty.remove();
+  window.removeBlockedGroup = function (grp) {
+    var el = document.getElementById('block-item-' + grp);
+    if (el) el.remove();
+    _updateBlockedEmpty();
+  };
 
-    document.getElementById('policy-thead').style.display = '';
+  function _updateBlockedEmpty() {
+    var items = document.querySelectorAll('#blocked-list > div:not(#blocked-empty)');
+    document.getElementById('blocked-empty').style.display = items.length ? 'none' : 'block';
+  }
 
+  // ── Type restriction rows ───────────────────────────────────────────────────
+  window.addTypeRow = function () {
+    var sel = document.getElementById('type-group-select');
+    var grp = sel.value.trim();
+    if (!grp) return;
+    if (document.getElementById('type-row-' + grp)) return;
+    _renderTypeRow(grp, []);
+    sel.value = '';
+    _updateTypeTable();
+  };
+
+  function _renderTypeRow(grp, allowedTypes) {
+    var tbody = document.getElementById('type-rows');
     var tr = document.createElement('tr');
+    tr.id = 'type-row-' + grp;
     tr.style.borderBottom = '1px solid #1e2235';
-    tr.style.verticalAlign = 'middle';
+
+    var chipsHtml = allowedTypes.map(function(t) { return _chipHtml(grp, t); }).join('');
+
+    var typeOptions = _gpuModels.filter(function(m) {
+      return allowedTypes.indexOf(m) === -1;
+    }).map(function(m) {
+      return '<option value="' + _esc(m) + '">' + _esc(m) + '</option>';
+    }).join('');
 
     tr.innerHTML =
-      '<td style="padding:.7rem 1rem;min-width:180px">' +
-        '<select class="grp-sel" style="' + S_SEL + '">' +
-          _buildGroupSelect(group || '') +
-        '</select>' +
-      '</td>' +
-      '<td style="padding:.7rem 1rem">' +
-        '<div class="cb-cell" style="display:flex;flex-wrap:wrap;' +
-        'align-items:center;gap:.2rem .1rem;min-height:28px">' +
-          _buildCheckboxes(allowedTypes || []) +
+      '<td style="padding:.65rem 1rem;color:#e2e8f0;font-weight:500;' +
+      'font-size:.85rem;white-space:nowrap">' + _esc(grp) + '</td>' +
+      '<td style="padding:.65rem 1rem">' +
+        '<div class="chip-cell" style="display:flex;flex-wrap:wrap;gap:.4rem;align-items:center">' +
+          chipsHtml +
+          '<select class="type-add-sel" onchange="addChipFromSelect(this,\'' + _esc(grp) + '\')"' +
+          ' style="background:#0f1117;color:#68d391;border:1px dashed #276749;' +
+          'border-radius:20px;padding:3px 10px;font-size:.78rem;cursor:pointer;' +
+          'max-width:160px">' +
+          '<option value="">+ Add type</option>' + typeOptions +
+          '</select>' +
         '</div>' +
       '</td>' +
-      '<td style="padding:.7rem 1rem;text-align:center">' +
-        '<button onclick="askDeleteRow(this)" ' +
+      '<td style="padding:.65rem 1rem;text-align:center">' +
+        '<button onclick="removeTypeRow(\'' + _esc(grp) + '\')" ' +
         'style="background:none;border:1px solid #374151;color:#9ca3af;' +
-        'border-radius:5px;padding:4px 12px;cursor:pointer;font-size:.8rem;' +
-        'transition:all .15s" ' +
-        'onmouseover="this.style.borderColor=\'#ef4444\';' +
-        'this.style.color=\'#ef4444\'" ' +
-        'onmouseout="this.style.borderColor=\'#374151\';' +
-        'this.style.color=\'#9ca3af\'">' +
+        'border-radius:4px;padding:3px 10px;cursor:pointer;font-size:.78rem">' +
         'Remove</button>' +
       '</td>';
-
-    document.getElementById('policy-rows').appendChild(tr);
+    tbody.appendChild(tr);
   }
 
-  function _clearRows() {
-    document.getElementById('policy-thead').style.display = 'none';
-    document.getElementById('policy-rows').innerHTML =
-      '<tr id="empty-row"><td colspan="3" ' +
-      'style="padding:2.5rem;text-align:center;color:#4a5568;' +
-      'font-size:.875rem;line-height:2">' +
-      'No rules defined yet.<br>' +
-      '<span style="font-size:.8rem">Click ' +
-      '<strong style="color:#7c6af7">+ Add group</strong> to restrict a group.</span>' +
-      '</td></tr>';
+  function _chipHtml(grp, model) {
+    return '<span class="gpu-chip" data-model="' + _esc(model) + '" ' +
+      'style="display:inline-flex;align-items:center;gap:.3rem;background:#1a3326;' +
+      'color:#68d391;border:1px solid #276749;border-radius:20px;' +
+      'padding:3px 10px;font-size:.78rem;font-weight:500">' +
+      _esc(model) +
+      '<button onclick="removeChip(this,\'' + _esc(grp) + '\')" ' +
+      'style="background:none;border:none;color:#68d391;cursor:pointer;' +
+      'font-size:.85rem;line-height:1;padding:0 0 0 2px">×</button>' +
+      '</span>';
   }
 
-  // ── Delete modal ───────────────────────────────────────────────────────────
-  window.askDeleteRow = function (btn) {
-    _pendingDeleteTr = btn.closest('tr');
-    var grp = (_pendingDeleteTr.querySelector('.grp-sel') || {}).value || '(none)';
-    document.getElementById('del-msg').innerHTML =
-      'Remove the GPU access rule for group ' +
-      '<strong style="color:#e2e8f0">' + _esc(grp) + '</strong>?<br>' +
-      '<span style="font-size:.8rem;color:#4a5568">' +
-      'The cluster policy updates when you click ' +
-      '<em>Save &amp; Apply</em>.</span>';
-    document.getElementById('del-modal').style.display = 'flex';
+  window.addChipFromSelect = function (sel, grp) {
+    var model = sel.value;
+    if (!model) return;
+    var tr    = document.getElementById('type-row-' + grp);
+    var cell  = tr.querySelector('.chip-cell');
+    var chip  = document.createElement('span');
+    chip.outerHTML; // force parse
+    var tmp = document.createElement('div');
+    tmp.innerHTML = _chipHtml(grp, model);
+    cell.insertBefore(tmp.firstChild, sel.parentElement.contains(sel) ? sel : null);
+    // Remove from dropdown
+    var opt = sel.querySelector('option[value="' + model + '"]');
+    if (opt) opt.remove();
+    sel.value = '';
   };
 
-  window.confirmDelete = function () {
-    if (_pendingDeleteTr) {
-      _pendingDeleteTr.remove();
-      _pendingDeleteTr = null;
-      if (!document.querySelector('#policy-rows tr:not(#empty-row)')) _clearRows();
-    }
-    document.getElementById('del-modal').style.display = 'none';
+  window.removeChip = function (btn, grp) {
+    var chip  = btn.parentElement;
+    var model = chip.getAttribute('data-model');
+    var tr    = document.getElementById('type-row-' + grp);
+    var sel   = tr.querySelector('.type-add-sel');
+    chip.remove();
+    // Add back to dropdown
+    var opt = document.createElement('option');
+    opt.value = model; opt.textContent = model;
+    sel.appendChild(opt);
   };
 
-  window.cancelDelete = function () {
-    _pendingDeleteTr = null;
-    document.getElementById('del-modal').style.display = 'none';
+  window.removeTypeRow = function (grp) {
+    var el = document.getElementById('type-row-' + grp);
+    if (el) el.remove();
+    _updateTypeTable();
   };
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  function _updateTypeTable() {
+    var rows  = document.querySelectorAll('#type-rows tr');
+    var table = document.getElementById('type-table');
+    var empty = document.getElementById('type-empty');
+    table.style.display = rows.length ? 'table' : 'none';
+    empty.style.display = rows.length ? 'none'  : 'block';
+  }
 
-  window.loadKvStatus = async function () {
-    var badge = document.getElementById('kv-badge');
-    var dot   = document.getElementById('kv-dot');
-    badge.textContent = '…'; badge.className = 'badge b-info';
-    dot.className = 'dot running';
-    try {
-      var d = await (await fetch('/api/gpu-policy/status')).json();
-      if (d.status === 'not_applied') {
-        badge.className = 'badge b-warn'; badge.textContent = 'not applied';
-        dot.className   = 'dot';
-      } else if (d.ready) {
-        badge.className = 'badge b-ok'; badge.textContent = '\u2713 active';
-        dot.className   = 'dot ok';
-      } else {
-        badge.className = 'badge b-run'; badge.textContent = 'syncing\u2026';
-        dot.className   = 'dot running';
-      }
-    } catch (e) {
-      badge.className = 'badge b-err'; badge.textContent = 'error';
-      dot.className   = 'dot error';
-    }
-  };
-
+  // ── Load existing data ──────────────────────────────────────────────────────
   window.loadPolicyPage = async function () {
     await _fetchGpuModels();
     await _fetchGroups();
+    _populateGroupSelects();
 
-    _clearRows();
+    // Clear current state
+    var bl = document.getElementById('blocked-list');
+    bl.querySelectorAll('div:not(#blocked-empty)').forEach(function(el) { el.remove(); });
+    document.getElementById('type-rows').innerHTML = '';
+    document.getElementById('blocked-empty').style.display = 'block';
+    _updateTypeTable();
+
     try {
       var d = await (await fetch('/api/gpu-policy')).json();
-      var rules = d.groups || [];
-      rules.forEach(function(r) {
-        _appendRow(r.gitlab_group, r.allowed_gpu_types || []);
+      (d.blocked_groups || []).forEach(function(g) { _renderBlockedItem(g); });
+      _updateBlockedEmpty();
+      (d.type_policies || []).forEach(function(tp) {
+        _renderTypeRow(tp.gitlab_group, tp.allowed_gpu_types || []);
       });
-    } catch (e) {
-      console.error('GPU Policy: load failed —', e);
-    }
+      _updateTypeTable();
+    } catch(e) { console.error('GPU Policy load failed:', e); }
   };
 
-  window.addGroupRow = async function () {
-    if (!_gpuModels.length) await _fetchGpuModels();
-    if (!_groups.length)    await _fetchGroups();
-    _appendRow('', []);
-  };
-
+  // ── Save ────────────────────────────────────────────────────────────────────
   window.savePolicy = async function () {
     var msg = document.getElementById('save-msg');
     var det = document.getElementById('save-detail');
 
-    // Collect rows
-    var groups = [];
-    var seenGroups = {};
-    var dupErr = null;
-
-    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function(tr) {
-      var grpEl = tr.querySelector('.grp-sel');
-      var grp   = grpEl ? grpEl.value.trim() : '';
-      if (!grp) return;
-
-      if (seenGroups[grp]) {
-        dupErr = 'Duplicate group "' + grp + '" — each group may appear only once.';
-      }
-      seenGroups[grp] = true;
-
-      var allowed = [];
-      var allowed = [];
-      tr.querySelectorAll('.gpu-pill.active').forEach(function(pill) {
-        allowed.push(pill.getAttribute('data-model'));
-      });
-      groups.push({ gitlab_group: grp, allowed_gpu_types: allowed });
+    var blocked_groups = Array.from(
+      document.querySelectorAll('#blocked-list > div:not(#blocked-empty)')
+    ).map(function(div) {
+      return div.querySelector('span[style*="font-weight"]').textContent.trim();
     });
 
-    if (dupErr) {
-      msg.textContent = '\u2717 ' + dupErr;
-      msg.style.color = '#fc8181';
-      return;
-    }
+    var type_policies = Array.from(
+      document.querySelectorAll('#type-rows tr')
+    ).map(function(tr) {
+      var grp = tr.id.replace('type-row-', '');
+      var allowed = Array.from(tr.querySelectorAll('.gpu-chip')).map(function(c) {
+        return c.getAttribute('data-model');
+      });
+      return { gitlab_group: grp, allowed_gpu_types: allowed };
+    });
 
-    msg.textContent = 'Applying to cluster\u2026';
-    msg.style.color = '#94a3b8';
+    msg.textContent = 'Applying…'; msg.style.color = '#94a3b8';
     det.style.display = 'none';
 
     try {
       var resp = await fetch('/api/gpu-policy', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ groups: groups })
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ blocked_groups: blocked_groups, type_policies: type_policies })
       });
       var d = await resp.json();
-
       if (d.success) {
-        msg.textContent = '\u2713 ' + d.message;
-        msg.style.color = '#68d391';
+        msg.textContent = '✓ ' + d.message; msg.style.color = '#68d391';
         setTimeout(window.loadKvStatus, 2000);
       } else {
-        msg.textContent = '\u2717 ' + (d.error || 'Failed — see detail below');
+        msg.textContent = '✗ ' + (d.error || 'Failed');
         msg.style.color = '#fc8181';
       }
-      if (d.detail) { det.textContent = d.detail; det.style.display = 'block'; }
-    } catch (e) {
-      msg.textContent = '\u2717 Network error: ' + String(e);
+      if (d.detail && typeof d.detail === 'object') {
+        det.textContent   = JSON.stringify(d.detail, null, 2);
+        det.style.display = 'block';
+      }
+    } catch(e) {
+      msg.textContent = '✗ Network error: ' + String(e);
       msg.style.color = '#fc8181';
     }
   };
 
+  // ── Init ────────────────────────────────────────────────────────────────────
   window.initGpuPolicyTab = async function () {
     window.loadKvStatus();
     await window.loadPolicyPage();
   };
 
   document.addEventListener('DOMContentLoaded', function () {
-    if (document.getElementById('policy-rows')) {
-      window.initGpuPolicyTab();
-    }
+    if (document.getElementById('blocked-list')) window.initGpuPolicyTab();
   });
 
 }());
