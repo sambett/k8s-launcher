@@ -403,7 +403,7 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
 
                     cuda_ver, _ = _run_on_node(
                         node,
-                        'nvidia-smi 2>/dev/null | grep "CUDA Version" | grep -oE "[0-9]+[.][0-9]+" | tail -1 || echo unknown'
+                        "nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \\([0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' | head -1 || echo unknown"
                     )
                     if not cuda_ver:
                         cuda_ver = "unknown"
