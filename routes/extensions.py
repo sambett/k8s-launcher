@@ -200,6 +200,8 @@ async def gpu_versions():
     """
     Return plugin versions from compat_matrix.json.
     Not filtered by K8s version — device plugin is K8s-version independent.
+    Recommended version is the entry with "recommended": true.
+    Falls back to index 0 if no entry is explicitly marked.
     """
     compat_path = BASE_DIR / "compat_matrix.json"
     try:
@@ -208,15 +210,15 @@ async def gpu_versions():
         return {"versions": [], "recommended": None, "toolkit_min": "1.7.0", "error": str(e)}
 
     all_versions = matrix.get("nvidia_device_plugin", [])
-    recommended  = all_versions[0]["version"] if all_versions else None
-    toolkit_min  = all_versions[0].get("toolkit_min", "1.7.0") if all_versions else "1.7.0"
+    rec_entry    = next((v for v in all_versions if v.get("recommended")), all_versions[0] if all_versions else None)
+    recommended  = rec_entry["version"] if rec_entry else None
+    toolkit_min  = rec_entry.get("toolkit_min", "1.7.0") if rec_entry else "1.7.0"
 
     return {
         "versions":    all_versions,
         "recommended": recommended,
         "toolkit_min": toolkit_min,
     }
-
 
 # ── GET /api/extensions/gpu/install/stream ─────────────────────────────────
 @router.get("/api/extensions/gpu/install/stream")
@@ -266,7 +268,7 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                 yield f"data: {line}\n\n"
 
         # Step 3a — configure containerd NVIDIA runtime on all GPU workers
-        # Reads inventory hostnames directly — no K8s node name resolution needed here.
+        # Uses _run_on_node() so Ansible header stripping is consistent.
         yield f"data: [3/4] Configuring NVIDIA runtime on GPU workers...\n\n"
         if INVENTORY_PATH.exists():
             worker_nodes_inv = []
@@ -278,36 +280,28 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                     in_w = False; continue
                 if in_w and _line.strip() and not _line.strip().startswith("#"):
                     worker_nodes_inv.append(_line.split()[0])
+
             for _node in worker_nodes_inv:
-                _cr = subprocess.run(
-                    ["ansible", _node, "-i", str(INVENTORY_PATH), "-m", "shell",
-                     "-a", "which nvidia-ctk 2>/dev/null || echo NOT_FOUND"],
-                    capture_output=True, text=True, timeout=30
+                _ctk_path, _ = _run_on_node(
+                    _node,
+                    "which nvidia-ctk 2>/dev/null || echo NOT_FOUND"
                 )
-                _ctk_check = [
-                    l.strip() for l in (_cr.stdout + _cr.stderr).splitlines()
-                    if l.strip() and "CHANGED" not in l and "SUCCESS" not in l
-                    and "rc=" not in l and not l.startswith("WARNING")
-                ]
-                _ctk_path = _ctk_check[-1] if _ctk_check else "NOT_FOUND"
 
                 if "NOT_FOUND" in _ctk_path or not _ctk_path:
                     yield f"data: {_node}: no nvidia-ctk found — skipping (not a GPU node).\n\n"
                     continue
 
                 yield f"data: {_node}: nvidia-ctk found at {_ctk_path} — configuring containerd...\n\n"
-                _cfg = subprocess.run(
-                    ["ansible", _node, "-i", str(INVENTORY_PATH), "-m", "shell",
-                     "-a", "nvidia-ctk runtime configure --runtime=containerd --set-as-default && systemctl restart containerd",
-                     "--become"],
-                    capture_output=True, text=True, timeout=120
+                _out, _rc = _run_on_node(
+                    _node,
+                    "nvidia-ctk runtime configure --runtime=containerd --set-as-default && systemctl restart containerd",
+                    become=True,
+                    timeout=120,
                 )
-                if _cfg.returncode == 0:
+                if _rc == 0:
                     yield f"data: {_node}: containerd NVIDIA runtime configured.\n\n"
                 else:
-                    _err = [l.strip() for l in (_cfg.stdout + _cfg.stderr).splitlines()
-                            if l.strip() and "CHANGED" not in l and "SUCCESS" not in l and "rc=" not in l]
-                    yield f"data: {_node}: containerd config failed: {_err[-1] if _err else 'unknown error'}.\n\n"
+                    yield f"data: {_node}: containerd config failed: {_out or 'unknown error'}.\n\n"
 
         # Step 3b — helm upgrade --install
         yield f"data: [3/4] Installing Device Plugin {version}{gfd_note} via Helm...\n\n"
@@ -339,6 +333,10 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
 
         # Step 4 — bootstrap GPU labels from nvidia-smi so nodes are labeled
         # immediately without waiting for NFD image pull.
+        # IMPORTANT: inventory hostnames are used to run nvidia-smi via Ansible,
+        # but kubectl label node requires the K8s-registered node name.
+        # We resolve the K8s name from the inventory hostname via IP lookup
+        # to avoid silently labeling the wrong node.
         yield f"data: Bootstrapping GPU labels from nvidia-smi...\n\n"
         try:
             if not INVENTORY_PATH.exists():
@@ -354,22 +352,45 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                     if in_workers and line.strip() and not line.strip().startswith("#"):
                         worker_nodes.append(line.split()[0])
 
+                # Build IP -> K8s node name map from kubectl once,
+                # rather than per-node calls inside the loop.
+                k8s_nodes_out, k8s_nodes_rc = run_on_cp(
+                    "kubectl get nodes -o json 2>/dev/null"
+                )
+                k8s_ip_to_name = {}
+                if k8s_nodes_rc == 0:
+                    try:
+                        k8s_data = _json.loads(_strip(k8s_nodes_out))
+                        for item in k8s_data.get("items", []):
+                            k8s_name = item["metadata"]["name"]
+                            for addr in item.get("status", {}).get("addresses", []):
+                                if addr.get("type") == "InternalIP":
+                                    k8s_ip_to_name[addr["address"]] = k8s_name
+                    except Exception:
+                        pass
+
+                def _inv_to_k8s_name(inv_hostname):
+                    """Resolve inventory hostname -> K8s node name via IP."""
+                    for line in INVENTORY_PATH.read_text().splitlines():
+                        s = line.strip()
+                        if not s or s.startswith("[") or s.startswith("#"):
+                            continue
+                        parts = s.split()
+                        if parts and parts[0] == inv_hostname:
+                            for part in parts[1:]:
+                                if part.startswith("ansible_host="):
+                                    ip = part.split("=", 1)[1]
+                                    return k8s_ip_to_name.get(ip, inv_hostname)
+                    return inv_hostname
+
                 gpu_labeled = 0
                 for node in worker_nodes:
-                    r = subprocess.run(
-                        ["ansible", node, "-i", str(INVENTORY_PATH), "-m", "shell",
-                         "-a", "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo NO_GPU"],
-                        capture_output=True, text=True, timeout=60
+                    gpu_line, rc_smi = _run_on_node(
+                        node,
+                        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo NO_GPU"
                     )
-                    raw_lines = [
-                        l.strip() for l in (r.stdout + r.stderr).splitlines()
-                        if l.strip()
-                        and "CHANGED" not in l and "SUCCESS" not in l
-                        and "rc=" not in l and not l.startswith("WARNING")
-                    ]
-                    gpu_line = raw_lines[-1] if raw_lines else "NO_GPU"
 
-                    if "NO_GPU" in gpu_line or not gpu_line or r.returncode != 0:
+                    if "NO_GPU" in gpu_line or not gpu_line or rc_smi != 0:
                         continue
 
                     try:
@@ -380,20 +401,20 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                         yield f"data: {node}: could not parse GPU info ({gpu_line}): {ex}\n\n"
                         continue
 
-                    cr = subprocess.run(
-                        ["ansible", node, "-i", str(INVENTORY_PATH), "-m", "shell",
-                         "-a", 'nvidia-smi 2>/dev/null | grep "CUDA Version" | grep -oE "[0-9]+[.][0-9]+" | tail -1 || echo unknown'],
-                        capture_output=True, text=True, timeout=60
+                    cuda_ver, _ = _run_on_node(
+                        node,
+                        'nvidia-smi 2>/dev/null | grep "CUDA Version" | grep -oE "[0-9]+[.][0-9]+" | tail -1 || echo unknown'
                     )
-                    clines = [
-                        l.strip() for l in (cr.stdout + cr.stderr).splitlines()
-                        if l.strip()
-                        and "CHANGED" not in l and "SUCCESS" not in l and "rc=" not in l
-                    ]
-                    cuda_ver = clines[-1] if clines else "unknown"
+                    if not cuda_ver:
+                        cuda_ver = "unknown"
+
+                    # Resolve the K8s node name — do NOT use inventory hostname here.
+                    # kubectl label node requires the name kubeadm registered, which
+                    # may differ from the inventory hostname.
+                    k8s_node_name = _inv_to_k8s_name(node)
 
                     label_cmd = (
-                        f"kubectl label node {node} "
+                        f"kubectl label node {k8s_node_name} "
                         f"nvidia.com/gpu.present=true "
                         f"nvidia.com/gpu.product={gpu_name} "
                         f"nvidia.com/gpu.memory={gpu_memory} "
@@ -409,7 +430,7 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                     lbl_out, lbl_rc = run_on_cp(label_cmd)
                     if lbl_rc == 0:
                         cuda_note = f" CUDA {cuda_ver}" if cuda_ver != "unknown" else ""
-                        yield f"data: {node}: {gpu_name} {gpu_memory}{cuda_note} — labeled\n\n"
+                        yield f"data: {node} ({k8s_node_name}): {gpu_name} {gpu_memory}{cuda_note} — labeled\n\n"
                         gpu_labeled += 1
                     else:
                         yield f"data: {node}: label failed: {_strip(lbl_out)}\n\n"
@@ -611,7 +632,6 @@ async def gpu_node_prereqs(node: str):
     except Exception:
         configured = False
 
-    # Resolve where the config actually lives for display in the UI
     conf_path, _ = _run_on_node(
         inv_hostname,
         "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | head -1 || echo not found"
@@ -651,7 +671,6 @@ async def fix_gpu_node(body: NodeAction):
             ),
         }
 
-    # Distinguish "node not reachable in inventory" from "command failed"
     if not out:
         out = (
             f"Ansible could not reach '{inv_hostname}' — "

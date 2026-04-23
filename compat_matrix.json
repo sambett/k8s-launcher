@@ -43,6 +43,7 @@
   "nvidia_device_plugin": [
     {
       "version": "v0.17.4",
+      "recommended": true,
       "notes": "Compatible with all Kubernetes versions >= 1.10",
       "toolkit_min": "1.7.0"
     },

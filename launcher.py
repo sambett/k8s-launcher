@@ -3,11 +3,10 @@ k8s-launcher — entry point
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 
-from core.paths import TEMPLATES_DIR, BASE_DIR
+from core.paths import TEMPLATES_DIR
 from routes import (
     bootstrap, preflight, configure,
     gitlab, k8s, longhorn, worker, reset, status,
@@ -16,9 +15,6 @@ from routes import (
 )
 
 app = FastAPI(title="k8s-launcher")
-
-# Serve logo.png and any other static assets
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
