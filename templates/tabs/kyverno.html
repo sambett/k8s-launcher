@@ -17,7 +17,7 @@
   <p style="margin:0 0 1.5rem;color:#666;font-size:13px">
     Installs Kyverno as a Kubernetes admission controller.
     Once running, the <strong>workbench-admin GPU Policies tab</strong> can create
-    per-group GPU quota rules that are enforced at the cluster level.
+    per-group GPU allowlist rules that are enforced at the cluster level.
   </p>
 
   <!-- ── Status card ────────────────────────────────────────────────────────── -->
@@ -82,8 +82,9 @@
       <button class="btn btn-sm btn-ghost" onclick="loadKyvernoPolicies()">↺ refresh</button>
     </div>
     <p style="margin:0 0 .75rem;font-size:12px;color:#888">
-      Policies are created in the <strong>workbench-admin → GPU Policies tab</strong>.
-      This table is read-only — it shows what is currently enforced in the cluster.
+      GPU allowlist rules are created in the <strong>workbench-admin → GPU Policies tab</strong>.
+      Groups listed under <strong>Blocked groups</strong> have been denied GPU access by Kyverno.
+      Groups not listed are unrestricted.
     </p>
     <div id="kyverno-policies-table" style="font-size:13px;color:#666">
       Loading…
@@ -99,8 +100,10 @@
     </div>
     <p style="margin:0 0 .6rem;font-size:12px;color:#888;line-height:1.6">
       <strong>require-gpu-node-selector</strong> — any pod requesting
-      <code>nvidia.com/gpu</code> must declare <code>nodeSelector: accelerator: nvidia</code>.
-      Not admin-configurable — always enforced alongside the group quota policy.
+      <code>nvidia.com/gpu</code> must declare
+      <code>nodeSelector: nvidia.com/gpu.product: &lt;model&gt;</code>.
+      This is enforced by GFD labels set at install time.
+      Not admin-configurable — always active alongside the group allowlist policy.
     </p>
     <div id="node-selector-status-msg" style="margin-bottom:.6rem;font-size:12px"></div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -168,20 +171,14 @@ async function loadKyvernoStatus() {
     table.innerHTML = '<span style="color:#999;font-size:12px">No core pods found.</span>';
   } else {
     const rows = corePods.map(p => {
-      // Shorten name: "kyverno-admission-controller-7d8b9f-vxzqp"
-      //           → "admission-controller"
       const short  = p.name
-        .replace(/^kyverno-/, '')          // strip "kyverno-" prefix
-        .replace(/-[a-z0-9]+-[a-z0-9]+$/, ''); // strip hash suffix
+        .replace(/^kyverno-/, '')
+        .replace(/-[a-z0-9]+-[a-z0-9]+$/, '');
 
       const isReady = p.status === 'Running' && (() => {
         try { const [r,t] = p.ready.split('/'); return parseInt(r) === parseInt(t); }
         catch(e) { return false; }
       })();
-
-      const statusColor = p.status === 'Running'  ? '#2e7d32'
-                        : p.status === 'Completed' ? '#888'
-                        : '#c62828';
 
       const readyColor  = isReady ? '#2e7d32' : '#e65100';
 
@@ -313,13 +310,12 @@ async function loadKyvernoPolicies() {
   if (!d.policies || d.policies.length === 0) {
     el.innerHTML =
       '<span style="color:#999;font-size:12px">No ClusterPolicies found. ' +
-      'Create rules in workbench-admin → GPU Policies tab.</span>';
+      'Install Kyverno first, then create group rules in workbench-admin → GPU Policies tab.</span>';
     return;
   }
 
   const rows = d.policies.map(p => {
     // ── Ready badge ──────────────────────────────────────────────────────────
-    // 'ready' is always lowercase 'true' / 'false' / 'unknown' from the backend
     const isReady      = String(p.ready).toLowerCase() === 'true';
     const readyClass   = isReady ? 'b-ok' : 'b-warn';
     const readyLabel   = isReady ? '✓ ready' : p.ready;
@@ -329,15 +325,25 @@ async function loadKyvernoPolicies() {
     const actionClass  = isEnforce ? 'b-err' : 'b-warn';
     const actionLabel  = p.action || 'unknown';
 
-    // ── Groups cell ──────────────────────────────────────────────────────────
-    const groupsHtml   = (p.groups && p.groups.length > 0)
-      ? p.groups.map(g =>
-          `<span style="display:inline-block;background:#e3f2fd;color:#1565c0;
-                        font-size:10px;padding:1px 6px;border-radius:3px;margin:1px 2px 1px 0">
-             ${esc(g)}
-           </span>`
-        ).join('')
-      : '<span style="color:#9e9e9e;font-size:11px">— all groups</span>';
+    // ── Blocked groups cell ───────────────────────────────────────────────────
+    // require-gpu-node-selector: no group selector → cluster-wide
+    // jupyterhub-gpu-group-policy: groups = blocked groups (deny rules)
+    const isStaticPolicy = (p.name === 'require-gpu-node-selector');
+    let groupsHtml;
+    if (p.groups && p.groups.length > 0) {
+      // Groups present on the dynamic policy = blocked groups (have deny rules)
+      groupsHtml = p.groups.map(g =>
+        `<span style="display:inline-block;background:#ffebee;color:#c62828;
+                      border:1px solid #ef9a9a;
+                      font-size:10px;padding:1px 6px;border-radius:3px;margin:1px 2px 1px 0">
+           🚫 ${esc(g)}
+         </span>`
+      ).join('');
+    } else if (isStaticPolicy) {
+      groupsHtml = '<span style="color:#888;font-size:11px">— cluster-wide (all GPU pods)</span>';
+    } else {
+      groupsHtml = '<span style="color:#9e9e9e;font-size:11px">— no blocked groups</span>';
+    }
 
     // ── Rules count ──────────────────────────────────────────────────────────
     const rulesLabel   = p.rule_count === 1 ? '1 rule' : p.rule_count + ' rules';
@@ -389,7 +395,7 @@ async function loadKyvernoPolicies() {
              Rules
            </th>
            <th style="text-align:left;padding:5px 14px 6px 0;font-size:11px;color:#888;font-weight:600">
-             Groups covered
+             Blocked groups
            </th>
            <th style="text-align:left;padding:5px 0 6px;font-size:11px;color:#888;font-weight:600">
              Age

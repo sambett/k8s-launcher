@@ -3,30 +3,33 @@ kind: ClusterPolicy
 metadata:
   name: require-gpu-node-selector
   annotations:
-    policies.kyverno.io/title: "GPU pods must declare accelerator=nvidia nodeSelector"
+    policies.kyverno.io/title: "GPU pods must declare nvidia.com/gpu.product nodeSelector"
     policies.kyverno.io/description: >
       Any pod requesting nvidia.com/gpu must also declare
-      nodeSelector: accelerator: nvidia. This is a cluster-level
-      infrastructure invariant — not admin-configurable.
+      nodeSelector: nvidia.com/gpu.product: <model>. This ensures GPU pods
+      land on the correct hardware node identified by GFD labels.
+      Infrastructure invariant — not admin-configurable.
 spec:
   validationFailureAction: Enforce
   background: false
   rules:
-  - name: require-accelerator-node-selector
+  - name: require-gpu-product-node-selector
     match:
       any:
       - resources:
           kinds: [Pod]
+          operations: ["CREATE"]
     preconditions:
       all:
-      - key: "{{ request.object.spec.containers[].resources.limits.\"nvidia.com/gpu\" || '0' }}"
+      - key: "{{ request.object.spec.containers[0].resources.limits.\"nvidia.com/gpu\" || '0' }}"
         operator: GreaterThan
         value: "0"
     validate:
       message: >
         Pods requesting nvidia.com/gpu must declare
-        nodeSelector: accelerator: nvidia. Add this to the pod spec.
+        nodeSelector: nvidia.com/gpu.product: <model>.
+        Use a GPU profile from the Admin Dashboard — it sets this automatically.
       pattern:
         spec:
           nodeSelector:
-            accelerator: nvidia
+            "nvidia.com/gpu.product": "?*"

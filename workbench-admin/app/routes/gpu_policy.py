@@ -140,8 +140,8 @@ def _build_cluster_policy(groups):
         # Uses containers[0] — Kyverno JMESPath scalar operators require a
         # specific container index, not a wildcard array.
         key_expr = (
-            "{{ request.object.spec.containers[0].resources.limits"
-            "[\"nvidia.com/gpu\"] || '0' }}"
+            '{{ request.object.spec.containers[0].resources.limits.'
+            '"nvidia.com/gpu" || \'0\' }}'
         )
 
         rules.append({
