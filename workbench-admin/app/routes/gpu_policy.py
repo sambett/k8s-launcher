@@ -273,7 +273,11 @@ def api_set_policy():
         f.write(policy_yaml)
         policy_file = f.name
     try:
-        r = _run([_KUBECTL, "apply", "-f", policy_file])
+        # Delete first so kubectl create never hits the resourceVersion conflict
+        # that kubectl apply triggers on existing Kyverno CRD objects.
+        _run([_KUBECTL, "delete", "clusterpolicy",
+              KYVERNO_POLICY_NAME, "--ignore-not-found"])
+        r = _run([_KUBECTL, "create", "-f", policy_file])
     finally:
         os.unlink(policy_file)
 

@@ -423,8 +423,8 @@ async def install_gpu_plugin_stream(version: str, gfd_enabled: bool = True):
                     if cuda_ver and cuda_ver != "unknown" and "." in cuda_ver:
                         maj, minor = cuda_ver.split(".", 1)
                         label_cmd += (
-                            f" nvidia.com/cuda.driver.major={maj}"
-                            f" nvidia.com/cuda.driver.minor={minor}"
+                            f" nvidia.com/cuda.runtime.major={maj}"
+                            f" nvidia.com/cuda.runtime.minor={minor}"
                         )
 
                     lbl_out, lbl_rc = run_on_cp(label_cmd)
@@ -546,8 +546,8 @@ async def gfd_nodes():
 
         gpu_product = labels.get("nvidia.com/gpu.product", "")
         gpu_memory  = labels.get("nvidia.com/gpu.memory", "")
-        cuda_major  = labels.get("nvidia.com/cuda.driver.major", "")
-        cuda_minor  = labels.get("nvidia.com/cuda.driver.minor", "")
+        cuda_major  = labels.get("nvidia.com/cuda.runtime.major", "")
+        cuda_minor  = labels.get("nvidia.com/cuda.runtime.minor", "")
         gpu_present = labels.get("nvidia.com/gpu.present", "")
         accelerator = labels.get("accelerator", "")
         allocatable = status.get("allocatable", {}).get("nvidia.com/gpu", "0") or "0"

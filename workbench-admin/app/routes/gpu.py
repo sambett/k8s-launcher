@@ -48,8 +48,8 @@ def api_gpu_inventory():
         )
         gpu_product = labels.get("nvidia.com/gpu.product", "")
         gpu_memory  = labels.get("nvidia.com/gpu.memory", "")
-        cuda_major  = labels.get("nvidia.com/cuda.driver.major", "")
-        cuda_minor  = labels.get("nvidia.com/cuda.driver.minor", "")
+        cuda_major  = labels.get("nvidia.com/cuda.runtime.major", "")
+        cuda_minor  = labels.get("nvidia.com/cuda.runtime.minor", "")
         gpu_present = labels.get("nvidia.com/gpu.present", "")
         allocatable = status.get("allocatable", {}).get("nvidia.com/gpu", "0") or "0"
 

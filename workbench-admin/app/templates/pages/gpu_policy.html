@@ -55,7 +55,7 @@
                 margin-bottom:1rem;font-size:.82rem;
                 color:#94a3b8;line-height:1.7">
       Each row defines which GPU types a group is allowed to use.
-      <span style="color:#fc8181;font-weight:600">Empty checkbox row</span>
+      <span style="color:#fc8181;font-weight:600">No GPU types selected</span>
       = Kyverno blocks all GPU pods from that group.
       Groups with no row here are unrestricted.
     </div>
@@ -178,25 +178,41 @@
     return _groups;
   }
 
-  // ── Build the checkboxes cell for a row ────────────────────────────────────
+  // ── Build pill-based GPU type picker for a row ──────────────────────────────
+  // Each GPU model is a toggleable pill. Selected = accent color, unselected = grey.
+  // Scales cleanly to any number of GPU types — no horizontal overflow.
   function _buildCheckboxes(allowedTypes) {
     if (!_gpuModels.length) {
       return '<span style="color:#4a5568;font-size:.8rem;font-style:italic">' +
-             'No GPU models in matrix</span>';
+             'No GPU models in matrix — add one in GPU Management first.</span>';
     }
-    return _gpuModels.map(function(model) {
-      var checked = allowedTypes.indexOf(model) !== -1 ? ' checked' : '';
-      return '<label style="display:inline-flex;align-items:center;gap:.4rem;' +
-             'margin-right:1.1rem;font-size:.83rem;cursor:pointer;' +
-             'color:var(--text-primary);user-select:none">' +
-             '<input type="checkbox" class="gpu-cb"' +
-             ' value="' + _esc(model) + '"' + checked +
-             ' style="accent-color:#7c6af7;width:14px;height:14px;cursor:pointer">' +
-             '<span style="background:#2d2860;color:#a78bfa;border-radius:4px;' +
-             'padding:1px 7px;font-size:.78rem">' + _esc(model) + '</span>' +
-             '</label>';
-    }).join('');
+    return '<div class="gpu-pill-picker" style="display:flex;flex-wrap:wrap;gap:.4rem">' +
+      _gpuModels.map(function(model) {
+        var active = allowedTypes.indexOf(model) !== -1;
+        return '<button type="button" class="gpu-pill' + (active ? ' active' : '') + '"' +
+               ' data-model="' + _esc(model) + '"' +
+               ' onclick="toggleGpuPill(this)"' +
+               ' style="' + _pillStyle(active) + '">' +
+               _esc(model) +
+               '</button>';
+      }).join('') +
+    '</div>';
   }
+
+  function _pillStyle(active) {
+    return active
+      ? 'background:#2d2860;color:#a78bfa;border:1.5px solid #7c6af7;' +
+        'border-radius:20px;padding:3px 12px;font-size:.78rem;cursor:pointer;' +
+        'font-weight:600;transition:all .15s;white-space:nowrap'
+      : 'background:#1a1d2e;color:#4a5568;border:1.5px solid #2d3148;' +
+        'border-radius:20px;padding:3px 12px;font-size:.78rem;cursor:pointer;' +
+        'font-weight:400;transition:all .15s;white-space:nowrap';
+  }
+
+  window.toggleGpuPill = function (btn) {
+    var active = btn.classList.toggle('active');
+    btn.style.cssText = _pillStyle(active);
+  };
 
   // ── Rebuild group dropdown in a row ───────────────────────────────────────
   function _buildGroupSelect(current) {
@@ -360,10 +376,10 @@
       seenGroups[grp] = true;
 
       var allowed = [];
-      tr.querySelectorAll('.gpu-cb:checked').forEach(function(cb) {
-        allowed.push(cb.value);
+      var allowed = [];
+      tr.querySelectorAll('.gpu-pill.active').forEach(function(pill) {
+        allowed.push(pill.getAttribute('data-model'));
       });
-
       groups.push({ gitlab_group: grp, allowed_gpu_types: allowed });
     });
 
