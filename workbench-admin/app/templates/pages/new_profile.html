@@ -1,18 +1,87 @@
 <div id="page-new" class="page">
   <h2>New Profile</h2>
   <div class="card">
+
+    <!-- ── Profile type toggle ───────────────────────────────────────────── -->
+    <div style="margin-bottom:1.25rem">
+      <label style="display:block;margin-bottom:.5rem;font-size:.75rem;
+                    color:var(--text-secondary);font-weight:500">Profile Type</label>
+      <div style="display:flex;gap:.75rem">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;
+                      padding:.55rem 1.1rem;border-radius:7px;border:2px solid var(--border);
+                      font-size:.85rem;color:var(--text-primary);transition:all .15s;
+                      user-select:none" id="type-cpu-label">
+          <input type="radio" name="profile-type" id="type-cpu" value="cpu" checked
+            onchange="onProfileTypeChange()" style="accent-color:var(--accent)">
+          💻 CPU Only
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;
+                      padding:.55rem 1.1rem;border-radius:7px;border:2px solid var(--border);
+                      font-size:.85rem;color:var(--text-primary);transition:all .15s;
+                      user-select:none" id="type-gpu-label">
+          <input type="radio" name="profile-type" id="type-gpu" value="gpu"
+            onchange="onProfileTypeChange()" style="accent-color:var(--accent)">
+          🖥 GPU
+        </label>
+      </div>
+    </div>
+
+    <!-- ── GPU model selector (shown only when GPU is selected) ─────────── -->
+    <div id="gpu-model-section"
+      style="display:none;margin-bottom:1.25rem;background:var(--bg-hover);
+             border:1px solid var(--border);border-radius:8px;padding:1rem 1.1rem">
+      <div id="gpu-matrix-warn"
+        style="display:none;background:#2d1f00;border:1px solid #f59e0b;border-radius:6px;
+               padding:.6rem 1rem;font-size:.82rem;color:#fbbf24;margin-bottom:.9rem;
+               line-height:1.6">
+        ⚠ No GPU models found in the compatibility matrix.<br>
+        <span style="font-size:.78rem;color:#94a3b8">
+          Go to <strong style="color:#a78bfa">GPU Management → Compatibility Matrix</strong>
+          and save at least one GPU model with CPU/RAM floors before creating GPU profiles.
+        </span>
+      </div>
+
+      <div class="grid2" id="gpu-model-fields">
+        <div class="fg" style="grid-column:1/-1">
+          <label>GPU Model
+            <button class="btn btn-ghost btn-sm" style="float:right"
+              onclick="loadGpuModels()">↺ Refresh</button>
+          </label>
+          <select id="f-gpu-model" onchange="onGpuModelChange()">
+            <option value="">— select GPU model —</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>CUDA Ceiling</label>
+          <div id="f-cuda-ceiling"
+            style="background:var(--bg-input);border:1px solid var(--border);
+                   border-radius:6px;padding:.45rem .7rem;font-size:.85rem;
+                   color:var(--text-muted);min-height:34px">—</div>
+        </div>
+        <div class="fg">
+          <label>GPU Memory</label>
+          <div id="f-gpu-memory"
+            style="background:var(--bg-input);border:1px solid var(--border);
+                   border-radius:6px;padding:.45rem .7rem;font-size:.85rem;
+                   color:var(--text-muted);min-height:34px">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Core fields ───────────────────────────────────────────────────── -->
     <div class="grid2">
       <div class="fg">
         <label>Display Name</label>
-        <input id="f-name" placeholder="e.g. CPU Standard — SciPy"/>
+        <input id="f-name" placeholder="e.g. GPU — NVIDIA A2 / SciPy"/>
       </div>
       <div class="fg">
         <label>Slug (auto-generated, editable)</label>
-        <input id="f-slug" placeholder="e.g. ai-lab1-cpu-standard"/>
+        <input id="f-slug" placeholder="e.g. ai-lab1-gpu-a2"/>
       </div>
       <div class="fg">
         <label>GitLab Group
-          <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadGroups()">↺</button>
+          <button class="btn btn-ghost btn-sm" style="float:right"
+            onclick="loadGroups()">↺</button>
         </label>
         <select id="f-group"><option>Loading…</option></select>
       </div>
@@ -22,7 +91,8 @@
       </div>
       <div class="fg">
         <label>Image Repository
-          <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadRepos()">↺</button>
+          <button class="btn btn-ghost btn-sm" style="float:right"
+            onclick="loadRepos()">↺</button>
         </label>
         <select id="f-repo" onchange="loadTags()">
           <option value="">— select repository —</option>
@@ -35,27 +105,38 @@
         </div>
         <div class="tag-hint">Multiple tags → user gets a dropdown at spawn time</div>
       </div>
+
+      <!-- CPU -->
       <div class="fg">
         <label>CPU Limit (cores)</label>
         <input id="f-cpu-lim" type="number" step="0.5" value="2"/>
       </div>
       <div class="fg">
-        <label>CPU Guarantee (cores)</label>
-        <input id="f-cpu-req" type="number" step="0.25" value="0.5"/>
+        <label>CPU Guarantee (cores)
+          <span id="cpu-floor-hint"
+            style="display:none;float:right;font-size:.68rem;
+                   color:#f59e0b;font-weight:400"></span>
+        </label>
+        <input id="f-cpu-req" type="number" step="0.25" value="0.5"
+          oninput="enforceFloor('cpu')"/>
       </div>
+
+      <!-- RAM -->
       <div class="fg">
         <label>Memory Limit</label>
-        <input id="f-mem-lim" value="4G"/>
+        <input id="f-mem-lim" value="4Gi"/>
       </div>
       <div class="fg">
-        <label>Memory Guarantee</label>
-        <input id="f-mem-req" value="1G"/>
-      </div>
-      <div class="fg">
-        <label>GPU Count (0 = CPU only)</label>
-        <input id="f-gpu" type="number" min="0" value="0"/>
+        <label>Memory Guarantee
+          <span id="ram-floor-hint"
+            style="display:none;float:right;font-size:.68rem;
+                   color:#f59e0b;font-weight:400"></span>
+        </label>
+        <input id="f-mem-req" value="1Gi"
+          oninput="enforceFloorRam()"/>
       </div>
     </div>
+
     <div style="margin-top:1.2rem;display:flex;gap:.8rem;align-items:center">
       <button class="btn btn-primary" onclick="createProfile()">Add Profile</button>
       <span id="create-msg" style="font-size:.8rem;display:none"></span>
@@ -64,74 +145,334 @@
 </div>
 
 <script>
+// ── GPU matrix cache ──────────────────────────────────────────────────────────
+var _gpuMatrix = [];   // [{gpu_model, cuda_ceiling, gpu_memory, min_cpu, min_ram}]
+
+window.loadGpuModels = async function () {
+  try {
+    var d = await (await fetch('/api/gpu/matrix')).json();
+    _gpuMatrix = (d.matrix || []).filter(function(m) { return m.gpu_model; });
+  } catch (e) {
+    _gpuMatrix = [];
+  }
+
+  var sel = document.getElementById('f-gpu-model');
+  var warn = document.getElementById('gpu-matrix-warn');
+
+  if (!_gpuMatrix.length) {
+    sel.innerHTML = '<option value="">— no GPU models in matrix —</option>';
+    warn.style.display = 'block';
+    return;
+  }
+
+  warn.style.display = 'none';
+  sel.innerHTML = '<option value="">— select GPU model —</option>' +
+    _gpuMatrix.map(function(m) {
+      return '<option value="' + esc(m.gpu_model) + '">' + esc(m.gpu_model) + '</option>';
+    }).join('');
+};
+
+window.onGpuModelChange = function () {
+  var model = document.getElementById('f-gpu-model').value;
+  var entry = _gpuMatrix.find(function(m) { return m.gpu_model === model; });
+
+  var cudaEl = document.getElementById('f-cuda-ceiling');
+  var memEl  = document.getElementById('f-gpu-memory');
+
+  if (!entry) {
+    cudaEl.textContent = '—';
+    memEl.textContent  = '—';
+    _clearFloors();
+    return;
+  }
+
+  cudaEl.innerHTML = entry.cuda_ceiling
+    ? '<span style="background:#1a3326;color:#68d391;border-radius:4px;' +
+      'padding:2px 8px;font-size:.8rem">CUDA ' + esc(entry.cuda_ceiling) + '</span>'
+    : '<span style="color:var(--text-muted)">—</span>';
+
+  memEl.innerHTML = entry.gpu_memory
+    ? '<span style="color:var(--text-secondary);font-size:.85rem">' +
+      esc(entry.gpu_memory) + '</span>'
+    : '<span style="color:var(--text-muted)">—</span>';
+
+  _applyFloors(entry);
+};
+
+// ── Floor enforcement ─────────────────────────────────────────────────────────
+
+function _parseRamGi(val) {
+  // Parse "8Gi" → 8, "8G" → 8, "8192Mi" → 8, plain "8" → 8
+  var s = String(val).trim();
+  var m = s.match(/^([0-9.]+)\s*(Gi|G|Mi|M)?$/i);
+  if (!m) return 0;
+  var n = parseFloat(m[1]);
+  var u = (m[2] || '').toUpperCase();
+  if (u === 'MI' || u === 'M') return n / 1024;
+  return n;  // Gi, G, or plain → treat as Gi
+}
+
+function _formatRam(val) {
+  // Normalise to Gi string
+  var s = String(val).trim();
+  if (/gi$/i.test(s) || /g$/i.test(s) || /^[0-9.]+$/.test(s)) {
+    return s.replace(/g$/i, 'Gi');
+  }
+  return s;
+}
+
+function _clearFloors() {
+  ['f-cpu-req', 'f-cpu-lim'].forEach(function(id) {
+    var el = document.getElementById(id);
+    el.removeAttribute('min');
+    el.style.borderColor = '';
+  });
+  ['f-mem-req', 'f-mem-lim'].forEach(function(id) {
+    document.getElementById(id).style.borderColor = '';
+  });
+  document.getElementById('cpu-floor-hint').style.display = 'none';
+  document.getElementById('ram-floor-hint').style.display = 'none';
+}
+
+function _applyFloors(entry) {
+  var minCpu = parseFloat(entry.min_cpu) || 0;
+  var minRam = _parseRamGi(entry.min_ram || '0');
+
+  // CPU floor
+  var cpuHint = document.getElementById('cpu-floor-hint');
+  if (minCpu > 0) {
+    cpuHint.textContent    = 'floor: ' + minCpu + ' cores';
+    cpuHint.style.display  = 'inline';
+    var cpuReqEl = document.getElementById('f-cpu-req');
+    cpuReqEl.setAttribute('min', minCpu);
+    if (parseFloat(cpuReqEl.value) < minCpu) {
+      cpuReqEl.value = minCpu;
+      cpuReqEl.style.borderColor = '#f59e0b';
+    }
+    var cpuLimEl = document.getElementById('f-cpu-lim');
+    cpuLimEl.setAttribute('min', minCpu);
+    if (parseFloat(cpuLimEl.value) < minCpu) {
+      cpuLimEl.value = minCpu;
+      cpuLimEl.style.borderColor = '#f59e0b';
+    }
+  }
+
+  // RAM floor
+  var ramHint = document.getElementById('ram-floor-hint');
+  if (minRam > 0) {
+    ramHint.textContent   = 'floor: ' + (entry.min_ram || minRam + 'Gi');
+    ramHint.style.display = 'inline';
+    var ramReqEl = document.getElementById('f-mem-req');
+    if (_parseRamGi(ramReqEl.value) < minRam) {
+      ramReqEl.value = _formatRam(entry.min_ram);
+      ramReqEl.style.borderColor = '#f59e0b';
+    }
+    var ramLimEl = document.getElementById('f-mem-lim');
+    if (_parseRamGi(ramLimEl.value) < minRam) {
+      ramLimEl.value = _formatRam(entry.min_ram);
+      ramLimEl.style.borderColor = '#f59e0b';
+    }
+  }
+}
+
+window.enforceFloor = function (field) {
+  var model = document.getElementById('f-gpu-model').value;
+  var entry = _gpuMatrix.find(function(m) { return m.gpu_model === model; });
+  if (!entry) return;
+  var minCpu = parseFloat(entry.min_cpu) || 0;
+  if (field === 'cpu' && minCpu > 0) {
+    var el = document.getElementById('f-cpu-req');
+    if (parseFloat(el.value) < minCpu) {
+      el.value = minCpu;
+      el.style.borderColor = '#f59e0b';
+    } else {
+      el.style.borderColor = '';
+    }
+  }
+};
+
+window.enforceFloorRam = function () {
+  var model = document.getElementById('f-gpu-model').value;
+  var entry = _gpuMatrix.find(function(m) { return m.gpu_model === model; });
+  if (!entry) return;
+  var minRam = _parseRamGi(entry.min_ram || '0');
+  if (minRam > 0) {
+    var el = document.getElementById('f-mem-req');
+    if (_parseRamGi(el.value) < minRam) {
+      el.value = _formatRam(entry.min_ram);
+      el.style.borderColor = '#f59e0b';
+    } else {
+      el.style.borderColor = '';
+    }
+  }
+};
+
+// ── Profile type toggle ───────────────────────────────────────────────────────
+
+window.onProfileTypeChange = function () {
+  var isGpu   = document.getElementById('type-gpu').checked;
+  var section = document.getElementById('gpu-model-section');
+  var cpuLbl  = document.getElementById('type-cpu-label');
+  var gpuLbl  = document.getElementById('type-gpu-label');
+
+  section.style.display = isGpu ? 'block' : 'none';
+
+  cpuLbl.style.borderColor = isGpu ? 'var(--border)' : 'var(--accent)';
+  cpuLbl.style.background  = isGpu ? '' : 'var(--accent-soft)';
+  gpuLbl.style.borderColor = isGpu ? 'var(--accent)' : 'var(--border)';
+  gpuLbl.style.background  = isGpu ? 'var(--accent-soft)' : '';
+
+  if (!isGpu) {
+    _clearFloors();
+    document.getElementById('f-gpu-model').value = '';
+    document.getElementById('f-cuda-ceiling').textContent = '—';
+    document.getElementById('f-gpu-memory').textContent  = '—';
+  }
+};
+
+// ── Repo / tag / group loaders (unchanged) ────────────────────────────────────
+
 async function loadGroups() {
-  const sel = document.getElementById('f-group');
+  var sel = document.getElementById('f-group');
   sel.innerHTML = '<option>Loading…</option>';
-  const res    = await fetch('/api/gitlab/groups');
-  const groups = await res.json();
+  var res    = await fetch('/api/gitlab/groups');
+  var groups = await res.json();
   if (groups.error) { sel.innerHTML = '<option>Failed to load</option>'; return; }
   sel.innerHTML = groups
-    .filter(g => g.path !== 'registry')
-    .map(g => `<option value="${esc(g.path)}">${esc(g.full_path)}</option>`)
-    .join('');
+    .filter(function(g) { return g.path !== 'registry'; })
+    .map(function(g) {
+      return '<option value="' + esc(g.path) + '">' + esc(g.full_path) + '</option>';
+    }).join('');
 }
 
 async function loadRepos() {
-  const sel = document.getElementById('f-repo');
+  var sel = document.getElementById('f-repo');
   sel.innerHTML = '<option value="">Loading…</option>';
-  const res   = await fetch('/api/registry/repos');
-  const repos = await res.json();
+  var res   = await fetch('/api/registry/repos');
+  var repos = await res.json();
   if (repos.error) { sel.innerHTML = '<option value="">Failed to load</option>'; return; }
   sel.innerHTML = '<option value="">— select repository —</option>' +
-    repos.map(r => `<option value="${r.id}" data-name="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+    repos.map(function(r) {
+      return '<option value="' + r.id + '" data-name="' + esc(r.name) + '">' +
+             esc(r.name) + '</option>';
+    }).join('');
 }
 
 async function loadTags() {
-  const repoSel = document.getElementById('f-repo');
-  const tagDiv  = document.getElementById('tag-list');
-  const repoId  = repoSel.value;
-  if (!repoId) { tagDiv.innerHTML = '<span class="tag-empty">Select a repository first</span>'; return; }
+  var repoSel = document.getElementById('f-repo');
+  var tagDiv  = document.getElementById('tag-list');
+  var repoId  = repoSel.value;
+  if (!repoId) {
+    tagDiv.innerHTML = '<span class="tag-empty">Select a repository first</span>';
+    return;
+  }
   tagDiv.innerHTML = '<span class="tag-empty">Loading…</span>';
-  const res  = await fetch('/api/registry/repos/' + repoId + '/tags');
-  const tags = await res.json();
-  if (!tags.length) { tagDiv.innerHTML = '<span class="tag-empty">No tags found</span>'; return; }
-  tagDiv.innerHTML = tags.map(t =>
-    `<label class="tag-item">
-      <input type="checkbox" name="img-tag" value="${esc(t.name)}"/> ${esc(t.name)}
-    </label>`
-  ).join('');
+  var res  = await fetch('/api/registry/repos/' + repoId + '/tags');
+  var tags = await res.json();
+  if (!tags.length) {
+    tagDiv.innerHTML = '<span class="tag-empty">No tags found</span>';
+    return;
+  }
+  tagDiv.innerHTML = tags.map(function(t) {
+    return '<label class="tag-item">' +
+           '<input type="checkbox" name="img-tag" value="' + esc(t.name) + '"/> ' +
+           esc(t.name) + '</label>';
+  }).join('');
 }
 
+// ── Create profile ────────────────────────────────────────────────────────────
+
 async function createProfile() {
-  const repoSel  = document.getElementById('f-repo');
-  const repoName = repoSel.options[repoSel.selectedIndex]?.dataset?.name || '';
-  const msg      = document.getElementById('create-msg');
-  const tags     = [...document.querySelectorAll('input[name="img-tag"]:checked')].map(cb => cb.value);
-  const body = {
-    slug:          document.getElementById('f-slug').value.trim(),
-    display_name:  document.getElementById('f-name').value.trim(),
-    description:   document.getElementById('f-desc').value.trim(),
-    gitlab_group:  document.getElementById('f-group').value,
-    image_name:    repoName,
-    image_options: tags,
-    cpu_limit:     parseFloat(document.getElementById('f-cpu-lim').value),
-    cpu_guarantee: parseFloat(document.getElementById('f-cpu-req').value),
-    mem_limit:     document.getElementById('f-mem-lim').value.trim(),
-    mem_guarantee: document.getElementById('f-mem-req').value.trim(),
-    gpu:           parseInt(document.getElementById('f-gpu').value) || 0,
+  var repoSel  = document.getElementById('f-repo');
+  var repoName = repoSel.options[repoSel.selectedIndex]
+                 ? (repoSel.options[repoSel.selectedIndex].dataset.name || '') : '';
+  var msg      = document.getElementById('create-msg');
+  var tags     = Array.from(
+    document.querySelectorAll('input[name="img-tag"]:checked')
+  ).map(function(cb) { return cb.value; });
+
+  var isGpu     = document.getElementById('type-gpu').checked;
+  var gpuModel  = document.getElementById('f-gpu-model').value;
+
+  if (isGpu && !gpuModel) {
+    showMsg(msg, '✗ Select a GPU model first.', false); return;
+  }
+
+  // Floor validation before submitting
+  if (isGpu && gpuModel) {
+    var entry = _gpuMatrix.find(function(m) { return m.gpu_model === gpuModel; });
+    if (entry) {
+      var minCpu = parseFloat(entry.min_cpu) || 0;
+      var minRam = _parseRamGi(entry.min_ram || '0');
+      var cpuVal = parseFloat(document.getElementById('f-cpu-req').value);
+      var ramVal = _parseRamGi(document.getElementById('f-mem-req').value);
+      if (minCpu > 0 && cpuVal < minCpu) {
+        showMsg(msg, '✗ CPU guarantee must be ≥ ' + minCpu + ' cores for ' + gpuModel, false);
+        return;
+      }
+      if (minRam > 0 && ramVal < minRam) {
+        showMsg(msg, '✗ RAM guarantee must be ≥ ' + (entry.min_ram || minRam + 'Gi') +
+                     ' for ' + gpuModel, false);
+        return;
+      }
+    }
+  }
+
+  var body = {
+    slug:                 document.getElementById('f-slug').value.trim(),
+    display_name:         document.getElementById('f-name').value.trim(),
+    description:          document.getElementById('f-desc').value.trim(),
+    gitlab_group:         document.getElementById('f-group').value,
+    image_name:           repoName,
+    image_options:        tags,
+    cpu_limit:            parseFloat(document.getElementById('f-cpu-lim').value),
+    cpu_guarantee:        parseFloat(document.getElementById('f-cpu-req').value),
+    mem_limit:            document.getElementById('f-mem-lim').value.trim(),
+    mem_guarantee:        document.getElementById('f-mem-req').value.trim(),
+    profile_type:         isGpu ? 'gpu' : 'cpu',
+    gpu_model:            isGpu ? gpuModel : null,
+    node_selector_key:    isGpu ? 'nvidia.com/gpu.product' : null,
+    node_selector_value:  isGpu ? gpuModel : null,
   };
+
   if (!body.slug || !body.display_name || !body.gitlab_group || !body.image_name) {
     showMsg(msg, '✗ Fill in all required fields.', false); return;
   }
   if (!body.image_options.length) {
     showMsg(msg, '✗ Select at least one image tag.', false); return;
   }
-  const res  = await fetch('/api/profiles', {
-    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+
+  var res  = await fetch('/api/profiles', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
   });
-  const data = await res.json();
-  res.ok
-    ? showMsg(msg, '✓ Profile added — go to Profiles and click Apply.', true)
-    : showMsg(msg, '✗ ' + data.error, false);
+  var data = await res.json();
+  if (res.ok) {
+    showMsg(msg, '✓ Profile added — go to Profiles and click Apply.', true);
+    // Reset GPU section
+    document.getElementById('type-cpu').checked = true;
+    onProfileTypeChange();
+  } else {
+    showMsg(msg, '✗ ' + data.error, false);
+  }
 }
+
+// ── Init on page show ─────────────────────────────────────────────────────────
+// Called from scripts.html nav() when name === 'new'
+// loadGroups() and loadRepos() are already called there — loadGpuModels added below
+
+// Set initial toggle state on load
+document.addEventListener('DOMContentLoaded', function () {
+  onProfileTypeChange();
+
+  var nameInput = document.getElementById('f-name');
+  if (nameInput) {
+    nameInput.addEventListener('input', function () {
+      document.getElementById('f-slug').value = this.value
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '').slice(0, 48);
+    });
+  }
+});
 </script>

@@ -23,7 +23,7 @@ function nav(name, el) {
   if (name === 'groups')     onGroupsPageShow();
   if (name === 'users')      onUsersPageShow();
   if (name === 'profiles')   loadProfiles();
-  if (name === 'new')        { loadGroups(); loadRepos(); }
+  if (name === 'new')        { loadGroups(); loadRepos(); loadGpuModels(); }
   if (name === 'settings')   { loadTokenStatus(); loadSettingsInfo(); }
   if (name === 'images')     { loadImportRepos(); loadRegistryImages(); }
   if (name === 'gpu')        { if (typeof initGpuTab       === 'function') initGpuTab(); }

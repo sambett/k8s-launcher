@@ -1,5 +1,18 @@
 """
-routes/gpu_policy.py — GPU quota policy management via Kyverno ClusterPolicies.
+routes/gpu_policy.py — GPU access policy management via Kyverno ClusterPolicies.
+
+Policy model (allowlist):
+  Each rule defines which GPU types a GitLab group is ALLOWED to use.
+  Empty allowed_gpu_types list = group is blocked from all GPU pods.
+  Groups not listed = unrestricted (no Kyverno rule generated for them).
+
+Kyverno enforcement:
+  For each group with an empty allowlist, one deny rule is generated:
+    deny any pod from that group that requests nvidia.com/gpu > 0
+
+  For groups with specific allowed types, no Kyverno rule is needed —
+  the nodeSelector in the profile handles physical placement and the
+  device plugin enforces resource availability at scheduling time.
 
 Endpoints
 ---------
@@ -12,7 +25,6 @@ GET  /api/gpu-policy/available-groups — groups that have at least one JupyterH
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -29,21 +41,12 @@ POLICY_CM_NAME      = "gpu-group-policy"
 POLICY_CM_NS        = config.CONFIGMAP_NS        # "jhub"
 KYVERNO_POLICY_NAME = "jupyterhub-gpu-group-policy"
 
-# Resolve kubectl once at module load — avoids PATH lookup on every request.
-# Falls back to the conventional install location if not found on PATH.
 _KUBECTL = shutil.which("kubectl") or "/usr/local/bin/kubectl"
-
-# Allowed gpu_type format:
-#   - vendor prefix:  letters, digits, dots, hyphens  (e.g. nvidia.com)
-#   - slash separator
-#   - resource name:  letters, digits, dots, hyphens  (e.g. gpu, mig-1g.5gb)
-_GPU_TYPE_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.\-]*/[a-zA-Z0-9][a-zA-Z0-9.\-]*$')
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _run(cmd):
-    """Run a subprocess command list. Returns CompletedProcess."""
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
@@ -68,8 +71,7 @@ def _write_policy(data):
     Returns (success: bool, detail: str).
     """
     json_str = json.dumps(data, indent=2)
-
-    check = _run([_KUBECTL, "get", "configmap", POLICY_CM_NAME, "-n", POLICY_CM_NS])
+    check    = _run([_KUBECTL, "get", "configmap", POLICY_CM_NAME, "-n", POLICY_CM_NS])
 
     if check.returncode != 0:
         r = _run([
@@ -96,53 +98,60 @@ def _write_policy(data):
     return r.returncode == 0, r.stdout + r.stderr
 
 
-def _stable_rule_name(gitlab_group: str, gpu_type: str) -> str:
+def _stable_rule_name(gitlab_group: str) -> str:
     """
-    Generate a stable, deterministic Kyverno rule name from group + GPU type.
-
-    Uses a 6-char content hash so rule names survive reordering — if you move
-    a rule up or down in the list, its name stays the same, kubectl apply sees
-    a no-op, and Kyverno never has a gap in enforcement during the update.
-
-    Format: limit-gpu-<safe-group>-<hash>
-    Example: limit-gpu-internship-students-a3f9c1
+    Stable deny-rule name derived from the group name.
+    Uses a 6-char content hash so the name survives reordering.
+    Format: deny-gpu-<safe-group>-<hash>
     """
     safe  = gitlab_group.replace("/", "-").replace("_", "-").lower()
-    token = hashlib.md5(f"{gitlab_group}:{gpu_type}".encode()).hexdigest()[:6]
-    return f"limit-gpu-{safe}-{token}"
+    token = hashlib.md5(gitlab_group.encode()).hexdigest()[:6]
+    return f"deny-gpu-{safe}-{token}"
 
 
 def _build_cluster_policy(groups):
     """
-    Build a Kyverno ClusterPolicy dict and serialise it as YAML.
+    Build a Kyverno ClusterPolicy YAML string from the allowlist rules.
 
-    Each (gitlab_group, gpu_type) pair produces exactly one rule.
-    Rule names are stable content hashes — safe to reorder without
-    causing unnecessary policy churn in the cluster.
+    Logic:
+      - Groups with empty allowed_gpu_types → one deny rule generated.
+        The rule denies any pod from that group requesting nvidia.com/gpu > 0.
+      - Groups with allowed types → NO Kyverno rule needed.
+        The nodeSelector in the profile enforces physical placement.
+        Kyverno only needs to enforce the "no GPU at all" case.
 
-    The key expression uses containers[] (wildcard) to check ALL containers
-    in the pod, not just containers[0]. This correctly handles multi-container
-    pods such as sidecar-injected workloads.
+    This keeps the policy minimal and correct:
+      - We never generate rules for groups that are allowed to use GPUs.
+      - We only generate rules for groups that are explicitly blocked.
+      - Groups not in the policy at all are unrestricted by design.
     """
     rules = []
-    for g in groups:
-        gname    = g["gitlab_group"]
-        gpu_type = g.get("gpu_type", "nvidia.com/gpu")
-        max_gpus = g.get("max_gpus", 0)
 
+    for g in groups:
+        gname         = g["gitlab_group"]
+        allowed_types = g.get("allowed_gpu_types", [])
+
+        # Only generate a deny rule for groups with NO allowed GPU types.
+        # Groups with allowed types are handled by nodeSelector + device plugin.
+        if allowed_types:
+            continue
+
+        # Deny rule: pod from this group with nvidia.com/gpu > 0 is blocked.
+        # Uses containers[0] — Kyverno JMESPath scalar operators require a
+        # specific container index, not a wildcard array.
         key_expr = (
-            "{{ request.object.spec.containers[0].resources.limits."
-            + '"' + gpu_type + '"'
-            + " || '0' }}"
+            "{{ request.object.spec.containers[0].resources.limits"
+            "[\"nvidia.com/gpu\"] || '0' }}"
         )
 
         rules.append({
-            "name": _stable_rule_name(gname, gpu_type),
+            "name": _stable_rule_name(gname),
             "match": {
                 "any": [{
                     "resources": {
                         "kinds":      ["Pod"],
                         "namespaces": [POLICY_CM_NS],
+                        "operations": ["CREATE"],
                         "selector": {
                             "matchLabels": {
                                 "workbench/gitlab-group": gname
@@ -153,15 +162,15 @@ def _build_cluster_policy(groups):
             },
             "validate": {
                 "message": (
-                    "Group '" + gname + "' may use at most " +
-                    str(max_gpus) + " GPU(s) of type " + gpu_type + "."
+                    "Group '" + gname + "' does not have GPU access. "
+                    "Contact your administrator to request GPU permissions."
                 ),
                 "deny": {
                     "conditions": {
                         "any": [{
                             "key":      key_expr,
                             "operator": "GreaterThan",
-                            "value":    str(max_gpus)
+                            "value":    "0"
                         }]
                     }
                 }
@@ -175,15 +184,15 @@ def _build_cluster_policy(groups):
             "name": KYVERNO_POLICY_NAME,
             "annotations": {
                 "policies.kyverno.io/title":
-                    "JupyterHub GPU Group Quota",
+                    "JupyterHub GPU Group Access",
                 "policies.kyverno.io/description":
-                    "Per-GitLab-group GPU limits enforced on JupyterHub notebook pods."
+                    "Blocks GPU pod spawning for groups not granted GPU access."
             }
         },
         "spec": {
             "validationFailureAction": "Enforce",
-            "background": False,
-            "rules": rules
+            "background":             False,
+            "rules":                  rules
         }
     }
 
@@ -202,59 +211,38 @@ def api_get_policy():
 @require_auth
 def api_set_policy():
     """
-    Save and apply GPU quota rules.
+    Save and apply GPU access rules.
 
-    Rules with the same (gitlab_group, gpu_type) pair are duplicates and
-    are rejected — having two limits for the same group + GPU type is
-    contradictory (which one wins?).
-
-    Rules with the same group but DIFFERENT gpu_type values are allowed —
-    an admin may set nvidia.com/gpu=2 AND nvidia.com/mig-1g.5gb=4 for the
-    same group without contradiction.
+    Each rule: { gitlab_group: str, allowed_gpu_types: [str, ...] }
+    Empty allowed_gpu_types = group is blocked from all GPU pods.
+    Each group may appear only once.
     """
     data   = request.json or {}
     groups = data.get("groups", [])
 
-    # ── Basic field validation ────────────────────────────────────────────────
+    # ── Validation ────────────────────────────────────────────────────────────
+    seen = set()
     for g in groups:
-        if not str(g.get("gitlab_group", "")).strip():
-            return jsonify({"success": False,
-                            "error": "Each rule needs a non-empty gitlab_group"}), 400
-        if not isinstance(g.get("max_gpus", 0), int) or g.get("max_gpus", 0) < 0:
-            return jsonify({"success": False,
-                            "error": "max_gpus must be a non-negative integer"}), 400
-
-    # Strip whitespace
-    for g in groups:
-        g["gitlab_group"] = g["gitlab_group"].strip()
-        g.setdefault("gpu_type", "nvidia.com/gpu")
-
-    # ── gpu_type format validation ────────────────────────────────────────────
-    for g in groups:
-        gpu_type = g["gpu_type"].strip()
-        if not _GPU_TYPE_RE.match(gpu_type):
+        grp = str(g.get("gitlab_group", "")).strip()
+        if not grp:
             return jsonify({
                 "success": False,
-                "error": (
-                    "Invalid gpu_type '{}'. "
-                    "Expected format: vendor.com/resource (e.g. nvidia.com/gpu)."
-                ).format(gpu_type)
+                "error":   "Each rule needs a non-empty gitlab_group"
             }), 400
-        g["gpu_type"] = gpu_type
-
-    # ── Duplicate (group, gpu_type) check ─────────────────────────────────────
-    seen_pairs = set()
-    for g in groups:
-        pair = (g["gitlab_group"], g["gpu_type"])
-        if pair in seen_pairs:
+        if grp in seen:
             return jsonify({
                 "success": False,
-                "error": (
-                    "Duplicate rule: group '{}' already has a limit for GPU type '{}'. "
-                    "Each (group, GPU type) combination must be unique."
-                ).format(g["gitlab_group"], g["gpu_type"])
+                "error":   f"Duplicate group '{grp}' — each group may appear only once"
             }), 400
-        seen_pairs.add(pair)
+        seen.add(grp)
+        g["gitlab_group"] = grp
+
+        # allowed_gpu_types must be a list (can be empty)
+        if not isinstance(g.get("allowed_gpu_types", []), list):
+            return jsonify({
+                "success": False,
+                "error":   f"allowed_gpu_types must be a list for group '{grp}'"
+            }), 400
 
     ok, detail = _write_policy({"groups": groups})
     if not ok:
@@ -264,14 +252,20 @@ def api_set_policy():
             "detail":  detail
         }), 500
 
-    if not groups:
-        r = _run([_KUBECTL, "delete", "clusterpolicy",
-                  KYVERNO_POLICY_NAME, "--ignore-not-found"])
-        return jsonify({
-            "success": True,
-            "message": "All rules cleared — ClusterPolicy removed.",
-            "detail":  r.stdout
-        })
+    # If all groups are allowed (no blocked groups), remove the policy entirely
+    blocked_groups = [g for g in groups if not g.get("allowed_gpu_types")]
+
+    if not blocked_groups:
+        r = _run([
+            _KUBECTL, "delete", "clusterpolicy",
+            KYVERNO_POLICY_NAME, "--ignore-not-found"
+        ])
+        msg = (
+            f"{len(groups)} rule(s) saved — no blocked groups, ClusterPolicy removed."
+            if groups else
+            "All rules cleared — ClusterPolicy removed."
+        )
+        return jsonify({"success": True, "message": msg, "detail": r.stdout})
 
     policy_yaml = _build_cluster_policy(groups)
 
@@ -286,7 +280,10 @@ def api_set_policy():
     if r.returncode == 0:
         return jsonify({
             "success": True,
-            "message": str(len(groups)) + " rule(s) applied to cluster.",
+            "message": (
+                f"{len(groups)} group(s) saved — "
+                f"{len(blocked_groups)} blocked by Kyverno."
+            ),
             "detail":  r.stdout
         })
 
@@ -300,11 +297,6 @@ def api_set_policy():
 @bp.route("/api/gpu-policy/status")
 @require_auth
 def api_policy_status():
-    """
-    Two-step status check — avoids unreliable jsonpath filter predicates.
-    Step 1: does the ClusterPolicy exist?
-    Step 2: is its .status.ready field true?
-    """
     exists = _run([
         _KUBECTL, "get", "clusterpolicy", KYVERNO_POLICY_NAME, "--no-headers"
     ])
@@ -315,28 +307,26 @@ def api_policy_status():
         _KUBECTL, "get", "clusterpolicy", KYVERNO_POLICY_NAME,
         "-o", "jsonpath={.status.ready}"
     ])
-    ready = (ready_r.returncode == 0 and
-             ready_r.stdout.strip().lower() == "true")
-
+    ready = (
+        ready_r.returncode == 0 and
+        ready_r.stdout.strip().lower() == "true"
+    )
     return jsonify({"status": "applied", "ready": ready})
 
 
 @bp.route("/api/gpu-policy/available-groups")
 @require_auth
 def api_available_groups():
-    """
-    Return unique group paths from the jupyterhub-profiles ConfigMap.
-    """
+    """Return unique group paths from the jupyterhub-profiles ConfigMap."""
     r = _run([
         _KUBECTL, "get", "configmap", config.CONFIGMAP_NAME,
         "-n", config.CONFIGMAP_NS,
         "-o", r"jsonpath={.data.profiles\.json}"
     ])
-
     if r.returncode != 0:
         return jsonify({
             "groups": [],
-            "error": "Could not read jupyterhub-profiles ConfigMap"
+            "error":  "Could not read jupyterhub-profiles ConfigMap"
         })
 
     raw = r.stdout.strip()

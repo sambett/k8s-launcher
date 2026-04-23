@@ -1,86 +1,92 @@
 <div id="page-gpu-policy" class="page">
 
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;
+              margin-bottom:1.5rem;gap:1rem">
     <div>
-      <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Quota Policies</h2>
+      <h2 style="margin:0 0 .4rem;color:#c4b5fd;font-size:1.1rem">GPU Access Policies</h2>
       <p style="margin:0;color:#64748b;font-size:.85rem;line-height:1.6">
-        Hard per-group GPU limits enforced by Kyverno at the Kubernetes API level.<br>
-        ClusterPolicy applied to namespace:
-        <code style="color:#a78bfa;background:#1a1d2e;padding:1px 6px;border-radius:3px;font-size:.8rem">jhub</code>
+        Control which GitLab groups may spawn GPU notebooks.<br>
+        Groups with <strong style="color:#fc8181">no GPU types allowed</strong>
+        are blocked by Kyverno at the admission level — no pod reaches the scheduler.<br>
+        Groups not listed here are <strong style="color:#68d391">unrestricted</strong>.
       </p>
     </div>
     <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0;padding-top:.2rem">
       <span class="dot" id="kv-dot"></span>
-      <span id="kv-badge" class="badge b-warn" style="min-width:80px;text-align:center">checking…</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()" title="Refresh Kyverno status">↺</button>
+      <span id="kv-badge" class="badge b-warn"
+        style="min-width:80px;text-align:center">checking…</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadKvStatus()"
+        title="Refresh Kyverno status">↺</button>
     </div>
   </div>
 
+  <!-- No GPU hardware banner -->
+  <div id="no-gpu-banner"
+    style="display:none;background:#1a1500;border:1px solid #f59e0b;
+           border-left:4px solid #f59e0b;border-radius:6px;
+           padding:.85rem 1.1rem;margin-bottom:1.25rem;
+           font-size:.85rem;color:#fbbf24;line-height:1.6">
+    ⚠ No GPU models found in the compatibility matrix.<br>
+    <span style="font-size:.8rem;color:#94a3b8">
+      Go to <strong style="color:#a78bfa">GPU Management → Compatibility Matrix</strong>
+      and save at least one GPU model before defining access policies.
+    </span>
+  </div>
+
   <div class="card" style="margin-bottom:1.25rem">
-    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem;flex-wrap:wrap">
-      <h3 style="margin:0;font-size:.95rem;font-weight:600;color:#e2e8f0;flex:1">Quota Rules</h3>
-      <button class="btn btn-ghost" onclick="loadAvailGroups()"
-        style="font-size:.82rem;padding:.35rem .9rem">
-        ↺ Load groups from profiles
+    <div style="display:flex;align-items:center;gap:.75rem;
+                margin-bottom:.9rem;flex-wrap:wrap">
+      <h3 style="margin:0;font-size:.95rem;font-weight:600;
+                 color:#e2e8f0;flex:1">Group Access Rules</h3>
+      <button class="btn btn-ghost"
+        style="font-size:.82rem;padding:.35rem .9rem"
+        onclick="loadPolicyPage()">
+        ↺ Refresh
       </button>
-      <button class="btn btn-primary" onclick="addRow()"
-        style="font-size:.82rem;padding:.35rem .9rem">
-        + Add rule
+      <button class="btn btn-primary"
+        style="font-size:.82rem;padding:.35rem .9rem"
+        onclick="addGroupRow()">
+        + Add group
       </button>
     </div>
 
-    <div style="background:#0f1117;border-left:3px solid #7c6af7;border-radius:0 5px 5px 0;
-                padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#94a3b8;line-height:1.7">
-      Each rule sets the maximum GPUs a pod from that group can request.
-      <span style="color:#fc8181;font-weight:600">Max&nbsp;=&nbsp;0</span> blocks the group entirely.
-      You may add multiple rules for the <em>same group</em> only when each uses a
-      <strong style="color:#e2e8f0">different GPU type</strong> (e.g. one for
-      <code style="font-size:.78rem">nvidia.com/gpu</code> and one for
-      <code style="font-size:.78rem">mig-1g.5gb</code>).
-      Groups with no rule here are <strong style="color:#68d391">unrestricted</strong>.
+    <div style="background:#0f1117;border-left:3px solid #7c6af7;
+                border-radius:0 5px 5px 0;padding:.6rem 1rem;
+                margin-bottom:1rem;font-size:.82rem;
+                color:#94a3b8;line-height:1.7">
+      Each row defines which GPU types a group is allowed to use.
+      <span style="color:#fc8181;font-weight:600">Empty checkbox row</span>
+      = Kyverno blocks all GPU pods from that group.
+      Groups with no row here are unrestricted.
     </div>
 
-    <!-- GPU type suggestions — used by the datalist on every row -->
-    <!-- Adding a new GPU type here makes it available in every row automatically -->
-    <datalist id="gpu-type-options">
-      <option value="nvidia.com/gpu">
-      <option value="nvidia.com/mig-1g.5gb">
-      <option value="nvidia.com/mig-2g.10gb">
-      <option value="nvidia.com/mig-3g.20gb">
-      <option value="nvidia.com/mig-4g.20gb">
-      <option value="nvidia.com/mig-7g.40gb">
-    </datalist>
-
-    <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;min-width:480px">
-        <thead>
+    <div id="policy-table-wrap" style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;min-width:400px"
+             id="policy-table">
+        <thead id="policy-thead" style="display:none">
           <tr style="background:#13151f;border-bottom:2px solid #2d3148">
-            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
-                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
-              GitLab Group
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;
+                       font-size:.75rem;font-weight:600;
+                       text-transform:uppercase;letter-spacing:.06em;
+                       min-width:180px">GitLab Group</th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;
+                       font-size:.75rem;font-weight:600;
+                       text-transform:uppercase;letter-spacing:.06em">
+              Allowed GPU Types
             </th>
-            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
-                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
-              GPU Type
-              <span style="font-weight:400;color:#4a5568;text-transform:none;letter-spacing:0;margin-left:.4rem">
-                (type freely or pick from list)
-              </span>
-            </th>
-            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
-                       font-weight:600;text-transform:uppercase;letter-spacing:.06em;width:150px">
-              Max per pod
-            </th>
-            <th style="padding:.65rem 1rem;width:90px;text-align:center"></th>
+            <th style="padding:.65rem 1rem;width:80px;text-align:center"></th>
           </tr>
         </thead>
         <tbody id="policy-rows">
           <tr id="empty-row">
-            <td colspan="4" style="padding:2.5rem;text-align:center;color:#4a5568;font-size:.875rem;line-height:2">
+            <td colspan="3"
+              style="padding:2.5rem;text-align:center;
+                     color:#4a5568;font-size:.875rem;line-height:2">
               No rules defined yet.<br>
               <span style="font-size:.8rem">
-                Click <strong style="color:#7c6af7">↺ Load groups from profiles</strong> to
-                auto-populate, or <strong style="color:#7c6af7">+ Add rule</strong> to create
-                one manually.
+                Click <strong style="color:#7c6af7">↺ Refresh</strong> to load
+                existing rules, or <strong style="color:#7c6af7">+ Add group</strong>
+                to restrict a group.
               </span>
             </td>
           </tr>
@@ -98,7 +104,8 @@
       <span id="save-msg" style="font-size:.85rem"></span>
     </div>
     <div id="save-detail" class="log-box"
-      style="display:none;margin-top:.75rem;max-height:140px;font-size:.78rem"></div>
+      style="display:none;margin-top:.75rem;max-height:140px;font-size:.78rem">
+    </div>
   </div>
 
   <!-- Delete confirmation modal -->
@@ -108,13 +115,15 @@
     <div style="background:#1a1d2e;border:2px solid #e53e3e;border-radius:10px;
                 padding:1.75rem 2rem;max-width:420px;width:90%;
                 box-shadow:0 25px 60px rgba(0,0,0,.6)">
-      <h3 style="margin:0 0 .6rem;color:#fc8181;font-size:1.05rem">Delete Rule?</h3>
-      <p id="del-msg" style="margin:0 0 1.5rem;color:#94a3b8;font-size:.875rem;line-height:1.7"></p>
+      <h3 style="margin:0 0 .6rem;color:#fc8181;font-size:1.05rem">Remove Rule?</h3>
+      <p id="del-msg"
+        style="margin:0 0 1.5rem;color:#94a3b8;font-size:.875rem;line-height:1.7">
+      </p>
       <div style="display:flex;gap:.75rem;justify-content:flex-end">
         <button class="btn btn-ghost" onclick="cancelDelete()"
           style="font-size:.875rem;padding:.4rem 1.1rem">Cancel</button>
         <button class="btn btn-danger" onclick="confirmDelete()"
-          style="font-size:.875rem;padding:.4rem 1.1rem">Yes, delete</button>
+          style="font-size:.875rem;padding:.4rem 1.1rem">Yes, remove</button>
       </div>
     </div>
   </div>
@@ -125,174 +134,148 @@
 (function () {
   'use strict';
 
-  var _groups          = [];
+  // ── State ──────────────────────────────────────────────────────────────────
+  var _gpuModels       = [];   // ["NVIDIA-A2", "NVIDIA-A100", ...]
+  var _groups          = [];   // ["internship-students", "admins", ...]
   var _pendingDeleteTr = null;
 
   var S_SEL = [
     'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
-    'border-radius:5px', 'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
-  ].join(';');
-
-  // GPU type field — text input backed by a datalist.
-  // Using input+datalist instead of a fixed select means:
-  //   - standard MIG profiles are offered as suggestions
-  //   - any custom resource name (e.g. vendor.com/custom-gpu) can be typed freely
-  //   - adding a new suggestion only requires adding one <option> to the datalist above
-  var S_TYPE = [
-    'background:#0f1117', 'color:#e2e8f0', 'border:1px solid #2d3148',
-    'border-radius:5px', 'padding:.45rem .7rem', 'font-size:.875rem', 'width:100%'
-  ].join(';');
-
-  var S_NUM = [
-    'width:80px', 'background:#0f1117', 'color:#e2e8f0',
-    'border:1px solid #2d3148', 'border-radius:5px',
-    'padding:.45rem .6rem', 'font-size:.875rem', 'text-align:center'
+    'border-radius:5px', 'padding:.45rem .7rem',
+    'font-size:.875rem', 'width:100%'
   ].join(';');
 
   function _esc(s) {
     return String(s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function _rebuildSelect(sel, cur) {
-    var opts = ['<option value="">— select group —</option>'];
-    _groups.forEach(function (g) {
-      opts.push(
-        '<option value="' + _esc(g) + '"' + (g === cur ? ' selected' : '') +
-        '>' + _esc(g) + '</option>'
-      );
-    });
-    if (cur && cur !== '' && _groups.indexOf(cur) === -1) {
-      opts.push(
-        '<option value="' + _esc(cur) + '" selected>' +
-        _esc(cur) + ' (no profile)</option>'
-      );
+  // ── Fetch GPU models from compat matrix ────────────────────────────────────
+  async function _fetchGpuModels() {
+    try {
+      var d = await (await fetch('/api/gpu/matrix')).json();
+      _gpuModels = (d.matrix || [])
+        .map(function(m) { return m.gpu_model; })
+        .filter(Boolean);
+    } catch (e) {
+      _gpuModels = [];
     }
-    sel.innerHTML = opts.join('');
+
+    var banner = document.getElementById('no-gpu-banner');
+    if (banner) banner.style.display = _gpuModels.length ? 'none' : 'block';
+    return _gpuModels;
   }
 
-  function _rebuildAllSelects() {
-    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
-      _rebuildSelect(s, s.value);
-    });
-  }
-
-  function _clearRows() {
-    document.getElementById('policy-rows').innerHTML =
-      '<tr id="empty-row"><td colspan="4" ' +
-      'style="padding:2.5rem;text-align:center;color:#4a5568;font-size:.875rem;line-height:2">' +
-      'No rules defined yet.<br>' +
-      '<span style="font-size:.8rem">Click <strong style="color:#7c6af7">+ Add rule</strong> ' +
-      'or <strong style="color:#7c6af7">\u21ba Load groups</strong> to start.</span>' +
-      '</td></tr>';
-  }
-
-  function _existingPairs(excludeTr) {
-    var pairs = [];
-    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
-      if (tr === excludeTr) return;
-      var grp  = tr.querySelector('.grp-sel')   ? tr.querySelector('.grp-sel').value   : '';
-      var type = tr.querySelector('.type-inp')  ? tr.querySelector('.type-inp').value  : '';
-      if (grp && type) pairs.push(grp + '||' + type);
-    });
-    return pairs;
-  }
-
-  function _appendRow(data) {
-    var empty = document.getElementById('empty-row');
-    if (empty) empty.remove();
-
-    var grp  = (data && data.gitlab_group != null) ? String(data.gitlab_group) : '';
-    var type = (data && data.gpu_type)             ? String(data.gpu_type)     : 'nvidia.com/gpu';
-    var max  = (data && data.max_gpus  != null)    ? Number(data.max_gpus)     : 1;
-
-    var tr = document.createElement('tr');
-    tr.style.borderBottom = '1px solid #1e2235';
-    tr.innerHTML =
-      '<td style="padding:.6rem 1rem">' +
-        '<select class="grp-sel" style="' + S_SEL + '" onchange="onRowChange(this)"></select>' +
-      '</td>' +
-      '<td style="padding:.6rem 1rem">' +
-        // input + datalist: free text entry with suggestions from #gpu-type-options
-        '<input class="type-inp" list="gpu-type-options"' +
-        ' value="' + _esc(type) + '"' +
-        ' style="' + S_TYPE + '"' +
-        ' placeholder="e.g. nvidia.com/gpu"' +
-        ' oninput="onRowChange(this)"/>' +
-      '</td>' +
-      '<td style="padding:.6rem 1rem">' +
-        '<input type="number" class="max-inp" min="0" max="64" value="' + max + '" style="' + S_NUM + '">' +
-      '</td>' +
-      '<td style="padding:.6rem 1rem;text-align:center">' +
-        '<button onclick="askDeleteRow(this)" ' +
-        'style="background:none;border:1px solid #374151;color:#9ca3af;border-radius:5px;' +
-        'padding:4px 12px;cursor:pointer;font-size:.8rem;transition:all .15s" ' +
-        'onmouseover="this.style.borderColor=\'#ef4444\';this.style.color=\'#ef4444\'" ' +
-        'onmouseout="this.style.borderColor=\'#374151\';this.style.color=\'#9ca3af\'">' +
-        'Delete</button>' +
-      '</td>';
-
-    document.getElementById('policy-rows').appendChild(tr);
-    _rebuildSelect(tr.querySelector('.grp-sel'), grp);
-  }
-
+  // ── Fetch available groups from profiles ConfigMap ─────────────────────────
   async function _fetchGroups() {
     try {
-      var res = await fetch('/api/gpu-policy/available-groups');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      var d = await res.json();
+      var d = await (await fetch('/api/gpu-policy/available-groups')).json();
       _groups = Array.isArray(d.groups) ? d.groups : [];
-      if (d.error) console.warn('GPU Policy: available-groups warning:', d.error);
     } catch (e) {
-      console.warn('GPU Policy: could not fetch groups —', String(e));
+      _groups = [];
     }
-    _rebuildAllSelects();
     return _groups;
   }
 
-  // ── onRowChange — highlight duplicate (group, gpu_type) pairs in real time ──
-  window.onRowChange = function (changedEl) {
-    var tr    = changedEl.closest('tr');
-    var grp   = tr.querySelector('.grp-sel').value;
-    var type  = tr.querySelector('.type-inp').value.trim();
-    var grpSel = tr.querySelector('.grp-sel');
-
-    grpSel.style.borderColor = '#2d3148';
-
-    if (!grp || !type) return;
-
-    var others = _existingPairs(tr);
-    if (others.indexOf(grp + '||' + type) !== -1) {
-      grpSel.style.borderColor = '#e53e3e';
-      var msg = document.getElementById('save-msg');
-      msg.textContent = '\u26a0 Duplicate: ' + grp + ' + ' + type + ' already exists.';
-      msg.style.color = '#fc8181';
-      setTimeout(function () {
-        if (msg.textContent.indexOf('Duplicate') !== -1) msg.textContent = '';
-      }, 4000);
+  // ── Build the checkboxes cell for a row ────────────────────────────────────
+  function _buildCheckboxes(allowedTypes) {
+    if (!_gpuModels.length) {
+      return '<span style="color:#4a5568;font-size:.8rem;font-style:italic">' +
+             'No GPU models in matrix</span>';
     }
-  };
+    return _gpuModels.map(function(model) {
+      var checked = allowedTypes.indexOf(model) !== -1 ? ' checked' : '';
+      return '<label style="display:inline-flex;align-items:center;gap:.4rem;' +
+             'margin-right:1.1rem;font-size:.83rem;cursor:pointer;' +
+             'color:var(--text-primary);user-select:none">' +
+             '<input type="checkbox" class="gpu-cb"' +
+             ' value="' + _esc(model) + '"' + checked +
+             ' style="accent-color:#7c6af7;width:14px;height:14px;cursor:pointer">' +
+             '<span style="background:#2d2860;color:#a78bfa;border-radius:4px;' +
+             'padding:1px 7px;font-size:.78rem">' + _esc(model) + '</span>' +
+             '</label>';
+    }).join('');
+  }
 
-  // ── Delete modal ────────────────────────────────────────────────────────────
+  // ── Rebuild group dropdown in a row ───────────────────────────────────────
+  function _buildGroupSelect(current) {
+    var opts = ['<option value="">— select group —</option>'];
+    _groups.forEach(function(g) {
+      opts.push(
+        '<option value="' + _esc(g) + '"' +
+        (g === current ? ' selected' : '') + '>' + _esc(g) + '</option>'
+      );
+    });
+    if (current && _groups.indexOf(current) === -1) {
+      opts.push(
+        '<option value="' + _esc(current) + '" selected>' +
+        _esc(current) + ' (no profile)</option>'
+      );
+    }
+    return opts.join('');
+  }
+
+  // ── Append one row to the table ────────────────────────────────────────────
+  function _appendRow(group, allowedTypes) {
+    var empty = document.getElementById('empty-row');
+    if (empty) empty.remove();
+
+    document.getElementById('policy-thead').style.display = '';
+
+    var tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #1e2235';
+    tr.style.verticalAlign = 'middle';
+
+    tr.innerHTML =
+      '<td style="padding:.7rem 1rem;min-width:180px">' +
+        '<select class="grp-sel" style="' + S_SEL + '">' +
+          _buildGroupSelect(group || '') +
+        '</select>' +
+      '</td>' +
+      '<td style="padding:.7rem 1rem">' +
+        '<div class="cb-cell" style="display:flex;flex-wrap:wrap;' +
+        'align-items:center;gap:.2rem .1rem;min-height:28px">' +
+          _buildCheckboxes(allowedTypes || []) +
+        '</div>' +
+      '</td>' +
+      '<td style="padding:.7rem 1rem;text-align:center">' +
+        '<button onclick="askDeleteRow(this)" ' +
+        'style="background:none;border:1px solid #374151;color:#9ca3af;' +
+        'border-radius:5px;padding:4px 12px;cursor:pointer;font-size:.8rem;' +
+        'transition:all .15s" ' +
+        'onmouseover="this.style.borderColor=\'#ef4444\';' +
+        'this.style.color=\'#ef4444\'" ' +
+        'onmouseout="this.style.borderColor=\'#374151\';' +
+        'this.style.color=\'#9ca3af\'">' +
+        'Remove</button>' +
+      '</td>';
+
+    document.getElementById('policy-rows').appendChild(tr);
+  }
+
+  function _clearRows() {
+    document.getElementById('policy-thead').style.display = 'none';
+    document.getElementById('policy-rows').innerHTML =
+      '<tr id="empty-row"><td colspan="3" ' +
+      'style="padding:2.5rem;text-align:center;color:#4a5568;' +
+      'font-size:.875rem;line-height:2">' +
+      'No rules defined yet.<br>' +
+      '<span style="font-size:.8rem">Click ' +
+      '<strong style="color:#7c6af7">+ Add group</strong> to restrict a group.</span>' +
+      '</td></tr>';
+  }
+
+  // ── Delete modal ───────────────────────────────────────────────────────────
   window.askDeleteRow = function (btn) {
     _pendingDeleteTr = btn.closest('tr');
-    var grp  = _pendingDeleteTr.querySelector('.grp-sel').value  || '(no group selected)';
-    var type = _pendingDeleteTr.querySelector('.type-inp').value || 'nvidia.com/gpu';
-    var max  = _pendingDeleteTr.querySelector('.max-inp').value;
-
+    var grp = (_pendingDeleteTr.querySelector('.grp-sel') || {}).value || '(none)';
     document.getElementById('del-msg').innerHTML =
-      'Remove the rule for group ' +
+      'Remove the GPU access rule for group ' +
       '<strong style="color:#e2e8f0">' + _esc(grp) + '</strong>?<br>' +
-      '<span style="font-size:.82rem;color:#64748b">' +
-      'GPU type: ' + _esc(type) + ' &nbsp;|&nbsp; ' +
-      'Max per pod: <strong style="color:' +
-      (parseInt(max, 10) === 0 ? '#fc8181' : '#68d391') + '">' + _esc(max) + '</strong>' +
-      '</span><br><br>' +
       '<span style="font-size:.8rem;color:#4a5568">' +
-      'This removes the row. The cluster policy updates when you click ' +
+      'The cluster policy updates when you click ' +
       '<em>Save &amp; Apply</em>.</span>';
-
     document.getElementById('del-modal').style.display = 'flex';
   };
 
@@ -310,7 +293,7 @@
     document.getElementById('del-modal').style.display = 'none';
   };
 
-  // ── Public API ───────────────────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────────
 
   window.loadKvStatus = async function () {
     var badge = document.getElementById('kv-badge');
@@ -335,79 +318,53 @@
     }
   };
 
-  window.loadPolicy = async function () {
-    try {
-      var res = await fetch('/api/gpu-policy');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      var d = await res.json();
-      _clearRows();
-      (d.groups || []).forEach(function (g) { _appendRow(g); });
-    } catch (e) {
-      console.error('GPU Policy: could not load policy —', String(e));
-    }
+  window.loadPolicyPage = async function () {
+    await _fetchGpuModels();
     await _fetchGroups();
+
+    _clearRows();
+    try {
+      var d = await (await fetch('/api/gpu-policy')).json();
+      var rules = d.groups || [];
+      rules.forEach(function(r) {
+        _appendRow(r.gitlab_group, r.allowed_gpu_types || []);
+      });
+    } catch (e) {
+      console.error('GPU Policy: load failed —', e);
+    }
   };
 
-  window.loadAvailGroups = async function () {
-    var msg = document.getElementById('save-msg');
-    msg.textContent = 'Loading groups\u2026'; msg.style.color = '#94a3b8';
-
-    var groups = await _fetchGroups();
-
-    if (groups.length === 0) {
-      msg.textContent = 'No groups found \u2014 create profiles first.';
-      msg.style.color = '#fbbf24';
-      return;
-    }
-
-    var hasRule = [];
-    document.querySelectorAll('#policy-rows .grp-sel').forEach(function (s) {
-      if (s.value && hasRule.indexOf(s.value) === -1) hasRule.push(s.value);
-    });
-
-    var added = 0;
-    groups.forEach(function (g) {
-      if (hasRule.indexOf(g) === -1) {
-        _appendRow({ gitlab_group: g, gpu_type: 'nvidia.com/gpu', max_gpus: 1 });
-        added++;
-      }
-    });
-
-    if (added > 0) {
-      msg.textContent = groups.length + ' group(s) \u2014 ' + added + ' row(s) added.';
-    } else {
-      msg.textContent = groups.length + ' group(s) loaded \u2014 all already have rules.';
-    }
-    msg.style.color = '#68d391';
-    setTimeout(function () { msg.textContent = ''; }, 4000);
-  };
-
-  window.addRow = async function () {
-    if (_groups.length === 0) await _fetchGroups();
-    _appendRow({});
+  window.addGroupRow = async function () {
+    if (!_gpuModels.length) await _fetchGpuModels();
+    if (!_groups.length)    await _fetchGroups();
+    _appendRow('', []);
   };
 
   window.savePolicy = async function () {
     var msg = document.getElementById('save-msg');
     var det = document.getElementById('save-detail');
 
+    // Collect rows
     var groups = [];
-    var seen   = {};
+    var seenGroups = {};
     var dupErr = null;
 
-    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function (tr) {
-      var grp  = tr.querySelector('.grp-sel').value.trim();
-      var type = tr.querySelector('.type-inp').value.trim() || 'nvidia.com/gpu';
-      var max  = parseInt(tr.querySelector('.max-inp').value, 10);
+    document.querySelectorAll('#policy-rows tr:not(#empty-row)').forEach(function(tr) {
+      var grpEl = tr.querySelector('.grp-sel');
+      var grp   = grpEl ? grpEl.value.trim() : '';
       if (!grp) return;
 
-      var key = grp + '||' + type;
-      if (seen[key]) {
-        dupErr = 'Duplicate rule: group "' + grp + '" already has a limit for ' + type +
-                 '. Remove one before saving.';
+      if (seenGroups[grp]) {
+        dupErr = 'Duplicate group "' + grp + '" — each group may appear only once.';
       }
-      seen[key] = true;
-      groups.push({ gitlab_group: grp, gpu_type: type, max_gpus: isNaN(max) ? 0 : max });
+      seenGroups[grp] = true;
+
+      var allowed = [];
+      tr.querySelectorAll('.gpu-cb:checked').forEach(function(cb) {
+        allowed.push(cb.value);
+      });
+
+      groups.push({ gitlab_group: grp, allowed_gpu_types: allowed });
     });
 
     if (dupErr) {
@@ -416,7 +373,8 @@
       return;
     }
 
-    msg.textContent = 'Applying to cluster\u2026'; msg.style.color = '#94a3b8';
+    msg.textContent = 'Applying to cluster\u2026';
+    msg.style.color = '#94a3b8';
     det.style.display = 'none';
 
     try {
@@ -428,14 +386,14 @@
       var d = await resp.json();
 
       if (d.success) {
-        msg.textContent = '\u2713 ' + d.message; msg.style.color = '#68d391';
+        msg.textContent = '\u2713 ' + d.message;
+        msg.style.color = '#68d391';
         setTimeout(window.loadKvStatus, 2000);
       } else {
-        msg.textContent = '\u2717 ' + (d.error || 'Failed \u2014 see detail below');
+        msg.textContent = '\u2717 ' + (d.error || 'Failed — see detail below');
         msg.style.color = '#fc8181';
       }
       if (d.detail) { det.textContent = d.detail; det.style.display = 'block'; }
-
     } catch (e) {
       msg.textContent = '\u2717 Network error: ' + String(e);
       msg.style.color = '#fc8181';
@@ -444,7 +402,7 @@
 
   window.initGpuPolicyTab = async function () {
     window.loadKvStatus();
-    await window.loadPolicy();
+    await window.loadPolicyPage();
   };
 
   document.addEventListener('DOMContentLoaded', function () {
