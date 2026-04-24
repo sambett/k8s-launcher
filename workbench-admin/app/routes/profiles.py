@@ -11,6 +11,12 @@ The 'gpu' field in the stored schema is always derived:
   profile_type == 'gpu' → gpu = 1
   profile_type == 'cpu' → gpu = 0
 It is never accepted as a raw user input.
+
+node_selector_key and node_selector_value are always derived server-side
+for GPU profiles — never accepted from the client. The key is always
+nvidia.com/gpu.product (the GFD label). The value is always the gpu_model
+the admin selected. This ensures JupyterHub and Kyverno always agree on
+the exact pod shape a GPU profile must produce.
 """
 
 import json
@@ -30,6 +36,12 @@ _KUBECTL = shutil.which("kubectl") or "/usr/local/bin/kubectl"
 # Minimum RAM in Gi below which a GPU profile is rejected server-side.
 # The UI enforces this too, but server-side validation is the authoritative gate.
 _RAM_SUFFIXES = {"gi": 1, "g": 1, "mi": 1/1024, "m": 1/1024}
+
+# The canonical GFD node selector key used by all GPU profiles.
+# This value is fixed by the platform — admins select the model (value),
+# not the key. Keeping it here as a constant prevents drift between
+# the profile schema, JupyterHub translation, and Kyverno validation.
+_GPU_NODE_SELECTOR_KEY = "nvidia.com/gpu.product"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -175,9 +187,25 @@ def api_create_profile():
         if not gpu_model:
             return jsonify({"error": "gpu_model is required for GPU profiles"}), 400
 
-        # node_selector always uses the GFD product label — never accept from client
-        node_selector_key   = "nvidia.com/gpu.product"
+        # FIX: Reject GPU profiles where node_selector_value would be empty.
+        # An empty value means JupyterHub would skip setting the nodeSelector
+        # entirely (the 'if ns_value:' guard in config.yaml.j2). That pod
+        # would then be blocked by Kyverno's require-gpu-node-selector policy
+        # at spawn time with no clear error message to the user.
+        # Since gpu_model IS the node_selector_value, and we already checked
+        # gpu_model above, this is a consistency assertion — it documents the
+        # contract explicitly so future changes cannot break it silently.
+        node_selector_key   = _GPU_NODE_SELECTOR_KEY
         node_selector_value = gpu_model
+
+        if not node_selector_value:
+            return jsonify({
+                "error": (
+                    "GPU profile requires a valid gpu_model to set the node selector. "
+                    f"node_selector_key is always '{_GPU_NODE_SELECTOR_KEY}' and "
+                    "node_selector_value must equal gpu_model."
+                )
+            }), 400
 
         # Floor validation against compat matrix
         matrix = _read_gpu_matrix()
@@ -207,7 +235,12 @@ def api_create_profile():
         "cpu_guarantee":       p.get("cpu_guarantee", 0.5),
         "mem_limit":           p.get("mem_limit", "4Gi"),
         "mem_guarantee":       p.get("mem_guarantee", "1Gi"),
-        # GPU fields — always derived, never raw user input
+        # GPU fields — always derived server-side, never raw user input.
+        # node_selector_key is always nvidia.com/gpu.product (GFD label).
+        # node_selector_value is always gpu_model (exact hardware model).
+        # JupyterHub reads both fields in build_profile to set the pod's
+        # nodeSelector. Kyverno validates that nodeSelector is present and
+        # matches an approved GPU type. All three layers use this contract.
         "profile_type":        profile_type,
         "gpu":                 gpu_count,
         "gpu_model":           gpu_model,
