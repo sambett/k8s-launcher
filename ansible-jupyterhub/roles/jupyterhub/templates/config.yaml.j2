@@ -135,7 +135,7 @@ hub:
                   "mem_limit":     p.get("mem_limit", "4G"),
                   "mem_guarantee": p.get("mem_guarantee", "1G"),
                   "image_pull_secrets": ["gitlab-registry-secret"],
-                  # Pod label — read by Kyverno to enforce per-group GPU quotas.
+                  # Pod labels — read by Kyverno to enforce per-group GPU quotas.
                   # Kyverno matches on workbench/gitlab-group to find the right policy.
                   "extra_labels": {
                       "workbench/gitlab-group": p.get("gitlab_group", "unknown"),
@@ -144,7 +144,21 @@ hub:
               }
               if gpu_count > 0:
                   kubespawner["extra_resource_limits"] = {"nvidia.com/gpu": str(gpu_count)}
-                  kubespawner["node_selector"] = {"accelerator": "nvidia"}
+                  # FIX: Read the exact nodeSelector stored by workbench-admin at profile
+                  # creation time instead of the old hardcoded {"accelerator": "nvidia"}.
+                  #
+                  # workbench-admin stores:
+                  #   node_selector_key   = "nvidia.com/gpu.product"   (GFD label key)
+                  #   node_selector_value = e.g. "NVIDIA-A2"            (exact GPU model)
+                  #
+                  # Kyverno's require-gpu-node-selector policy checks that every GPU pod
+                  # carries nodeSelector["nvidia.com/gpu.product"]. The old accelerator
+                  # label never satisfied that check so every GPU spawn was denied at
+                  # admission. This was the root cause of the GPU scheduling mismatch.
+                  ns_key   = p.get("node_selector_key",   "nvidia.com/gpu.product")
+                  ns_value = p.get("node_selector_value", "")
+                  if ns_value:
+                      kubespawner["node_selector"] = {ns_key: ns_value}
               return {
                   "display_name":        p.get("display_name", "Profile"),
                   "description":         p.get("description", ""),
