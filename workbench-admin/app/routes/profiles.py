@@ -263,6 +263,20 @@ def api_create_profile():
     if any(x["slug"] == p["slug"] for x in profiles):
         return jsonify({"error": f"Slug '{p['slug']}' already exists"}), 409
 
+    # Normalise memory values before saving.
+    # KubeSpawner 3.3.8 accepts K, M, G, T suffixes only — not bare numbers
+    # or binary suffixes like Gi/Mi. We fix at save time so the ConfigMap
+    # never contains invalid values regardless of what the form submitted.
+    def _normalise_mem(val, default):
+        s = str(val).strip() if val else default
+        if s.isdigit():                return s + "G"
+        if s.endswith("Gi"):           return s[:-2] + "G"
+        if s.endswith("Mi"):           return s[:-2] + "M"
+        return s
+
+    mem_limit     = _normalise_mem(p.get("mem_limit"),     "4G")
+    mem_guarantee = _normalise_mem(p.get("mem_guarantee"), "1G")
+
     profiles.append({
         "slug":                p["slug"],
         "display_name":        p["display_name"],
@@ -272,8 +286,8 @@ def api_create_profile():
         "image_options":       p["image_options"],
         "cpu_limit":           p.get("cpu_limit", 2),
         "cpu_guarantee":       p.get("cpu_guarantee", 0.5),
-        "mem_limit":           p.get("mem_limit", "4Gi"),
-        "mem_guarantee":       p.get("mem_guarantee", "1Gi"),
+        "mem_limit":           mem_limit,
+        "mem_guarantee":       mem_guarantee,
         # GPU fields — server-side contract between workbench-admin,
         # JupyterHub, and Kyverno. All three layers must agree on these values.
         #
