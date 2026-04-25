@@ -124,41 +124,58 @@
         </select>
       </div>
       <div class="fg">
-        <label>Image Tags — check one or more</label>
-        <div id="tag-list" class="tag-list">
-          <span class="tag-empty">Select a repository first</span>
+        <label>Image Tag — select one</label>
+        <select id="tag-select"
+          style="background:var(--bg-input);border:1px solid var(--border);
+                 border-radius:6px;color:var(--text-primary);
+                 padding:.45rem .7rem;font-size:.85rem;outline:none;width:100%">
+          <option value="">— select a repository first —</option>
+        </select>
+        <div class="tag-hint">
+          One image per profile. Each profile maps to exactly one container image.
         </div>
-        <div class="tag-hint">Multiple tags → user gets a dropdown at spawn time</div>
       </div>
 
       <!-- CPU -->
       <div class="fg">
-        <label>CPU Limit (cores)</label>
-        <input id="f-cpu-lim" type="number" step="0.5" value="2"/>
-      </div>
-      <div class="fg">
-        <label>CPU Guarantee (cores)
+        <label>CPU Minimum (cores)
           <span id="cpu-floor-hint"
             style="display:none;float:right;font-size:.68rem;
                    color:#f59e0b;font-weight:400"></span>
+          <span style="float:right;font-size:.68rem;color:var(--text-muted);
+                       font-weight:400;margin-left:.4rem">guaranteed allocation</span>
         </label>
         <input id="f-cpu-req" type="number" step="0.25" value="0.5"
-          oninput="enforceFloor('cpu')"/>
+          oninput="enforceFloor('cpu'); syncLimit('cpu')"/>
+      </div>
+      <div class="fg">
+        <label>CPU Maximum (cores)
+          <span style="float:right;font-size:.68rem;color:var(--text-muted);
+                       font-weight:400">must be ≥ minimum</span>
+        </label>
+        <input id="f-cpu-lim" type="number" step="0.5" value="2"
+          oninput="enforceLimit('cpu')"/>
       </div>
 
       <!-- RAM -->
       <div class="fg">
-        <label>Memory Limit</label>
-        <input id="f-mem-lim" value="4Gi"/>
-      </div>
-      <div class="fg">
-        <label>Memory Guarantee
+        <label>Memory Minimum
           <span id="ram-floor-hint"
             style="display:none;float:right;font-size:.68rem;
                    color:#f59e0b;font-weight:400"></span>
+          <span style="float:right;font-size:.68rem;color:var(--text-muted);
+                       font-weight:400;margin-left:.4rem">guaranteed allocation</span>
         </label>
-        <input id="f-mem-req" value="1Gi"
-          oninput="enforceFloorRam()"/>
+        <input id="f-mem-req" value="4G"
+          oninput="enforceFloorRam(); syncLimit('mem')"/>
+      </div>
+      <div class="fg">
+        <label>Memory Maximum
+          <span style="float:right;font-size:.68rem;color:var(--text-muted);
+                       font-weight:400">must be ≥ minimum, e.g. 8G</span>
+        </label>
+        <input id="f-mem-lim" value="4G"
+          oninput="enforceLimit('mem')"/>
       </div>
     </div>
 
@@ -415,25 +432,81 @@ async function loadRepos() {
 }
 
 async function loadTags() {
-  var repoSel = document.getElementById('f-repo');
-  var tagDiv  = document.getElementById('tag-list');
-  var repoId  = repoSel.value;
+  var repoSel  = document.getElementById('f-repo');
+  var tagSel   = document.getElementById('tag-select');
+  var repoId   = repoSel.value;
   if (!repoId) {
-    tagDiv.innerHTML = '<span class="tag-empty">Select a repository first</span>';
+    tagSel.innerHTML = '<option value="">— select a repository first —</option>';
     return;
   }
-  tagDiv.innerHTML = '<span class="tag-empty">Loading…</span>';
+  tagSel.innerHTML = '<option value="">Loading…</option>';
   var res  = await fetch('/api/registry/repos/' + repoId + '/tags');
   var tags = await res.json();
-  if (!tags.length) {
-    tagDiv.innerHTML = '<span class="tag-empty">No tags found</span>';
+  if (!tags || !tags.length) {
+    tagSel.innerHTML = '<option value="">No tags found</option>';
     return;
   }
-  tagDiv.innerHTML = tags.map(function(t) {
-    return '<label class="tag-item">' +
-           '<input type="checkbox" name="img-tag" value="' + esc(t.name) + '"/> ' +
-           esc(t.name) + '</label>';
-  }).join('');
+  // Single select — one image per profile.
+  // The selected tag becomes image_options[0] in the stored profile.
+  // JupyterHub build_profile always uses image_options[0] as the image tag.
+  tagSel.innerHTML = '<option value="">— select a tag —</option>' +
+    tags.map(function(t) {
+      return '<option value="' + esc(t.name) + '">' + esc(t.name) + '</option>';
+    }).join('');
+}
+
+// syncLimit — auto-sets Maximum = Minimum when Minimum changes,
+// but only if Maximum is currently less than the new Minimum.
+// Prevents the common mistake of setting min > max.
+function syncLimit(field) {
+  if (field === 'cpu') {
+    var minEl = document.getElementById('f-cpu-req');
+    var maxEl = document.getElementById('f-cpu-lim');
+    var minVal = parseFloat(minEl.value) || 0;
+    var maxVal = parseFloat(maxEl.value) || 0;
+    if (maxVal < minVal) {
+      maxEl.value = minEl.value;
+      maxEl.style.borderColor = '#f59e0b';
+    } else {
+      maxEl.style.borderColor = '';
+    }
+  } else {
+    var minEl = document.getElementById('f-mem-req');
+    var maxEl = document.getElementById('f-mem-lim');
+    if (_parseRamGi(maxEl.value) < _parseRamGi(minEl.value)) {
+      maxEl.value = minEl.value;
+      maxEl.style.borderColor = '#f59e0b';
+    } else {
+      maxEl.style.borderColor = '';
+    }
+  }
+}
+
+// enforceLimit — validates Maximum >= Minimum when Maximum changes.
+// Highlights the field if the admin tries to set max < min.
+function enforceLimit(field) {
+  if (field === 'cpu') {
+    var minVal = parseFloat(document.getElementById('f-cpu-req').value) || 0;
+    var maxEl  = document.getElementById('f-cpu-lim');
+    var maxVal = parseFloat(maxEl.value) || 0;
+    if (maxVal < minVal) {
+      maxEl.style.borderColor = '#fc8181';
+      maxEl.title = 'Maximum must be >= minimum (' + minVal + ' cores)';
+    } else {
+      maxEl.style.borderColor = '';
+      maxEl.title = '';
+    }
+  } else {
+    var minVal = _parseRamGi(document.getElementById('f-mem-req').value);
+    var maxEl  = document.getElementById('f-mem-lim');
+    if (_parseRamGi(maxEl.value) < minVal) {
+      maxEl.style.borderColor = '#fc8181';
+      maxEl.title = 'Maximum must be >= minimum';
+    } else {
+      maxEl.style.borderColor = '';
+      maxEl.title = '';
+    }
+  }
 }
 
 // ── Create profile ────────────────────────────────────────────────────────────
@@ -443,9 +516,11 @@ async function createProfile() {
   var repoName = repoSel.options[repoSel.selectedIndex]
                  ? (repoSel.options[repoSel.selectedIndex].dataset.name || '') : '';
   var msg      = document.getElementById('create-msg');
-  var tags     = Array.from(
-    document.querySelectorAll('input[name="img-tag"]:checked')
-  ).map(function(cb) { return cb.value; });
+
+  // Single tag selection — one image per profile.
+  var tagSel   = document.getElementById('tag-select');
+  var selectedTag = tagSel ? tagSel.value : '';
+  var tags     = selectedTag ? [selectedTag] : [];
 
   var isGpu     = document.getElementById('type-gpu').checked;
   var gpuModel  = document.getElementById('f-gpu-model').value;
@@ -499,7 +574,21 @@ async function createProfile() {
     showMsg(msg, '✗ Fill in all required fields.', false); return;
   }
   if (!body.image_options.length) {
-    showMsg(msg, '✗ Select at least one image tag.', false); return;
+    showMsg(msg, '✗ Select an image tag.', false); return;
+  }
+  // Enforce Maximum >= Minimum for CPU
+  var cpuMin = parseFloat(document.getElementById('f-cpu-req').value) || 0;
+  var cpuMax = parseFloat(document.getElementById('f-cpu-lim').value) || 0;
+  if (cpuMax < cpuMin) {
+    showMsg(msg, '✗ CPU Maximum (' + cpuMax + ') must be >= CPU Minimum (' + cpuMin + ').', false);
+    return;
+  }
+  // Enforce Maximum >= Minimum for Memory
+  var memMinGi = _parseRamGi(document.getElementById('f-mem-req').value);
+  var memMaxGi = _parseRamGi(document.getElementById('f-mem-lim').value);
+  if (memMaxGi < memMinGi) {
+    showMsg(msg, '✗ Memory Maximum must be >= Memory Minimum.', false);
+    return;
   }
 
   var res  = await fetch('/api/profiles', {

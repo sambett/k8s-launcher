@@ -162,6 +162,18 @@ def api_create_profile():
     if not isinstance(p["image_options"], list) or not p["image_options"]:
         return jsonify({"error": "image_options must be a non-empty list"}), 400
 
+    # Enforce single image per profile.
+    # A Kubernetes pod runs exactly one container image. Allowing multiple
+    # tags here would be misleading — JupyterHub only ever uses image_options[0].
+    if len(p["image_options"]) > 1:
+        return jsonify({
+            "error": (
+                "A profile must reference exactly one image tag. "
+                f"Got {len(p['image_options'])} tags: {p['image_options']}. "
+                "Select one tag only."
+            )
+        }), 400
+
     # ── Derive profile_type and gpu ───────────────────────────────────────────
     # Accept profile_type from the request; fall back to legacy gpu field for
     # backward compat with any existing tooling that still sends raw gpu counts.
@@ -258,6 +270,29 @@ def api_create_profile():
                         f"Update the compatibility matrix if your hardware supports more."
                     )
                 }), 400
+
+    # Enforce cpu_limit >= cpu_guarantee server-side.
+    cpu_guarantee = float(p.get("cpu_guarantee", 0.5) or 0.5)
+    cpu_limit     = float(p.get("cpu_limit", cpu_guarantee) or cpu_guarantee)
+    if cpu_limit < cpu_guarantee:
+        return jsonify({
+            "error": (
+                f"cpu_limit ({cpu_limit}) must be >= cpu_guarantee ({cpu_guarantee}). "
+                "Maximum allocation cannot be less than minimum allocation."
+            )
+        }), 400
+
+    # Enforce mem_limit >= mem_guarantee server-side.
+    mem_guar_gi = _parse_ram_gi(p.get("mem_guarantee", "1G") or "1G")
+    mem_lim_gi  = _parse_ram_gi(p.get("mem_limit", "1G") or "1G")
+    if mem_lim_gi < mem_guar_gi:
+        return jsonify({
+            "error": (
+                f"mem_limit ({p.get('mem_limit')}) must be >= "
+                f"mem_guarantee ({p.get('mem_guarantee')}). "
+                "Maximum allocation cannot be less than minimum allocation."
+            )
+        }), 400
 
     profiles = read_profiles()
     if any(x["slug"] == p["slug"] for x in profiles):
