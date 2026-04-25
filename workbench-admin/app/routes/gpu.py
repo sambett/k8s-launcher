@@ -75,6 +75,13 @@ def api_gpu_inventory():
                 "cuda_ceiling": cuda_ceiling,
                 "gpu_memory":   gpu_memory,
                 "example_node": name,
+                # max_count is not available from GFD labels — it comes from
+                # the compatibility matrix saved by the admin. We set a safe
+                # default of 1 here so the inventory response is always usable
+                # even before the admin has saved the matrix. The profile form
+                # reads the full matrix via /api/gpu/matrix which has the real
+                # admin-defined value.
+                "max_count": 1,
             }
 
     return jsonify({"nodes": nodes, "models": list(models_seen.values())})
@@ -90,7 +97,13 @@ def api_get_matrix():
     if r.returncode != 0 or not r.stdout.strip():
         return jsonify({"matrix": []})
     try:
-        return jsonify({"matrix": json.loads(r.stdout.strip())})
+        matrix = json.loads(r.stdout.strip())
+        # Back-fill max_count for entries saved before this field existed.
+        # Ensures the profile form always has a usable count ceiling even
+        # if the admin has not yet re-saved the matrix after the upgrade.
+        for entry in matrix:
+            entry.setdefault("max_count", 1)
+        return jsonify({"matrix": matrix})
     except Exception:
         return jsonify({"matrix": []})
 
@@ -113,6 +126,25 @@ def api_save_matrix():
         if not str(entry.get("min_ram", "")).strip():
             return jsonify({"success": False,
                             "error": f"min_ram is required for {entry.get('gpu_model')}"}), 400
+
+        # max_count — how many GPUs of this model can a single pod request.
+        # Optional field. Defaults to 1 if absent. Must be an integer >= 1.
+        # Drives the GPU count dropdown in the new profile form.
+        # Prevents creating profiles that can never be scheduled on this hardware.
+        raw_max = entry.get("max_count", 1)
+        try:
+            max_count = int(raw_max)
+            if max_count < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"max_count must be an integer >= 1 "
+                    f"for {entry.get('gpu_model')}. Got: {raw_max!r}"
+                )
+            }), 400
+        entry["max_count"] = max_count
 
     json_str = json.dumps(matrix, indent=2)
     check    = _run([_KUBECTL, "get", "configmap", MATRIX_CM_NAME, "-n", MATRIX_CM_NS])
