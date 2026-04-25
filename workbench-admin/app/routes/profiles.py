@@ -173,9 +173,28 @@ def api_create_profile():
 
     is_gpu = (profile_type == "gpu")
 
-    # GPU field is always derived — never stored as a user-supplied raw value.
-    # KubeSpawner reads this as extra_resource_limits.nvidia.com/gpu.
-    gpu_count = 1 if is_gpu else 0
+    # GPU count — how many GPUs this profile requests.
+    # For CPU profiles this is always 0, never user-supplied.
+    # For GPU profiles this comes from the request, validated against the
+    # compatibility matrix max_count for the selected GPU model.
+    # Defaults to 1 if not supplied (backward compatible with old profiles).
+    # The absolute ceiling is enforced by Kyverno jupyterhub-gpu-ceiling,
+    # but we validate here at save time to give the admin a clear error
+    # rather than a silent spawn failure later.
+    if is_gpu:
+        try:
+            gpu_count = int(p.get("gpu_count", p.get("gpu", 1)))
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": (
+                    f"gpu_count must be an integer. "
+                    f"Got: {p.get('gpu_count')!r}"
+                )
+            }), 400
+        if gpu_count < 1:
+            return jsonify({"error": "gpu_count must be >= 1 for GPU profiles"}), 400
+    else:
+        gpu_count = 0
 
     # ── GPU-specific validation ───────────────────────────────────────────────
     gpu_model           = None
@@ -220,6 +239,26 @@ def api_create_profile():
         if not ok:
             return jsonify({"error": err}), 400
 
+        # Validate gpu_count does not exceed the max_count stored in the matrix
+        # for this GPU model. This prevents creating a profile that asks for
+        # more GPUs than the hardware can provide on a single node.
+        # If the model is not in the matrix, we skip this check — the Kyverno
+        # ceiling policy is the backstop in that case.
+        matrix = _read_gpu_matrix()
+        model_entry = next(
+            (m for m in matrix if m.get("gpu_model") == gpu_model), None
+        )
+        if model_entry:
+            matrix_max = int(model_entry.get("max_count", 1))
+            if gpu_count > matrix_max:
+                return jsonify({
+                    "error": (
+                        f"gpu_count {gpu_count} exceeds the maximum of {matrix_max} "
+                        f"for GPU model {gpu_model}. "
+                        f"Update the compatibility matrix if your hardware supports more."
+                    )
+                }), 400
+
     profiles = read_profiles()
     if any(x["slug"] == p["slug"] for x in profiles):
         return jsonify({"error": f"Slug '{p['slug']}' already exists"}), 409
@@ -235,12 +274,20 @@ def api_create_profile():
         "cpu_guarantee":       p.get("cpu_guarantee", 0.5),
         "mem_limit":           p.get("mem_limit", "4Gi"),
         "mem_guarantee":       p.get("mem_guarantee", "1Gi"),
-        # GPU fields — always derived server-side, never raw user input.
-        # node_selector_key is always nvidia.com/gpu.product (GFD label).
-        # node_selector_value is always gpu_model (exact hardware model).
-        # JupyterHub reads both fields in build_profile to set the pod's
-        # nodeSelector. Kyverno validates that nodeSelector is present and
-        # matches an approved GPU type. All three layers use this contract.
+        # GPU fields — server-side contract between workbench-admin,
+        # JupyterHub, and Kyverno. All three layers must agree on these values.
+        #
+        # profile_type:        "cpu" or "gpu" — drives all GPU logic downstream
+        # gpu:                 0 for CPU, 1-N for GPU — becomes nvidia.com/gpu
+        #                      resource limit in the pod spec via KubeSpawner
+        # gpu_model:           exact GFD label value (e.g. "NVIDIA-A2")
+        # node_selector_key:   always nvidia.com/gpu.product — GFD label key
+        # node_selector_value: always equals gpu_model — ensures homogeneous
+        #                      GPU scheduling (all GPUs on the pod are same type)
+        #
+        # JupyterHub build_profile reads gpu, node_selector_key, node_selector_value.
+        # Kyverno validates node_selector_value is present and in the group allowlist.
+        # Kyverno ceiling policy validates gpu does not exceed global_max_gpu_per_pod.
         "profile_type":        profile_type,
         "gpu":                 gpu_count,
         "gpu_model":           gpu_model,
