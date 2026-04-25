@@ -77,6 +77,10 @@
               Min RAM <span style="font-weight:400;color:#4a5568">(e.g. 8Gi)</span>
             </th>
             <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
+                       font-weight:600;text-transform:uppercase;letter-spacing:.06em">
+              Max GPUs <span style="font-weight:400;color:#4a5568">(per pod)</span>
+            </th>
+            <th style="padding:.65rem 1rem;text-align:left;color:#7c6af7;font-size:.75rem;
                        font-weight:600;text-transform:uppercase;letter-spacing:.06em">Example node</th>
           </tr>
         </thead>
@@ -201,6 +205,12 @@
           'value="' + _esc(String(minRam)) + '" placeholder="e.g. 8Gi" ' +
           'style="' + S_INPUT + ';max-width:110px">' +
         '</td>' +
+        '<td style="padding:.65rem 1rem">' +
+          '<input type="number" min="1" max="32" class="matrix-max-count" ' +
+          'value="' + _esc(String(saved.max_count || 1)) + '" ' +
+          'title="Maximum GPUs a single pod may request for this model" ' +
+          'style="' + S_INPUT + ';max-width:70px;text-align:center">' +
+        '</td>' +
         '<td style="padding:.65rem 1rem;color:#64748b;font-size:.8rem;font-family:monospace">' +
           _esc(m.example_node) +
         '</td>' +
@@ -249,12 +259,17 @@
       var ramEl  = tr.querySelector('.matrix-ram');
       var inv    = (_inventory.models || []).find(function(m) { return m.gpu_model === model; }) || {};
 
+      var maxCountEl = tr.querySelector('.matrix-max-count');
       matrix.push({
         gpu_model:            model,
         cuda_ceiling:         inv.cuda_ceiling  || '',
         gpu_memory:           inv.gpu_memory    || '',
         min_cpu:              parseInt(cpuEl ? cpuEl.value : '0') || 0,
         min_ram:              ramEl ? ramEl.value.trim() : '',
+        // max_count: how many GPUs of this model a single pod may request.
+        // Drives the GPU count dropdown in the new profile form and is
+        // validated by the backend against the Kyverno global ceiling.
+        max_count:            parseInt(maxCountEl ? maxCountEl.value : '1') || 1,
         node_selector_key:   'nvidia.com/gpu.product',
         node_selector_value:  model,
       });
