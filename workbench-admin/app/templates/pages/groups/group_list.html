@@ -41,19 +41,76 @@ async function loadGroupList() {
     container.innerHTML = '<div class="empty">No groups yet.</div>';
     return;
   }
-  container.innerHTML = data.map(g => `
-    <div class="group-card" id="gc-${g.id}">
+  const REGISTRY_GROUP_PATH = 'registry';
+
+  container.innerHTML = data.map(g => {
+    const isRegistry = g.path === REGISTRY_GROUP_PATH;
+
+    // Registry group warning banner — shown instead of the normal add-user form
+    const registryBanner = `
+      <div style="display:flex;align-items:flex-start;gap:10px;
+                  background:#2d1a00;border:1px solid #f59e0b;
+                  border-left:4px solid #f59e0b;border-radius:6px;
+                  padding:.75rem 1rem;margin-top:.75rem;font-size:.78rem;
+                  color:#fbbf24;line-height:1.7">
+        <span style="font-size:1.1rem;flex-shrink:0">⚠️</span>
+        <div>
+          <strong style="display:block;margin-bottom:.2rem;color:#f59e0b">
+            GitLab Container Registry Group — Do Not Modify
+          </strong>
+          This group is used internally by GitLab as the namespace for the
+          container registry (<code style="color:#fbbf24">registry/notebook-images</code>).
+          JupyterHub pulls notebook images from this registry using a deploy token
+          scoped to this group. Deleting this group or changing its members will
+          break image pulls for all users across the entire platform.
+          Only <strong>root</strong> should be a member of this group.
+        </div>
+      </div>`;
+
+    // Action buttons — Delete hidden for registry group
+    const deleteBtn = isRegistry
+      ? `<span style="font-size:.72rem;color:#4a5568;font-style:italic">protected</span>`
+      : `<button class="btn btn-danger btn-sm"
+           onclick="event.stopPropagation();deleteGroup(${g.id},'${esc(g.name)}')">
+           Delete
+         </button>`;
+
+    // Add-user section — hidden for registry group
+    const addUserSection = isRegistry ? registryBanner : `
+      <div style="margin-top:.75rem">
+        <div style="font-size:.72rem;color:#64748b;margin-bottom:.35rem;
+                    text-transform:uppercase;letter-spacing:.05em">Add user</div>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <select id="member-select-${g.id}" style="flex:2">
+            <option value="">— select a user —</option>
+          </select>
+          <select id="new-role-${g.id}" style="flex:1">
+            <option value="30">Developer</option>
+            <option value="40">Maintainer</option>
+            <option value="20">Reporter</option>
+            <option value="10">Guest</option>
+            <option value="50">Owner</option>
+          </select>
+          <button class="btn btn-primary btn-sm"
+            style="white-space:nowrap" onclick="addMember(${g.id})">Add</button>
+        </div>
+        <div id="r-add-member-${g.id}" style="font-size:.75rem;margin-top:.4rem"></div>
+      </div>`;
+
+    return `
+    <div class="group-card" id="gc-${g.id}"
+      style="${isRegistry ? 'border-color:#f59e0b;' : ''}">
       <div class="group-header" onclick="toggleGroup(${g.id})">
-        <span>
+        <span style="display:flex;align-items:center;gap:.5rem">
           <span class="group-name">${esc(g.name)}</span>
           <span class="group-path">/ ${esc(g.path)}</span>
+          ${isRegistry
+            ? '<span style="font-size:.68rem;background:#2d1a00;color:#f59e0b;border:1px solid #f59e0b;border-radius:4px;padding:1px 7px;font-weight:600">REGISTRY</span>'
+            : ''}
         </span>
         <span style="display:flex;gap:.5rem;align-items:center">
           <span style="font-size:.72rem;color:#4a5568" id="member-count-${g.id}"></span>
-          <button class="btn btn-danger btn-sm"
-            onclick="event.stopPropagation();deleteGroup(${g.id},'${esc(g.name)}')">
-            Delete
-          </button>
+          ${deleteBtn}
           <span style="color:#4a5568;font-size:.8rem" id="chevron-${g.id}">▶</span>
         </span>
       </div>
@@ -61,29 +118,10 @@ async function loadGroupList() {
         <div id="member-list-${g.id}">
           <div style="font-size:.78rem;color:#4a5568;padding:.3rem 0">Loading…</div>
         </div>
-
-        <div style="margin-top:.75rem">
-          <div style="font-size:.72rem;color:#64748b;margin-bottom:.35rem;
-                      text-transform:uppercase;letter-spacing:.05em">Add user</div>
-          <div style="display:flex;gap:.5rem;align-items:center">
-            <select id="member-select-${g.id}" style="flex:2">
-              <option value="">— select a user —</option>
-            </select>
-            <select id="new-role-${g.id}" style="flex:1">
-              <option value="30">Developer</option>
-              <option value="40">Maintainer</option>
-              <option value="20">Reporter</option>
-              <option value="10">Guest</option>
-              <option value="50">Owner</option>
-            </select>
-            <button class="btn btn-primary btn-sm"
-              style="white-space:nowrap" onclick="addMember(${g.id})">Add</button>
-          </div>
-          <div id="r-add-member-${g.id}" style="font-size:.75rem;margin-top:.4rem"></div>
-        </div>
+        ${addUserSection}
       </div>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
 }
 
 async function toggleGroup(groupId) {

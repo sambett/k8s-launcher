@@ -11,17 +11,7 @@
   --log-bg:#0a0c10;--log-text:#a0aec0;
   --group-hover:#252840;--member-border:#1a1d2e;
 }
-[data-theme="light"]{
-  --bg-base:#f0f2f8;--bg-card:#ffffff;--bg-nav:#f8f9fc;--bg-input:#ffffff;
-  --bg-hover:#eef0f6;--border:#dde1ea;--border-subtle:#eef0f5;
-  --text-primary:#1a1a2e;--text-secondary:#4a5568;--text-muted:#718096;--text-faint:#a0aec0;
-  --accent:#6c5ce7;--accent-soft:#ede9fe;--accent-text:#5b21b6;--accent-h2:#5b21b6;
-  --success:#2e7d32;--success-soft:#e8f5e9;--success-border:#a5d6a7;
-  --danger:#c62828;--danger-soft:#ffebee;--danger-border:#ef9a9a;
-  --delete-btn:#d32f2f;--apply-btn:#2e7d32;
-  --log-bg:#1e1e2e;--log-text:#d4d4d4;
-  --group-hover:#eef0f6;--member-border:#eef0f5;
-}
+/* Light mode removed — dark mode only */
 
 /* ── Base ─────────────────────────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0}
@@ -33,12 +23,8 @@ header{background:var(--bg-card);border-bottom:1px solid var(--border);padding:1
 .sub{font-size:.78rem;color:var(--text-muted)}
 
 /* ── Theme toggle ────────────────────────────────────────────────────────── */
-.theme-toggle{margin-left:auto;display:flex;align-items:center;gap:.55rem;cursor:pointer;padding:.3rem .75rem;border-radius:999px;border:1px solid var(--border);background:var(--bg-hover);color:var(--text-secondary);font-size:.78rem;font-weight:500;transition:all .2s;flex-shrink:0}
-.theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
-.toggle-track{width:32px;height:18px;background:var(--border);border-radius:999px;position:relative;transition:background .25s;flex-shrink:0}
-[data-theme="light"] .toggle-track{background:var(--accent)}
-.toggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .25s}
-[data-theme="light"] .toggle-thumb{transform:translateX(14px)}
+
+.toggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 .layout{display:flex;height:calc(100vh - 57px)}
