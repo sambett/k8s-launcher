@@ -65,6 +65,31 @@
                    border-radius:6px;padding:.45rem .7rem;font-size:.85rem;
                    color:var(--text-muted);min-height:34px">—</div>
         </div>
+        <div class="fg" style="grid-column:1/-1">
+          <label>GPU Count
+            <span style="font-size:.68rem;font-weight:400;color:var(--text-muted);
+                         margin-left:.4rem">
+              — how many GPUs this profile requests per session
+            </span>
+          </label>
+          <div style="display:flex;align-items:center;gap:.75rem">
+            <select id="f-gpu-count"
+              style="max-width:200px;background:var(--bg-input);
+                     border:1px solid var(--border);border-radius:6px;
+                     color:var(--text-primary);padding:.45rem .7rem;
+                     font-size:.85rem;outline:none">
+              <option value="1">1 GPU</option>
+            </select>
+            <span id="f-gpu-count-hint"
+              style="font-size:.75rem;color:var(--text-muted)">
+              Select a GPU model first
+            </span>
+          </div>
+          <div style="font-size:.7rem;color:var(--text-faint);margin-top:.3rem">
+            Options are limited by the max_count set in the GPU Compatibility Matrix.
+            All requested GPUs must be of the same model (homogeneous scheduling).
+          </div>
+        </div>
       </div>
     </div>
 
@@ -197,7 +222,33 @@ window.onGpuModelChange = function () {
     : '<span style="color:var(--text-muted)">—</span>';
 
   _applyFloors(entry);
+
+  // Rebuild the GPU count dropdown based on max_count for this model.
+  // max_count comes from the compatibility matrix saved by the admin.
+  // Options are 1 .. max_count. All GPUs in a pod are the same model
+  // (homogeneous scheduling — mixed types are not supported).
+  _rebuildGpuCountDropdown(parseInt(entry.max_count) || 1);
 };
+
+function _rebuildGpuCountDropdown(maxCount) {
+  var sel  = document.getElementById('f-gpu-count');
+  var hint = document.getElementById('f-gpu-count-hint');
+  if (!sel) return;
+  var current = parseInt(sel.value) || 1;
+  sel.innerHTML = '';
+  for (var i = 1; i <= maxCount; i++) {
+    var opt = document.createElement('option');
+    opt.value       = i;
+    opt.textContent = i + (i === 1 ? ' GPU' : ' GPUs');
+    if (i === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (hint) {
+    hint.textContent = maxCount === 1
+      ? 'This model supports 1 GPU per session'
+      : 'This model supports 1 to ' + maxCount + ' GPUs per session';
+  }
+}
 
 // ── Floor enforcement ─────────────────────────────────────────────────────────
 
@@ -327,6 +378,11 @@ window.onProfileTypeChange = function () {
     document.getElementById('f-gpu-model').value = '';
     document.getElementById('f-cuda-ceiling').textContent = '—';
     document.getElementById('f-gpu-memory').textContent  = '—';
+    // Reset count dropdown to single option when switching back to CPU
+    var sel  = document.getElementById('f-gpu-count');
+    var hint = document.getElementById('f-gpu-count-hint');
+    if (sel)  { sel.innerHTML = '<option value="1">1 GPU</option>'; }
+    if (hint) { hint.textContent = 'Select a GPU model first'; }
   }
 };
 
@@ -430,6 +486,10 @@ async function createProfile() {
     mem_limit:            document.getElementById('f-mem-lim').value.trim(),
     mem_guarantee:        document.getElementById('f-mem-req').value.trim(),
     profile_type:         isGpu ? 'gpu' : 'cpu',
+    // gpu_count: validated server-side against matrix max_count for this model.
+    // Kyverno jupyterhub-gpu-ceiling is the cluster-level backstop.
+    // For CPU profiles this field is ignored — the backend always sets gpu=0.
+    gpu_count:            isGpu ? (parseInt(document.getElementById('f-gpu-count').value) || 1) : 0,
     gpu_model:            isGpu ? gpuModel : null,
     node_selector_key:    isGpu ? 'nvidia.com/gpu.product' : null,
     node_selector_value:  isGpu ? gpuModel : null,
