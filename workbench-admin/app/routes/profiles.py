@@ -78,15 +78,36 @@ def _validate_gpu_floors(profile, matrix):
     cpu_req = float(profile.get("cpu_guarantee", 0) or 0)
     ram_req = _parse_ram_gi(profile.get("mem_guarantee", "0") or "0")
 
+    # Both guarantee (minimum) and limit (maximum) must meet the matrix floor.
+    # The floor is the minimum hardware allocation required to run this GPU model.
+    # A limit below the floor is nonsensical — it would produce a pod spec where
+    # the container cannot receive the resources the GPU requires to function.
+    cpu_lim = float(profile.get("cpu_limit", cpu_req) or cpu_req)
+    mem_lim_gi = _parse_ram_gi(
+        profile.get("mem_limit", profile.get("mem_guarantee", "0")) or "0"
+    )
+
     if min_cpu > 0 and cpu_req < min_cpu:
         return False, (
-            f"CPU guarantee {cpu_req} is below the floor of {min_cpu} cores "
+            f"CPU minimum {cpu_req} is below the floor of {min_cpu} cores "
             f"for GPU model {gpu_model}"
+        )
+    if min_cpu > 0 and cpu_lim < min_cpu:
+        return False, (
+            f"CPU maximum {cpu_lim} is below the floor of {min_cpu} cores "
+            f"for GPU model {gpu_model}. "
+            f"The maximum cannot be lower than the GPU hardware requirement."
         )
     if min_ram > 0 and ram_req < min_ram:
         return False, (
-            f"RAM guarantee {profile.get('mem_guarantee')} is below the floor of "
+            f"RAM minimum {profile.get('mem_guarantee')} is below the floor of "
             f"{entry.get('min_ram')} for GPU model {gpu_model}"
+        )
+    if min_ram > 0 and mem_lim_gi < min_ram:
+        return False, (
+            f"RAM maximum {profile.get('mem_limit')} is below the floor of "
+            f"{entry.get('min_ram')} for GPU model {gpu_model}. "
+            f"The maximum cannot be lower than the GPU hardware requirement."
         )
     return True, ""
 

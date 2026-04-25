@@ -348,13 +348,24 @@ window.enforceFloor = function (field) {
   var entry = _gpuMatrix.find(function(m) { return m.gpu_model === model; });
   if (!entry) return;
   var minCpu = parseFloat(entry.min_cpu) || 0;
+  var minRam = _parseRamGi(entry.min_ram || '0');
+
   if (field === 'cpu' && minCpu > 0) {
-    var el = document.getElementById('f-cpu-req');
-    if (parseFloat(el.value) < minCpu) {
-      el.value = minCpu;
-      el.style.borderColor = '#f59e0b';
+    // Enforce floor on CPU Minimum
+    var reqEl = document.getElementById('f-cpu-req');
+    if (parseFloat(reqEl.value) < minCpu) {
+      reqEl.value = minCpu;
+      reqEl.style.borderColor = '#f59e0b';
     } else {
-      el.style.borderColor = '';
+      reqEl.style.borderColor = '';
+    }
+    // Enforce floor on CPU Maximum — cannot go below matrix floor
+    var limEl = document.getElementById('f-cpu-lim');
+    if (parseFloat(limEl.value) < minCpu) {
+      limEl.value = minCpu;
+      limEl.style.borderColor = '#f59e0b';
+    } else {
+      limEl.style.borderColor = '';
     }
   }
 };
@@ -365,12 +376,21 @@ window.enforceFloorRam = function () {
   if (!entry) return;
   var minRam = _parseRamGi(entry.min_ram || '0');
   if (minRam > 0) {
-    var el = document.getElementById('f-mem-req');
-    if (_parseRamGi(el.value) < minRam) {
-      el.value = _formatRam(entry.min_ram);
-      el.style.borderColor = '#f59e0b';
+    // Enforce floor on RAM Minimum
+    var reqEl = document.getElementById('f-mem-req');
+    if (_parseRamGi(reqEl.value) < minRam) {
+      reqEl.value = _formatRam(entry.min_ram);
+      reqEl.style.borderColor = '#f59e0b';
     } else {
-      el.style.borderColor = '';
+      reqEl.style.borderColor = '';
+    }
+    // Enforce floor on RAM Maximum — cannot go below matrix floor
+    var limEl = document.getElementById('f-mem-lim');
+    if (_parseRamGi(limEl.value) < minRam) {
+      limEl.value = _formatRam(entry.min_ram);
+      limEl.style.borderColor = '#f59e0b';
+    } else {
+      limEl.style.borderColor = '';
     }
   }
 };
