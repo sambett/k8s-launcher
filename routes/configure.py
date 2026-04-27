@@ -117,9 +117,15 @@ def _get_pause_image(cp: ControlPlane, kubernetes_version: str) -> str:
       The fallback is a safety net, not the primary path.
     """
     # ── Primary: ask kubeadm on the control plane ──────────────────────────────
+    # BUG FIX: get_client_with_key(ip, user) — do NOT pass SSH_KEY_PATH as a
+    # third argument. The function signature is (ip, ssh_user, timeout=10).
+    # The key path is already hardcoded inside get_client_with_key via
+    # key_filename=str(SSH_KEY_PATH). Passing it as positional arg 3 silently
+    # assigns it to `timeout`, which causes Paramiko to raise TypeError on
+    # sock.settimeout() and drops into the except block every time.
     client = None
     try:
-        client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+        client = get_client_with_key(cp.ip, cp.ssh_user)
         out, _, rc = run_command(
             client,
             f"kubeadm config images list --kubernetes-version {kubernetes_version} "
@@ -247,6 +253,7 @@ longhorn_artifacts_dir:              "/home/{cp.ssh_user}/cluster-artifacts/long
 pause_image: "{pause_image}"
 """
 
+
 # ── cplane → workers SSH wiring ────────────────────────────────────────────────
 
 def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict:
@@ -266,6 +273,11 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
       Step 3 — For each worker: push cplane's pubkey into authorized_keys
       Step 4 — On cplane: run ssh-keyscan for each worker IP
                 → populate cplane's known_hosts so no fingerprint prompt fires
+
+    BUG FIX: all get_client_with_key() calls use only (ip, user). The third
+    parameter is timeout, not key path — the key is already wired inside the
+    function. Passing str(SSH_KEY_PATH) as arg 3 caused TypeError in Paramiko's
+    sock.settimeout() on every call, silently breaking all SSH wiring here.
     """
     if not workers:
         return {"status": "skipped", "message": "No workers to wire"}
@@ -275,7 +287,7 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
     # ── Steps 1 & 2 — generate cplane keypair if missing, read pubkey ─────────
     cp_client = None
     try:
-        cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+        cp_client = get_client_with_key(cp.ip, cp.ssh_user)
 
         _, _, rc = run_command(cp_client, "test -f ~/.ssh/id_ed25519.pub")
         if rc != 0:
@@ -309,7 +321,7 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
         w_client = None
         try:
             # Connect to worker using the CONTROLLER's key (bootstrap already pushed it)
-            w_client = get_client_with_key(worker.ip, worker.ssh_user, str(SSH_KEY_PATH))
+            w_client = get_client_with_key(worker.ip, worker.ssh_user)
 
             cmds = [
                 "mkdir -p ~/.ssh",
@@ -350,7 +362,7 @@ def _wire_cplane_to_workers(cp: ControlPlane, workers: List[WorkerNode]) -> dict
     # known_hosts gets the worker fingerprints.
     cp_client = None
     try:
-        cp_client = get_client_with_key(cp.ip, cp.ssh_user, str(SSH_KEY_PATH))
+        cp_client = get_client_with_key(cp.ip, cp.ssh_user)
 
         for worker in workers:
             scan_out, _, _ = run_command(
@@ -390,11 +402,14 @@ async def configure(config: ClusterConfig):
     pause_image is derived here — not in _make_group_vars — because it requires
     an SSH call to the control plane. _make_group_vars is a pure string builder
     and must not have side effects. The derived value is passed in as a parameter.
+
+    BUG FIX: the top-level response status is now "error" when the SSH wiring
+    step fails. Previously it always returned "ok", hiding the failure from the
+    UI and from the operator. Files are still written on SSH wiring failure —
+    inventory and group_vars are valid — but the operator must know to re-run
+    or investigate before relying on cplane→worker SSH.
     """
     # 1. Derive pause_image from the control plane before writing group_vars.
-    #    This ensures the value is always correct for the chosen k8s version.
-    #    _get_pause_image() falls back to a version-derived value if the
-    #    control plane is unreachable at configure time.
     pause_image = _get_pause_image(config.control_plane, config.kubernetes_version)
 
     # 2. Write generated files — inventory and group_vars
@@ -403,14 +418,17 @@ async def configure(config: ClusterConfig):
     replica_count, soft_anti = _replica_settings(len(config.workers))
 
     # 3. Write ansible.cfg to all Ansible projects (always overwrite)
-    #    Uses shared helper from core.ansible_cfg — same function as bootstrap.
     cfgs_written = write_ansible_cfgs()
 
     # 4. Wire cplane → workers passwordless SSH
     wire_report = _wire_cplane_to_workers(config.control_plane, config.workers)
 
+    # Surface SSH wiring failures to the caller — do not claim success when
+    # a critical trust path was not established.
+    top_status = "error" if wire_report.get("status") == "error" else "ok"
+
     return {
-        "status": "ok",
+        "status": top_status,
         "files": {
             "inventory":  str(INVENTORY_PATH),
             "group_vars": str(VARS_PATH)
