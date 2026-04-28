@@ -20,6 +20,9 @@ hub:
         - openid
       username_claim: username
       enable_auth_state: true
+    KubeSpawner:
+      start_timeout: 300
+      http_timeout: 120
 
   extraEnv:
     GITLAB_CLIENT_ID:

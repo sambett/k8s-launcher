@@ -517,4 +517,24 @@ async function doResetVm() {
   }
 }
 
+
+async function removeGhost(hostname, ip) {
+  if (!confirm('Remove ghost entry for ' + hostname + ' (' + ip + ') from inventory?')) return;
+  try {
+    const r = await fetch('/api/cluster/remove-ghost', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname, ip }),
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      loadWorkerNodes();
+    } else {
+      alert('Not removed: ' + d.message);
+    }
+  } catch(e) {
+    alert('Request failed: ' + e);
+  }
+}
+
 </script>
