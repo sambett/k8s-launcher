@@ -21,7 +21,11 @@ spec:
           operations: ["CREATE"]
     preconditions:
       all:
-      - key: "{{ request.object.spec.containers[0].resources.limits.\"nvidia.com/gpu\" || '0' }}"
+      - # containers[0] is intentional — JupyterHub always spawns single-container pods.
+        # containers[] returns an array; scalar operators (GreaterThan) cannot evaluate
+        # an array and the Kyverno webhook rejects the expression at admission time.
+        # Do not change this to containers[] without understanding that constraint.
+        key: "{{ request.object.spec.containers[0].resources.limits.\"nvidia.com/gpu\" || '0' }}"
         operator: GreaterThan
         value: "0"
     validate:
