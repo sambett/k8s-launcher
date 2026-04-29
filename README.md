@@ -10,6 +10,7 @@ on bare Ubuntu VMs — no Ansible or Kubernetes knowledge required.
 ### Install dependencies
 
 ```bash
+sudo apt update && sudo apt install -y python3-pip
 cd ~/k8s-launcher
 pip3 install -r requirements.txt
 ```
