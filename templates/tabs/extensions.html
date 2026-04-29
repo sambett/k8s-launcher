@@ -26,6 +26,35 @@
       <button class="btn btn-ghost btn-sm" onclick="loadPrereqNodes()">&#8634; Refresh</button>
       <span id="prereq-check-status" style="font-size:.82rem;color:#666"></span>
     </div>
+    <!-- Manual prerequisites info banner -->
+    <div style="background:#e3f2fd;border:1px solid #90caf9;border-left:4px solid #1565c0;
+                border-radius:6px;padding:.75rem 1rem;margin-bottom:.9rem;font-size:.8rem;
+                color:#0d47a1;line-height:1.8">
+      <strong>&#8505; Before running this check</strong> &mdash;
+      the following steps must be completed <strong>manually on the GPU node</strong>
+      before this platform can configure it:
+      <ol style="margin:.45rem 0 0 1.3rem;padding:0;color:#1a237e">
+        <li>
+          <strong>Install NVIDIA driver</strong> &mdash;
+          <code style="background:#bbdefb;border-radius:3px;padding:1px 5px;font-size:.75rem">
+            sudo apt install nvidia-driver-&lt;version&gt; &amp;&amp; sudo reboot
+          </code>
+          then verify with <code style="background:#bbdefb;border-radius:3px;padding:1px 5px;font-size:.75rem">nvidia-smi</code>
+        </li>
+        <li style="margin-top:.3rem">
+          <strong>Install NVIDIA Container Toolkit</strong> &mdash;
+          <code style="background:#bbdefb;border-radius:3px;padding:1px 5px;font-size:.75rem">
+            sudo apt install nvidia-container-toolkit
+          </code>
+          &nbsp;(requires the NVIDIA apt repo)
+        </li>
+      </ol>
+      <div style="margin-top:.5rem;color:#1565c0;font-size:.77rem">
+        This platform automates <strong>only</strong> step&nbsp;3 (containerd runtime config)
+        and step&nbsp;4 is verified automatically after restart.
+        All four checks must be green before installing the Device Plugin.
+      </div>
+    </div>
     <p style="font-size:.82rem;color:#888;margin-bottom:1rem;line-height:1.6">
       Driver and toolkit must be installed manually on the node.
       The containerd runtime configuration is the only step this platform fixes automatically.
@@ -53,8 +82,10 @@
         style="display:none;margin-top:.75rem;padding:.6rem 1rem;
                background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;
                font-size:.82rem;color:#2e7d32">
-        &#10003; All prerequisites satisfied &#8212;
-        proceed to <strong>Device Plugin install</strong> below.
+        &#10003; All prerequisites satisfied &mdash;
+        driver detected &middot; toolkit installed &middot;
+        containerd configured &middot; runtime loaded.
+        You may proceed to <strong>Device Plugin install</strong> below.
       </div>
     </div>
 
@@ -188,6 +219,29 @@
           : 'not configured for NVIDIA runtime')
       + '</td>'
       + '<td style="padding:.6rem 1rem">' + cAction + '</td>'
+      + '</tr>'
+    );
+
+    // ── Runtime loaded (check 4) ──────────────────────────────────────────────
+    var rOk = d.runtime_loaded && d.runtime_loaded.status === 'ok';
+    if (!rOk) allOk = false;
+    var rAction = '';
+    if (!rOk) {
+      rAction = '<button class="btn btn-sm btn-success" onclick="fixNodeContainerd(\''
+        + _e(d.node) + '\')">Restart containerd \u2192</button>';
+    }
+    rows.push(
+      '<tr>'
+      + '<td style="padding:.6rem 1rem;font-weight:500;color:#333;white-space:nowrap">Runtime loaded</td>'
+      + '<td style="padding:.6rem 1rem">'
+      + _badge(rOk, false, rOk ? '\u2713 active' : '\u2717 not loaded')
+      + '</td>'
+      + '<td style="padding:.6rem 1rem;color:#666;font-size:.8rem">'
+      + (rOk
+          ? 'nvidia runtime confirmed active in containerd (config dump \u2713)'
+          : 'containerd has not loaded the NVIDIA runtime \u2014 restart required')
+      + '</td>'
+      + '<td style="padding:.6rem 1rem">' + rAction + '</td>'
       + '</tr>'
     );
 

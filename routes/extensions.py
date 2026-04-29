@@ -577,25 +577,35 @@ async def gfd_nodes():
 @router.get("/api/extensions/gpu/node-prereqs")
 async def gpu_node_prereqs(node: str):
     """
-    Check GPU prerequisites on a specific worker node:
-      1. NVIDIA driver     — via nvidia-smi
-      2. Container Toolkit — via nvidia-ctk --version (min 1.7.0)
-      3. containerd config — grep nvidia-container-runtime in config.toml
+    Check GPU prerequisites on a specific worker node.
+    All 4 must pass before the Device Plugin install is meaningful.
 
-    node is the K8s node name — resolved to inventory hostname via IP before
-    running Ansible so checks work even when the names differ.
+      1. NVIDIA driver     - nvidia-smi reports a recognised GPU
+      2. Container Toolkit - nvidia-ctk >= 1.7.0 installed on the node
+      3. containerd config - NVIDIA runtime block written under /etc/containerd/
+                             (covers both config.toml and conf.d/99-nvidia.toml)
+      4. Runtime loaded    - containerd config dump confirms the runtime is
+                             ACTIVE in the running daemon (not just on disk)
+
+    node is the K8s node name, resolved to inventory hostname via IP lookup
+    so the check works even when kubeadm registered a different name.
     """
     inv_hostname = _resolve_inventory_hostname(node)
     result = {"node": node, "inv_hostname": inv_hostname}
 
-    # 1. Driver
+    # 1. NVIDIA driver
     drv, _ = _run_on_node(
         inv_hostname,
-        "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null | head -1 || echo NOT_FOUND"
+        "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null"
+        " | head -1 || echo NOT_FOUND"
     )
     if drv and drv != "NOT_FOUND" and "," in drv:
         parts = [p.strip() for p in drv.split(",", 1)]
-        result["driver"] = {"status": "ok", "version": parts[0], "gpu_name": parts[1] if len(parts) > 1 else ""}
+        result["driver"] = {
+            "status":   "ok",
+            "version":  parts[0],
+            "gpu_name": parts[1] if len(parts) > 1 else "",
+        }
     elif drv and drv != "NOT_FOUND":
         result["driver"] = {"status": "ok", "version": drv, "gpu_name": ""}
     else:
@@ -615,14 +625,17 @@ async def gpu_node_prereqs(node: str):
                 meets = [int(x) for x in ver.split(".")] >= [1, 7, 0]
             except Exception:
                 pass
-        result["toolkit"] = {"status": "ok" if meets else "outdated", "version": ver, "meets_minimum": meets}
+        result["toolkit"] = {
+            "status":       "ok" if meets else "outdated",
+            "version":      ver,
+            "meets_minimum": meets,
+        }
     else:
         result["toolkit"] = {"status": "missing", "version": "", "meets_minimum": False}
 
-    # 3. containerd NVIDIA runtime
-    # nvidia-ctk writes to /etc/containerd/conf.d/99-nvidia.toml — NOT config.toml.
-    # We search /etc/containerd/ recursively so the check works regardless of
-    # which sub-path nvidia-ctk chose on this OS version.
+    # 3. containerd config file present
+    # nvidia-ctk writes to /etc/containerd/conf.d/99-nvidia.toml, NOT config.toml.
+    # Recursive search covers both paths regardless of containerd version.
     ctd, _ = _run_on_node(
         inv_hostname,
         "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | wc -l"
@@ -634,18 +647,32 @@ async def gpu_node_prereqs(node: str):
 
     conf_path, _ = _run_on_node(
         inv_hostname,
-        "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | head -1 || echo not found"
+        "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null"
+        " | head -1 || echo not found"
     )
-
     result["containerd"] = {
         "status":      "ok" if configured else "not_configured",
         "fixable":     result["toolkit"]["status"] == "ok",
         "config_path": conf_path.strip(),
     }
+
+    # 4. Runtime loaded — containerd config dump reflects the EFFECTIVE running
+    #    config including all conf.d drop-ins.
+    #    Catches "file written but containerd not yet restarted" edge case.
+    cdump, _ = _run_on_node(
+        inv_hostname,
+        "containerd config dump 2>/dev/null | grep -c nvidia-container-runtime || echo 0"
+    )
+    try:
+        runtime_loaded = int(cdump.strip()) > 0
+    except Exception:
+        runtime_loaded = False
+
+    result["runtime_loaded"] = {
+        "status": "ok" if runtime_loaded else "not_loaded",
+    }
+
     return result
-
-
-# ── Fix node — blocking JSON (kept for backward compatibility) ──────────────
 
 @router.post("/api/extensions/gpu/fix-node")
 async def fix_gpu_node(body: NodeAction):
