@@ -1,5 +1,36 @@
 <div id="page-images" class="page">
   <h2>Import Image</h2>
+
+  <div style="
+    background:#1a1f2e;
+    border:1px solid #f59e0b;
+    border-left:4px solid #f59e0b;
+    border-radius:6px;
+    padding:1rem 1.2rem;
+    margin-bottom:1.4rem;
+    font-size:.8rem;
+    line-height:1.8;
+    color:#cbd5e1">
+    <div style="font-weight:700;color:#fbbf24;margin-bottom:.4rem">
+      ⚠ JupyterHub Compatibility Requirement
+    </div>
+    Images imported here are used as <strong>notebook servers</strong> spawned by JupyterHub.
+    They must have <code style="color:#a78bfa">jupyterhub-singleuser</code> installed and set as the container entrypoint —
+    otherwise the server will start and exit immediately, causing a spawn timeout.<br><br>
+    <strong style="color:#e2e8f0">✓ Verified working sources (quay.io only — Docker Hub images are no longer updated):</strong>
+    <ul style="margin:.4rem 0 0 1.2rem;padding:0;color:#94a3b8">
+      <li><code>quay.io/jupyter/scipy-notebook:2025-12-31</code> — Python + SciPy + pandas (CPU)</li>
+      <li><code>quay.io/jupyter/datascience-notebook:2025-12-31</code> — Python + R + Julia (CPU)</li>
+      <li><code>quay.io/jupyter/pytorch-notebook:x86_64-cuda12-hub-4.1.5</code> — PyTorch + CUDA 12 (GPU)</li>
+      <li><code>quay.io/jupyter/tensorflow-notebook:cuda-latest</code> — TensorFlow + CUDA (GPU)</li>
+    </ul>
+    <div style="margin-top:.6rem;color:#64748b">
+      ⚠ NVIDIA base images (e.g. <code>nvcr.io/nvidia/pytorch:*</code>) do <strong>not</strong> include
+      <code>jupyterhub-singleuser</code> and will fail to spawn.
+      Large images (&gt;5 GB) may time out during import on slow connections — retry if skopeo exits mid-transfer.
+    </div>
+  </div>
+
   <div class="card">
     <div style="font-size:.78rem;color:#64748b;margin-bottom:1.2rem;line-height:1.7">
       Pull an image from any public registry, retag it, and push it into the GitLab registry.
@@ -8,7 +39,7 @@
     <div class="grid2">
       <div class="fg" style="grid-column:1/-1">
         <label>Source Image (full reference)</label>
-        <input id="img-source" placeholder="e.g. docker.io/jupyter/scipy-notebook:2024-01-15"/>
+        <input id="img-source" placeholder="e.g. quay.io/jupyter/scipy-notebook:2025-12-31"/>
       </div>
       <div class="fg">
         <label>Target Repository
@@ -27,7 +58,7 @@
       <div class="fg">
         <label>Target Tag</label>
         <input id="img-tag"
-          placeholder="e.g. scipy-2024"
+          placeholder="e.g. scipy-2025"
           oninput="sanitizeSlug(this)"/>
       </div>
     </div>
