@@ -3,6 +3,7 @@ routes/images.py — All /api/images/* endpoints.
 Handles image import and tag deletion for the GitLab registry.
 Delete is blocked if any profile references the tag — prevents orphaned profiles.
 Import runs as a background thread — HTTP returns immediately with a job ID.
+Supports optional source credentials for private registries (Harbor, Nexus, GitLab, etc).
 """
 
 import shutil
@@ -83,9 +84,10 @@ def _profiles_using_tag(repo_name, tag_name):
     return blocking
 
 
-def run_import(job_id, source, target):
+def run_import(job_id, source, target, src_user=None, src_pass=None):
     """
     Copy image from source registry to GitLab registry using skopeo.
+    Supports optional source credentials for private registries.
     To swap backend: replace this function only.
     """
     token = get_token()
@@ -95,13 +97,26 @@ def run_import(job_id, source, target):
         f"docker://{target}",
         "--dest-creds", f"root:{token}",
         "--dest-tls-verify=false",
-        "--src-tls-verify=true",
     ]
 
+    # Private source registry: inject credentials and disable TLS verification.
+    # Public sources keep src-tls-verify=true (default).
+    if src_user and src_pass:
+        cmd += ["--src-creds", f"{src_user}:{src_pass}"]
+        cmd += ["--src-tls-verify=false"]
+    else:
+        cmd += ["--src-tls-verify=true"]
+
+    # Build a safe version of the command for logging — mask both tokens.
     safe_cmd = " ".join(cmd).replace(token, "****")
+    if src_pass:
+        safe_cmd = safe_cmd.replace(src_pass, "****")
+
     _append_log(job_id, f"▶ Running: {safe_cmd}")
     _append_log(job_id, f"  Source: {source}")
     _append_log(job_id, f"  Target: {target}")
+    if src_user:
+        _append_log(job_id, f"  Source auth: {src_user}:****")
     _append_log(job_id, "")
 
     try:
@@ -150,6 +165,8 @@ def api_import_start():
     source      = (body.get("source")      or "").strip()
     target_repo = (body.get("target_repo") or "").strip()
     target_tag  = (body.get("target_tag")  or "").strip()
+    src_user    = (body.get("src_user")    or "").strip()
+    src_pass    = (body.get("src_pass")    or "").strip()
 
     if not source:
         return jsonify({"error": "Missing field: source"}), 400
@@ -157,6 +174,10 @@ def api_import_start():
         return jsonify({"error": "Missing field: target_repo"}), 400
     if not target_tag:
         return jsonify({"error": "Missing field: target_tag"}), 400
+
+    # Validate: if one credential field is set, both must be set.
+    if bool(src_user) != bool(src_pass):
+        return jsonify({"error": "Provide both src_user and src_pass, or neither"}), 400
 
     target = f"{_registry_host()}/{_registry_namespace()}/{target_repo}:{target_tag}"
 
@@ -170,7 +191,12 @@ def api_import_start():
             "started_at": datetime.utcnow().isoformat(),
         }
 
-    t = threading.Thread(target=run_import, args=(job_id, source, target), daemon=True)
+    t = threading.Thread(
+        target=run_import,
+        args=(job_id, source, target),
+        kwargs={"src_user": src_user or None, "src_pass": src_pass or None},
+        daemon=True
+    )
     t.start()
 
     return jsonify({

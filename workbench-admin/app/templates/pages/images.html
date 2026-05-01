@@ -6,34 +6,22 @@
     border:1px solid #f59e0b;
     border-left:4px solid #f59e0b;
     border-radius:6px;
-    padding:1rem 1.2rem;
+    padding:.8rem 1.1rem;
     margin-bottom:1.4rem;
-    font-size:.8rem;
-    line-height:1.8;
-    color:#cbd5e1">
-    <div style="font-weight:700;color:#fbbf24;margin-bottom:.4rem">
-      ⚠ JupyterHub Compatibility Requirement
-    </div>
-    Images imported here are used as <strong>notebook servers</strong> spawned by JupyterHub.
-    They must have <code style="color:#a78bfa">jupyterhub-singleuser</code> installed and set as the container entrypoint —
-    otherwise the server will start and exit immediately, causing a spawn timeout.<br><br>
-    <strong style="color:#e2e8f0">✓ Verified working sources (quay.io only — Docker Hub images are no longer updated):</strong>
-    <ul style="margin:.4rem 0 0 1.2rem;padding:0;color:#94a3b8">
-      <li><code>quay.io/jupyter/scipy-notebook:2025-12-31</code> — Python + SciPy + pandas (CPU)</li>
-      <li><code>quay.io/jupyter/datascience-notebook:2025-12-31</code> — Python + R + Julia (CPU)</li>
-      <li><code>quay.io/jupyter/pytorch-notebook:x86_64-cuda12-hub-4.1.5</code> — PyTorch + CUDA 12 (GPU)</li>
-      <li><code>quay.io/jupyter/tensorflow-notebook:cuda-latest</code> — TensorFlow + CUDA (GPU)</li>
-    </ul>
-    <div style="margin-top:.6rem;color:#64748b">
-      ⚠ NVIDIA base images (e.g. <code>nvcr.io/nvidia/pytorch:*</code>) do <strong>not</strong> include
-      <code>jupyterhub-singleuser</code> and will fail to spawn.
-      Large images (&gt;5 GB) may time out during import on slow connections — retry if skopeo exits mid-transfer.
-    </div>
+    font-size:.78rem;
+    line-height:1.7;
+    color:#94a3b8">
+    <strong style="color:#fbbf24">⚠ Images must be JupyterHub-compatible.</strong>
+    The notebook server requires <code style="color:#a78bfa">jupyterhub-singleuser</code>
+    to be installed inside the image. Generic NVIDIA or PyTorch base images will fail to spawn.
+    Use images from <code style="color:#a78bfa">quay.io/jupyter/*</code> or any image built
+    on the Jupyter Docker Stacks. For private registries (Harbor, Nexus, another GitLab),
+    expand <strong>Source Credentials</strong> below and provide your username and token.
   </div>
 
   <div class="card">
     <div style="font-size:.78rem;color:#64748b;margin-bottom:1.2rem;line-height:1.7">
-      Pull an image from any public registry, retag it, and push it into the GitLab registry.
+      Pull an image from any public or private registry, retag it, and push it into the GitLab registry.
       The imported image will appear in <strong>New Profile</strong> immediately after import.
     </div>
     <div class="grid2">
@@ -41,6 +29,31 @@
         <label>Source Image (full reference)</label>
         <input id="img-source" placeholder="e.g. quay.io/jupyter/scipy-notebook:2025-12-31"/>
       </div>
+
+      <!-- Source credentials toggle -->
+      <div class="fg" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;user-select:none">
+          <input type="checkbox" id="src-creds-toggle"
+            onchange="document.getElementById('src-creds-box').style.display=this.checked?'grid':'none'"
+            style="width:14px;height:14px;cursor:pointer"/>
+          <span style="font-size:.78rem;color:#94a3b8">Source requires credentials (private registry)</span>
+        </label>
+      </div>
+      <div id="src-creds-box" style="display:none;grid-column:1/-1;grid-template-columns:1fr 1fr;gap:1rem">
+        <div class="fg">
+          <label>Source Username</label>
+          <input id="src-user" placeholder="e.g. admin" autocomplete="off"/>
+        </div>
+        <div class="fg">
+          <label>Source Password / Token</label>
+          <input id="src-pass" type="password" placeholder="password or access token" autocomplete="off"/>
+        </div>
+        <div style="grid-column:1/-1;font-size:.72rem;color:#64748b;margin-top:-.5rem">
+          Credentials are passed directly to skopeo and never stored. TLS verification is
+          disabled automatically for private registries — ensure your network trusts the source.
+        </div>
+      </div>
+
       <div class="fg">
         <label>Target Repository
           <button class="btn btn-ghost btn-sm" style="float:right" onclick="loadImportRepos()">↺</button>
@@ -200,13 +213,22 @@ async function deleteTag(repoId, tagName, repoName) {
 }
 
 async function startImport() {
-  const source = document.getElementById('img-source').value.trim();
-  const repo   = document.getElementById('img-repo').value.trim();
-  const tag    = document.getElementById('img-tag').value.trim();
+  const source  = document.getElementById('img-source').value.trim();
+  const repo    = document.getElementById('img-repo').value.trim();
+  const tag     = document.getElementById('img-tag').value.trim();
+  const useCreds = document.getElementById('src-creds-toggle').checked;
+  const srcUser = useCreds ? document.getElementById('src-user').value.trim() : '';
+  const srcPass = useCreds ? document.getElementById('src-pass').value.trim() : '';
+
   if (!source || !repo || !tag) {
     alert('Fill in all three fields before importing.');
     return;
   }
+  if (useCreds && (!srcUser || !srcPass)) {
+    alert('Source credentials enabled — please fill in both username and password/token.');
+    return;
+  }
+
   clearInterval(_pollTimer);
   const logCard = document.getElementById('import-log-card');
   const logBox  = document.getElementById('import-log');
@@ -220,10 +242,13 @@ async function startImport() {
   doneMsg.style.display = 'none';
   btn.disabled          = true;
 
+  const body = { source, target_repo: repo, target_tag: tag };
+  if (useCreds) { body.src_user = srcUser; body.src_pass = srcPass; }
+
   const res  = await fetch('/api/images/import', {
     method:  'POST',
     headers: {'Content-Type': 'application/json'},
-    body:    JSON.stringify({ source, target_repo: repo, target_tag: tag })
+    body:    JSON.stringify(body)
   });
   const data = await res.json();
   if (!res.ok) {
