@@ -106,11 +106,13 @@
 </div>
 
 <script>
+function gcStripProtocol(val) {
+  return val.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
 function gcUpdatePreview() {
-  const url    = document.getElementById('gc-url').value.trim();
-  const ip     = document.getElementById('gc-worker-ip').value.trim();
-  const port   = document.getElementById('gc-nodeport').value.trim();
-  const prev   = document.getElementById('gc-callback-preview');
+  const ip   = gcStripProtocol(document.getElementById('gc-worker-ip').value.trim());
+  const port = document.getElementById('gc-nodeport').value.trim();
+  const prev = document.getElementById('gc-callback-preview');
   if (ip && port) {
     prev.textContent = 'OAuth callback → http://' + ip + ':' + port + '/hub/oauth_callback';
     prev.style.display = 'block';
@@ -124,7 +126,7 @@ async function gcConfigure() {
   const body = {
     gitlab_url:      document.getElementById('gc-url').value.trim(),
     admin_token:     document.getElementById('gc-token').value.trim(),
-    worker_ip:       document.getElementById('gc-worker-ip').value.trim(),
+    worker_ip:       gcStripProtocol(document.getElementById('gc-worker-ip').value.trim()),
     worker_nodeport: parseInt(document.getElementById('gc-nodeport').value),
   };
   if (!body.gitlab_url || !body.admin_token || !body.worker_ip) {
