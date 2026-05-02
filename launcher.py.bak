@@ -9,7 +9,7 @@ import uvicorn
 from core.paths import TEMPLATES_DIR
 from routes import (
     bootstrap, preflight, configure,
-    gitlab, gitlab_connect, k8s, longhorn, worker, reset, status,
+    gitlab, k8s, longhorn, worker, reset, status,
     jupyterhub, dashboard_deploy,
     extensions, monitoring, kyverno,
 )
@@ -43,7 +43,6 @@ app.include_router(longhorn.router)
 app.include_router(worker.router)
 app.include_router(reset.router)
 app.include_router(gitlab.router)
-app.include_router(gitlab_connect.router)
 app.include_router(jupyterhub.router)
 app.include_router(dashboard_deploy.router)
 app.include_router(status.router)

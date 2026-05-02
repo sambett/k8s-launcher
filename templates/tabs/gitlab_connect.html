@@ -1,0 +1,206 @@
+<div id="tab-gitlab-connect" class="panel">
+
+  <div style="
+    background:#1a1f2e;
+    border:1px solid #4a9eff;
+    border-left:4px solid #4a9eff;
+    border-radius:6px;
+    padding:.85rem 1.1rem;
+    margin-bottom:1.4rem;
+    font-size:.8rem;
+    line-height:1.8;
+    color:#94a3b8">
+    <strong style="color:#7dd3fc">ℹ Already have a running GitLab instance?</strong>
+    Use this tab to connect it to the platform without reinstalling anything.
+    The launcher will create the required group, project, deploy token, and OAuth app
+    via the GitLab API — no SSH, no <code>gitlab-ctl reconfigure</code>, no data loss.
+    Your existing users and groups are never touched.
+  </div>
+
+  <div class="card">
+    <h2>Step 1 — Validate connection</h2>
+    <div class="card-hint">
+      Provide your GitLab URL and an admin Personal Access Token with
+      <code>api</code> scope. The token is validated immediately — it is never stored
+      on disk in plain text beyond this session.
+    </div>
+
+    <div class="field-row">
+      <label>GitLab URL</label>
+      <input type="text" id="gc-url"
+        placeholder="e.g. http://10.110.188.65"
+        oninput="gcUpdatePreview()"/>
+    </div>
+    <div class="field-row">
+      <label>Admin PAT</label>
+      <input type="password" id="gc-token"
+        placeholder="glpat-xxxxxxxxxxxx"/>
+    </div>
+    <div class="field-row">
+      <label>JupyterHub worker IP</label>
+      <input type="text" id="gc-worker-ip"
+        placeholder="worker node IP — where JupyterHub NodePort is reachable"
+        oninput="gcUpdatePreview()"/>
+    </div>
+    <div class="field-row">
+      <label>JupyterHub NodePort</label>
+      <input type="number" id="gc-nodeport" value="32080"
+        oninput="gcUpdatePreview()"/>
+    </div>
+
+    <div id="gc-callback-preview"
+      style="display:none;font-size:12px;color:#1565c0;background:#e3f2fd;
+             padding:5px 10px;border-radius:4px;margin-top:.4rem"></div>
+
+    <button class="btn btn-primary" style="margin-top:.75rem"
+      onclick="gcConfigure()">Validate &amp; save</button>
+    <div id="r-gc-cfg" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Step 2 — Connect</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Creates the <code>registry/notebook-images</code> project (if missing),
+      rotates the deploy token and OAuth app, writes
+      <code>generated/gitlab-outputs.json</code>, then configures the
+      containerd registry on all cluster nodes.
+    </p>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="btn btn-primary" onclick="gcConnect()">Connect GitLab</button>
+      <span class="dot" id="dot-gc"></span>
+      <span id="gc-connect-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Connect log</h2>
+    <div class="log" id="gc-log">Waiting...</div>
+  </div>
+
+  <div class="card" id="gc-outputs-card" style="display:none;border-color:#c8e6c9">
+    <h2 style="color:#2e7d32">✓ GitLab connected</h2>
+    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
+      Credentials saved to
+      <span class="mono">generated/gitlab-outputs.json</span>.
+      JupyterHub and Admin Dashboard tabs will read these automatically.
+    </p>
+    <div id="gc-outputs-body" class="outputs-grid"></div>
+    <div class="info-box" style="margin-top:1rem">
+      GitLab UI: <a id="gc-url-link" href="#" target="_blank"
+        style="color:#1976d2"></a>
+    </div>
+  </div>
+
+  <div id="next-step-gitlab-connect" class="next-step-cta">
+    <span class="cta-icon">✅</span>
+    <div class="cta-text">
+      <div class="cta-title">GitLab connected and credentials saved</div>
+      <div class="cta-sub">Next: deploy JupyterHub using your GitLab instance for authentication</div>
+    </div>
+    <button class="btn btn-primary"
+      onclick="showTab('jupyterhub',document.getElementById('step-jupyterhub'))">
+      Continue to JupyterHub →
+    </button>
+  </div>
+
+</div>
+
+<script>
+function gcUpdatePreview() {
+  const url    = document.getElementById('gc-url').value.trim();
+  const ip     = document.getElementById('gc-worker-ip').value.trim();
+  const port   = document.getElementById('gc-nodeport').value.trim();
+  const prev   = document.getElementById('gc-callback-preview');
+  if (ip && port) {
+    prev.textContent = 'OAuth callback → http://' + ip + ':' + port + '/hub/oauth_callback';
+    prev.style.display = 'block';
+  } else {
+    prev.style.display = 'none';
+  }
+}
+
+async function gcConfigure() {
+  const el   = document.getElementById('r-gc-cfg');
+  const body = {
+    gitlab_url:      document.getElementById('gc-url').value.trim(),
+    admin_token:     document.getElementById('gc-token').value.trim(),
+    worker_ip:       document.getElementById('gc-worker-ip').value.trim(),
+    worker_nodeport: parseInt(document.getElementById('gc-nodeport').value),
+  };
+  if (!body.gitlab_url || !body.admin_token || !body.worker_ip) {
+    el.innerHTML = '<span class="badge b-warn">Fill in all fields.</span>';
+    return;
+  }
+  el.innerHTML = '<span class="badge b-run">Validating token...</span>';
+  const resp = await fetch('/api/gitlab/connect/configure', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify(body),
+  });
+  const d = await resp.json();
+  document.getElementById('gc-token').value = '';
+  if (d.status === 'ok') {
+    el.innerHTML = `<span class="badge b-ok">${d.message}</span>`;
+  } else {
+    el.innerHTML = `<span class="badge b-err">${d.message}</span>`;
+  }
+}
+
+function gcConnect() {
+  const logEl    = document.getElementById('gc-log');
+  const statusEl = document.getElementById('gc-connect-status');
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
+  setDot('dot-gc', 'running');
+
+  const es = new EventSource('/api/gitlab/connect/stream');
+  es.onmessage = async e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-gc', 'ok');
+      statusEl.textContent = 'Complete';
+      es.close();
+      await gcLoadOutputs();
+      document.getElementById('next-step-gitlab-connect').classList.add('visible');
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-gc', 'error');
+      statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data.split(':')[1], logEl);
+      es.close();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => {
+    setDot('dot-gc', 'error');
+    statusEl.textContent = 'Connection lost';
+    es.close();
+  };
+}
+
+async function gcLoadOutputs() {
+  const r = await fetch('/api/gitlab/outputs');
+  const d = await r.json();
+  if (d.status !== 'ok') return;
+  document.getElementById('gc-outputs-card').style.display = 'block';
+  const link = document.getElementById('gc-url-link');
+  link.href        = d.gitlab_url;
+  link.textContent = d.gitlab_url;
+  document.getElementById('gc-outputs-body').innerHTML = `
+    <span style="color:#666">GitLab URL</span>       <span>${d.gitlab_url}</span>
+    <span style="color:#666">Registry host</span>    <span class="mono">${d.registry_host}</span>
+    <span style="color:#666">OAuth client ID</span>  <span class="mono">${d.oauth_client_id}</span>
+    <span style="color:#666">Project ID</span>       <span>${d.project_id}</span>
+    <span style="color:#666">Deploy token user</span><span class="mono">${d.deploy_token_user}</span>
+    <span style="color:#666">Admin token</span>
+      <span class="badge ${d.admin_token_set?'b-ok':'b-err'}">${d.admin_token_set?'✓ saved':'✗ missing'}</span>
+    <span style="color:#666">OAuth secret</span>
+      <span class="badge ${d.oauth_secret_set?'b-ok':'b-err'}">${d.oauth_secret_set?'✓ saved':'✗ missing'}</span>
+    <span style="color:#666">Registry token</span>
+      <span class="badge ${d.deploy_token_pass_set?'b-ok':'b-err'}">${d.deploy_token_pass_set?'✓ saved':'✗ missing'}</span>
+  `;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  gcLoadOutputs();
+});
+</script>

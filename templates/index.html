@@ -42,6 +42,7 @@
   </button>
   <!-- Visual separator between setup flow and utility tabs -->
   <span class="stepper-divider">│</span>
+  <button class="step" id="step-gitlab-connect" onclick="showTab('gitlab-connect',this)">🔗 Attach GitLab</button>
   <button class="step" id="step-kyverno"    onclick="showTab('kyverno',this)">🛡 Kyverno</button>
   <button class="step" id="step-status"     onclick="showTab('status',this)">📊 Status</button>
   <button class="step" id="step-workers"    onclick="showTab('workers',this)">👷 Workers</button>
@@ -56,6 +57,7 @@
 {% include "tabs/configure.html" %}
 {% include "tabs/kubernetes.html" %}
 {% include "tabs/gitlab.html" %}
+{% include "tabs/gitlab_connect.html" %}
 {% include "tabs/jupyterhub.html" %}
 {% include "tabs/dashboard_deploy.html" %}
 

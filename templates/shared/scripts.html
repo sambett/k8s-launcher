@@ -16,6 +16,7 @@ function showTab(name, btn) {
   if (name === 'reset')      loadResetPreview();
   if (name === 'status')     refreshPlatformOverview();
   if (name === 'gitlab')     { if (typeof loadGitLabOutputs   === 'function') loadGitLabOutputs(); }
+  if (name === 'gitlab-connect') { if (typeof gcLoadOutputs === 'function') gcLoadOutputs(); }
   if (name === 'jupyterhub') { if (typeof loadJhubPrefill     === 'function') loadJhubPrefill(); }
   if (name === 'workers')    { if (typeof loadWorkerNodes     === 'function') loadWorkerNodes(); }
   if (name === 'extensions') {
