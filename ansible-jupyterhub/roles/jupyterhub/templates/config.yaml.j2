@@ -133,6 +133,7 @@ hub:
               gpu_count     = int(p.get("gpu", 0))
               kubespawner = {
                   "image":         f"{registry_host}/{reg_ns}/{image_name}:{default_tag}",
+                  "image_pull_policy": "IfNotPresent",
                   "cpu_limit":     float(p.get("cpu_limit", 2)),
                   "cpu_guarantee": float(p.get("cpu_guarantee", 0.5)),
                   "mem_limit":     p.get("mem_limit", "4G"),
