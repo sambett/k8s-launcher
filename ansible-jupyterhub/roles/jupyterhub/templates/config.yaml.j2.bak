@@ -100,65 +100,6 @@ hub:
       import json, os, logging
       log = logging.getLogger(__name__)
 
-      def _ram_steps(mem_guarantee, mem_limit):
-          """
-          Derive discrete RAM choices from admin-defined bounds.
-          Returns a list of memory strings (e.g. ["4G","8G","16G"]) or None
-          when min == max (no dropdown needed, fixed value used instead).
-
-          Rules:
-            - always includes exact minimum (mem_guarantee)
-            - includes friendly intermediate sizes strictly inside the range
-            - always includes exact maximum (mem_limit)
-
-          Applies to ALL profile types (cpu and gpu alike).
-          GPU profile floors are already enforced at save time in profiles.py,
-          so mem_guarantee is already a safe lower bound before we get here.
-          """
-          import re as _re
-
-          def _to_g(val):
-              s = str(val).strip()
-              m = _re.match(r'^([0-9.]+)\s*(G|Gi|M|Mi)?$', s, _re.IGNORECASE)
-              if not m:
-                  return None
-              n = float(m.group(1))
-              u = (m.group(2) or 'G').upper()
-              if u in ('M', 'MI'):
-                  return n / 1024.0
-              return n  # G and Gi treated identically here
-
-          lo = _to_g(mem_guarantee)
-          hi = _to_g(mem_limit)
-
-          # No dropdown if either value is unparseable or bounds are equal.
-          if lo is None or hi is None or lo >= hi:
-              return None
-
-          # Candidate friendly sizes in G. Any that fall strictly between
-          # lo and hi are included. lo and hi are always included regardless.
-          candidates = [1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128]
-
-          steps = [lo]
-          for c in candidates:
-              if lo < float(c) < hi:
-                  steps.append(float(c))
-          steps.append(hi)
-
-          # Deduplicate while preserving order (lo == a candidate is possible)
-          seen = set()
-          deduped = []
-          for v in steps:
-              if v not in seen:
-                  seen.add(v)
-                  deduped.append(v)
-
-          def _fmt(v):
-              # Emit clean strings: "4G" not "4.0G"
-              return (str(int(v)) + 'G') if v == int(v) else (str(v) + 'G')
-
-          return [_fmt(v) for v in deduped]
-
       async def profile_list(spawner):
           auth_state = await spawner.user.get_auth_state()
           if not auth_state:
@@ -183,7 +124,6 @@ hub:
           except Exception as e:
               log.error("Failed to read profiles.json: %s", e)
               return []
-
           def build_profile(p):
               registry_host = os.environ.get("REGISTRY_HOST", "{{ jhub_registry_host }}")
               reg_ns        = os.environ.get("REGISTRY_NAMESPACE", "{{ jhub_registry_namespace }}")
@@ -191,75 +131,44 @@ hub:
               image_options = p.get("image_options", [])
               default_tag   = image_options[0] if image_options else "latest"
               gpu_count     = int(p.get("gpu", 0))
-
               kubespawner = {
-                  "image":             f"{registry_host}/{reg_ns}/{image_name}:{default_tag}",
+                  "image":         f"{registry_host}/{reg_ns}/{image_name}:{default_tag}",
                   "image_pull_policy": "IfNotPresent",
-                  "cpu_limit":         float(p.get("cpu_limit", 2)),
-                  "cpu_guarantee":     float(p.get("cpu_guarantee", 0.5)),
+                  "cpu_limit":     float(p.get("cpu_limit", 2)),
+                  "cpu_guarantee": float(p.get("cpu_guarantee", 0.5)),
+                  "mem_limit":     p.get("mem_limit", "4G"),
+                  "mem_guarantee": p.get("mem_guarantee", "1G"),
                   "image_pull_secrets": ["gitlab-registry-secret"],
                   # Pod labels — read by Kyverno to enforce per-group GPU quotas.
+                  # Kyverno matches on workbench/gitlab-group to find the right policy.
                   "extra_labels": {
                       "workbench/gitlab-group": p.get("gitlab_group", "unknown"),
                       "workbench/profile-slug":  p.get("slug", "unknown"),
                   },
               }
-
-              # RAM: derive user-selectable steps from the admin-defined bounds.
-              # When min == max, _ram_steps returns None and we fall through to
-              # the fixed-value path — behaviour is identical to before this change.
-              # When min != max, RAM values are provided via profile_options below
-              # and must NOT be set here — the choice override takes effect instead.
-              ram_steps = _ram_steps(
-                  p.get("mem_guarantee", "1G"),
-                  p.get("mem_limit",     "4G")
-              )
-              if not ram_steps:
-                  # Fixed RAM — no dropdown rendered, pod always gets these values.
-                  kubespawner["mem_limit"]     = p.get("mem_limit",     "4G")
-                  kubespawner["mem_guarantee"] = p.get("mem_guarantee", "1G")
-
-              # GPU-specific additions — only when profile has gpu > 0.
-              # RAM freedom applies here too: GPU profile floors are enforced at
-              # save time in profiles.py, so mem_guarantee is already safe.
               if gpu_count > 0:
                   kubespawner["extra_resource_limits"] = {"nvidia.com/gpu": str(gpu_count)}
+                  # FIX: Read the exact nodeSelector stored by workbench-admin at profile
+                  # creation time instead of the old hardcoded {"accelerator": "nvidia"}.
+                  #
+                  # workbench-admin stores:
+                  #   node_selector_key   = "nvidia.com/gpu.product"   (GFD label key)
+                  #   node_selector_value = e.g. "NVIDIA-A2"            (exact GPU model)
+                  #
+                  # Kyverno's require-gpu-node-selector policy checks that every GPU pod
+                  # carries nodeSelector["nvidia.com/gpu.product"]. The old accelerator
+                  # label never satisfied that check so every GPU spawn was denied at
+                  # admission. This was the root cause of the GPU scheduling mismatch.
                   ns_key   = p.get("node_selector_key",   "nvidia.com/gpu.product")
                   ns_value = p.get("node_selector_value", "")
                   if ns_value:
                       kubespawner["node_selector"] = {ns_key: ns_value}
-
-              profile = {
+              return {
                   "display_name":        p.get("display_name", "Profile"),
                   "description":         p.get("description", ""),
                   "slug":                p.get("slug", ""),
                   "kubespawner_override": kubespawner,
               }
-
-              # Attach RAM dropdown when a range was defined.
-              # Each choice overrides mem_limit and mem_guarantee on the pod.
-              # Default is always the minimum (most conservative, admin floor).
-              # GPU count, CPU, nodeSelector are untouched by this.
-              if ram_steps:
-                  profile["profile_options"] = {
-                      "ram": {
-                          "display_name": "RAM",
-                          "choices": {
-                              size: {
-                                  "display_name": size,
-                                  "kubespawner_override": {
-                                      "mem_limit":     size,
-                                      "mem_guarantee": size,
-                                  }
-                              }
-                              for size in ram_steps
-                          },
-                          "default": ram_steps[0],
-                      }
-                  }
-
-              return profile
-
           return [
               build_profile(p)
               for p in all_profiles
@@ -267,7 +176,6 @@ hub:
           ]
 
       c.KubeSpawner.profile_list = profile_list
-
 singleuser:
   storage:
     type: dynamic
