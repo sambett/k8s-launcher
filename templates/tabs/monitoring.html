@@ -30,7 +30,7 @@
           <input type="text" id="monitoring-version-input"
             placeholder="e.g. 65.1.0" style="max-width:160px"/>
           <button class="btn btn-sm btn-ghost"
-            onclick="loadMonitoringVersions()">Show suggestions</button>
+            onclick="loadMonitoringVersions()">Refresh suggestions</button>
         </div>
         <div id="monitoring-version-suggestions" style="margin-top:.5rem"></div>
       </div>
@@ -38,7 +38,7 @@
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
       <button class="btn btn-primary" onclick="installMonitoring()">
-        Install Prometheus + Grafana
+        Install / Upgrade
         <span style="font-weight:400;opacity:.7;margin-left:4px">(~5 min)</span>
       </button>
       <span class="dot" id="dot-monitoring"></span>
@@ -48,7 +48,7 @@
 
   <div class="card">
     <h2>Install log</h2>
-    <div class="log" id="monitoring-install-log">Waiting for installation...</div>
+    <div class="log" id="monitoring-install-log"></div>
   </div>
 
   <div class="card" id="monitoring-access-card" style="display:none">
@@ -68,6 +68,7 @@
 <script>
 async function loadMonitoringStatus() {
   checkMonitoringPrereq();
+  loadMonitoringVersions();
   const badge = document.getElementById('monitoring-status-badge');
   try {
     const r = await fetch('/api/monitoring/status');
@@ -157,7 +158,8 @@ async function checkMonitoringPrereq() {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f5e9;border:1px solid #a5d6a7;border-left:4px solid #2e7d32;color:#1b5e20;';
       icon.textContent  = '✅';
       title.textContent = 'Kubernetes cluster is running';
-      body.textContent  = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
+      body.textContent  = (d.cluster.node_count ?
+        d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
     } else {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
       icon.textContent  = '⚠️';
@@ -171,4 +173,3 @@ async function checkMonitoringPrereq() {
   }
 }
 </script>
-
