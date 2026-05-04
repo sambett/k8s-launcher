@@ -159,6 +159,38 @@ hub:
 
           return [_fmt(v) for v in deduped]
 
+      def _cpu_steps(cpu_guarantee, cpu_limit):
+          """
+          Derive discrete CPU choices from admin-defined bounds.
+          Returns a list of strings (e.g. ["0.5","1","2","4"]) or None
+          when min == max (no dropdown needed, fixed value used instead).
+          Applies to all profile types (cpu and gpu alike).
+          GPU profile CPU floors are enforced at save time in profiles.py
+          so cpu_guarantee is already a safe lower bound before we get here.
+          """
+          try:
+              lo = float(cpu_guarantee or 0.5)
+              hi = float(cpu_limit or 2)
+          except (TypeError, ValueError):
+              return None
+          if lo >= hi:
+              return None
+          candidates = [0.5, 1, 2, 4, 8, 16, 32]
+          steps = [lo]
+          for c in candidates:
+              if lo < float(c) < hi:
+                  steps.append(float(c))
+          steps.append(hi)
+          seen = set()
+          deduped = []
+          for v in steps:
+              if v not in seen:
+                  seen.add(v)
+                  deduped.append(v)
+          def _fmt(v):
+              return str(int(v)) if v == int(v) else str(v)
+          return [_fmt(v) for v in deduped]
+
       async def profile_list(spawner):
           auth_state = await spawner.user.get_auth_state()
           if not auth_state:
@@ -195,8 +227,6 @@ hub:
               kubespawner = {
                   "image":             f"{registry_host}/{reg_ns}/{image_name}:{default_tag}",
                   "image_pull_policy": "IfNotPresent",
-                  "cpu_limit":         float(p.get("cpu_limit", 2)),
-                  "cpu_guarantee":     float(p.get("cpu_guarantee", 0.5)),
                   "image_pull_secrets": ["gitlab-registry-secret"],
                   # Pod labels — read by Kyverno to enforce per-group GPU quotas.
                   "extra_labels": {
@@ -219,6 +249,18 @@ hub:
                   kubespawner["mem_limit"]     = p.get("mem_limit",     "4G")
                   kubespawner["mem_guarantee"] = p.get("mem_guarantee", "1G")
 
+              # CPU: same bounded-choice model as RAM.
+              # cpu_guarantee and cpu_limit are NOT in the static kubespawner
+              # dict above — set conditionally here, same pattern as RAM.
+              cpu_steps = _cpu_steps(
+                  p.get("cpu_guarantee", 0.5),
+                  p.get("cpu_limit",     2)
+              )
+              if not cpu_steps:
+                  # Fixed CPU — no dropdown rendered, pod always gets these values.
+                  kubespawner["cpu_limit"]     = float(p.get("cpu_limit",     2))
+                  kubespawner["cpu_guarantee"] = float(p.get("cpu_guarantee", 0.5))
+
               # GPU-specific additions — only when profile has gpu > 0.
               # RAM freedom applies here too: GPU profile floors are enforced at
               # save time in profiles.py, so mem_guarantee is already safe.
@@ -240,9 +282,25 @@ hub:
               # Each choice overrides mem_limit and mem_guarantee on the pod.
               # Default is always the minimum (most conservative, admin floor).
               # GPU count, CPU, nodeSelector are untouched by this.
-              if ram_steps:
-                  profile["profile_options"] = {
-                      "ram": {
+              if cpu_steps or ram_steps:
+                  profile["profile_options"] = {}
+                  if cpu_steps:
+                      profile["profile_options"]["cpu"] = {
+                          "display_name": "CPU",
+                          "choices": {
+                              cores: {
+                                  "display_name": cores + " cores",
+                                  "kubespawner_override": {
+                                      "cpu_limit":     float(cores),
+                                      "cpu_guarantee": float(cores),
+                                  }
+                              }
+                              for cores in cpu_steps
+                          },
+                          "default": cpu_steps[0],
+                      }
+                  if ram_steps:
+                      profile["profile_options"]["ram"] = {
                           "display_name": "RAM",
                           "choices": {
                               size: {
@@ -256,7 +314,6 @@ hub:
                           },
                           "default": ram_steps[0],
                       }
-                  }
 
               return profile
 
