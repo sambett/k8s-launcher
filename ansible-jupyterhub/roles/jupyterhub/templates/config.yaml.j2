@@ -285,34 +285,44 @@ hub:
               if cpu_steps or ram_steps:
                   profile["profile_options"] = {}
                   if cpu_steps:
+                      # Build choices explicitly so "default": True lands
+                      # inside the first choice dict, not at the group level.
+                      # KubeSpawner rejects "default" at the group level and
+                      # silently drops the entire option — that was why the
+                      # CPU dropdown never rendered.
+                      cpu_choices = {}
+                      for i, cores in enumerate(cpu_steps):
+                          entry = {
+                              "display_name": cores + " cores",
+                              "kubespawner_override": {
+                                  "cpu_limit":     float(cores),
+                                  "cpu_guarantee": float(cores),
+                              }
+                          }
+                          if i == 0:
+                              entry["default"] = True
+                          cpu_choices[cores] = entry
                       profile["profile_options"]["cpu"] = {
                           "display_name": "CPU",
-                          "choices": {
-                              cores: {
-                                  "display_name": cores + " cores",
-                                  "kubespawner_override": {
-                                      "cpu_limit":     float(cores),
-                                      "cpu_guarantee": float(cores),
-                                  }
-                              }
-                              for cores in cpu_steps
-                          },
-                          "default": cpu_steps[0],
+                          "choices": cpu_choices,
                       }
                   if ram_steps:
+                      # Same fix — "default": True inside first choice.
+                      ram_choices = {}
+                      for i, size in enumerate(ram_steps):
+                          entry = {
+                              "display_name": size,
+                              "kubespawner_override": {
+                                  "mem_limit":     size,
+                                  "mem_guarantee": size,
+                              }
+                          }
+                          if i == 0:
+                              entry["default"] = True
+                          ram_choices[size] = entry
                       profile["profile_options"]["ram"] = {
                           "display_name": "RAM",
-                          "choices": {
-                              size: {
-                                  "display_name": size,
-                                  "kubespawner_override": {
-                                      "mem_limit":     size,
-                                      "mem_guarantee": size,
-                                  }
-                              }
-                              for size in ram_steps
-                          },
-                          "default": ram_steps[0],
+                          "choices": ram_choices,
                       }
 
               return profile
