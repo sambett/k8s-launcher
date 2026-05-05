@@ -12,6 +12,7 @@
     </div>
   </div>
 
+  <!-- ── kube-prometheus-stack ─────────────────────────────────────────────── -->
   <div class="card">
     <h2>Prometheus + Grafana
       <span id="monitoring-status-badge" class="badge b-warn"
@@ -63,12 +64,57 @@
     </div>
   </div>
 
+  <!-- ── DCGM Exporter ─────────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>NVIDIA DCGM Exporter
+      <span id="dcgm-status-badge" class="badge b-warn"
+        style="margin-left:8px;font-weight:400">checking...</span>
+    </h2>
+    <p class="card-hint">
+      Deploys the NVIDIA DCGM Exporter as a DaemonSet on GPU nodes only.
+      Exposes GPU utilization, memory, temperature, and power metrics to Prometheus.
+      The official NVIDIA dashboard is provisioned in Grafana automatically.
+      Requires <strong>kube-prometheus-stack to be installed first</strong>.
+    </p>
+
+    <div class="field-row" style="align-items:flex-start">
+      <label style="padding-top:6px">Image version</label>
+      <div style="flex:1">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="dcgm-version-input"
+            placeholder="e.g. 3.3.5-3.4.0-ubuntu22.04" style="max-width:260px"/>
+          <button class="btn btn-sm btn-ghost"
+            onclick="loadDcgmVersions()">Refresh suggestions</button>
+        </div>
+        <div id="dcgm-version-suggestions" style="margin-top:.5rem"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
+      <button class="btn btn-primary" onclick="installDcgm()">
+        Deploy DCGM Exporter
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~3 min)</span>
+      </button>
+      <span class="dot" id="dot-dcgm"></span>
+      <span id="dcgm-install-status" style="font-size:12px;color:#666"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>DCGM install log</h2>
+    <div class="log" id="dcgm-install-log"></div>
+  </div>
+
 </div>
 
 <script>
+// ── kube-prometheus-stack ────────────────────────────────────────────────────
+
 async function loadMonitoringStatus() {
   checkMonitoringPrereq();
   loadMonitoringVersions();
+  loadDcgmVersions();
+  loadDcgmStatus();
   const badge = document.getElementById('monitoring-status-badge');
   try {
     const r = await fetch('/api/monitoring/status');
@@ -143,6 +189,73 @@ async function loadMonitoringAccess() {
     }
   } catch(e) {}
 }
+
+// ── DCGM Exporter ────────────────────────────────────────────────────────────
+
+async function loadDcgmStatus() {
+  const badge = document.getElementById('dcgm-status-badge');
+  try {
+    const r = await fetch('/api/monitoring/dcgm/status');
+    const d = await r.json();
+    if (d.status === 'ready') {
+      badge.className = 'badge b-ok';
+      badge.textContent = `✓ running ${d.ready}/${d.desired}`;
+    } else if (d.status === 'degraded') {
+      badge.className = 'badge b-warn';
+      badge.textContent = `degraded ${d.ready}/${d.desired}`;
+    } else {
+      badge.className = 'badge b-warn';
+      badge.textContent = 'not installed';
+    }
+  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
+}
+
+async function loadDcgmVersions() {
+  const el = document.getElementById('dcgm-version-suggestions');
+  el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
+  try {
+    const r = await fetch('/api/monitoring/dcgm/versions');
+    const d = await r.json();
+    if (!d.versions || !d.versions.length) {
+      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
+      return;
+    }
+    el.innerHTML =
+      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
+        ${d.recommended ? 'Recommended: <strong>'+d.recommended+'</strong>' : ''}
+       </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px">
+         ${d.versions.map(v =>
+           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
+              title="${v.notes||''}"
+              onclick="document.getElementById('dcgm-version-input').value='${v.version}'">
+              ${v.version}${v.version===d.recommended?' ★':''}
+            </button>`).join('')}
+       </div>`;
+  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+}
+
+function installDcgm() {
+  const version  = document.getElementById('dcgm-version-input').value.trim();
+  const logEl    = document.getElementById('dcgm-install-log');
+  const statusEl = document.getElementById('dcgm-install-status');
+  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
+  setDot('dot-dcgm', 'running');
+  const es = new EventSource('/api/monitoring/dcgm/install/stream?version=' + encodeURIComponent(version));
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot('dot-dcgm','ok'); statusEl.textContent = 'Complete';
+      loadDcgmStatus(); es.close();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot('dot-dcgm','error'); statusEl.textContent = 'Failed';
+      makeLogLine('FAILED — ' + e.data, logEl); es.close();
+    } else { makeLogLine(e.data, logEl); }
+  };
+  es.onerror = () => { setDot('dot-dcgm','error'); es.close(); };
+}
+
+// ── Prereq check ─────────────────────────────────────────────────────────────
 
 async function checkMonitoringPrereq() {
   const banner = document.getElementById('prereq-monitoring');
