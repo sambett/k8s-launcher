@@ -1,8 +1,13 @@
 ---
 # ansible-monitoring/site.yml
-# Installs kube-prometheus-stack (Prometheus + Grafana) on an existing K8s cluster.
-# chart_version is passed at runtime via --extra-vars from the launcher.
-# Prereqs: ansible-k8s, ansible-longhorn, ansible-jupyterhub already complete.
+# Deploys the full observability stack on the existing K8s cluster.
+# Prerequisites: ansible-k8s, ansible-longhorn complete.
+#
+# Runtime vars injected via --extra-vars by k8s-launcher:
+#   chart_version  — kube-prometheus-stack Helm chart version (e.g. 65.1.0)
+#   dcgm_version   — DCGM Exporter image tag (e.g. 3.3.5-3.4.0-ubuntu22.04)
+#                    only used when deploy_dcgm=true
+#   deploy_dcgm    — true | false (default: false)
 
 - name: Install kube-prometheus-stack
   hosts: control_plane
@@ -10,7 +15,18 @@
   roles:
     - prometheus_stack
 
-- name: Validate monitoring deployment
+- name: Deploy DCGM Exporter (optional)
+  hosts: control_plane
+  become: no
+  pre_tasks:
+    - name: Skip DCGM when disabled
+      ansible.builtin.meta: end_play
+      when: not (deploy_dcgm | default(false) | bool)
+      tags: [always]
+  roles:
+    - dcgm_exporter
+
+- name: Validate monitoring stack
   hosts: control_plane
   become: no
   roles:

@@ -1,8 +1,15 @@
 ---
 # ansible-monitoring group_vars
-# chart_version is intentionally NOT set here — it must come from --extra-vars
-# at runtime so the launcher controls the version, not this file.
+# chart_version and dcgm_version are intentionally NOT set here —
+# they must come from --extra-vars at runtime so the launcher controls
+# the version, not this file.
 
 monitoring_namespace: monitoring
 grafana_nodeport:     32300
 prometheus_nodeport:  32301
+
+# ── DCGM Exporter ─────────────────────────────────────────────────────────────
+# Runs as a DaemonSet on GPU nodes only (nodeSelector: nvidia.com/gpu.present=true)
+# dcgm_version is injected at runtime via --extra-vars
+dcgm_namespace:      monitoring
+dcgm_metrics_port:   9400

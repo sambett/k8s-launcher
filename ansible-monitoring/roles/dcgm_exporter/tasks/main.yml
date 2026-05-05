@@ -1,0 +1,37 @@
+---
+# dcgm_exporter/tasks/main.yml
+# Deploys NVIDIA DCGM Exporter as a DaemonSet on GPU nodes.
+# dcgm_version is required — must come from --extra-vars at runtime.
+
+- name: dcgm | Validate dcgm_version is defined
+  ansible.builtin.fail:
+    msg: "dcgm_version must be passed via --extra-vars (e.g. 3.3.5-3.4.0-ubuntu22.04)"
+  when: dcgm_version is not defined or dcgm_version == ""
+
+- name: dcgm | Render DCGM manifest
+  ansible.builtin.template:
+    src: dcgm.yaml.j2
+    dest: /tmp/dcgm.yaml
+    mode: "0644"
+
+- name: dcgm | Apply DCGM manifest
+  ansible.builtin.command: kubectl apply -f /tmp/dcgm.yaml
+  register: dcgm_apply
+  changed_when: "'created' in dcgm_apply.stdout or 'configured' in dcgm_apply.stdout"
+
+- name: dcgm | Wait for DCGM DaemonSet to be ready
+  ansible.builtin.command: >
+    kubectl rollout status daemonset/dcgm-exporter
+    -n {{ dcgm_namespace }} --timeout=300s
+  changed_when: false
+
+- name: dcgm | Show DCGM pods
+  ansible.builtin.command: >
+    kubectl get pods -n {{ dcgm_namespace }}
+    -l app=dcgm-exporter -o wide
+  register: dcgm_pods
+  changed_when: false
+
+- name: dcgm | Print DCGM pod status
+  ansible.builtin.debug:
+    msg: "{{ dcgm_pods.stdout_lines }}"

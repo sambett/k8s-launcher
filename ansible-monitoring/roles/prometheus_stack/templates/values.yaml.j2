@@ -1,13 +1,63 @@
 # ansible-monitoring/roles/prometheus_stack/templates/values.yaml.j2
 # Rendered at deploy time by Ansible — do not edit the output file directly.
-# All tunables live here. chart_version is passed separately via --version.
+# chart_version is passed separately via --version flag in the Helm command.
 
 grafana:
   service:
     type: NodePort
     nodePort: {{ grafana_nodeport }}
 
+  # ── Grafana dashboard provisioning ──────────────────────────────────────────
+  # Dashboards are provisioned automatically on Grafana startup.
+  # No manual UI clicks required — they just appear.
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: nvidia
+          orgId: 1
+          folder: NVIDIA
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/nvidia
+
+  dashboards:
+    nvidia:
+      # Official NVIDIA DCGM Grafana dashboard
+      # Source: https://grafana.com/grafana/dashboards/12239
+      dcgm-exporter:
+        gnetId: 12239
+        revision: 1
+        datasource: Prometheus
+
 prometheus:
   service:
     type: NodePort
     nodePort: {{ prometheus_nodeport }}
+
+  prometheusSpec:
+    # ── DCGM Exporter scrape config ─────────────────────────────────────────
+    # Scrapes all pods in the monitoring namespace that have the
+    # prometheus.io/scrape: "true" annotation — DCGM pods carry this.
+    additionalScrapeConfigs:
+      - job_name: dcgm-exporter
+        scrape_interval: 15s
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ dcgm_namespace }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: dcgm-exporter
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:{{ dcgm_metrics_port }}
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod

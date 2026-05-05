@@ -1,0 +1,66 @@
+# DCGM Exporter DaemonSet
+# Runs on GPU nodes only — nodeSelector targets nvidia.com/gpu.present=true
+# which is written by GPU Feature Discovery (GFD) and is guaranteed to exist
+# on any node where the Device Plugin is running.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: {{ dcgm_namespace }}
+  labels:
+    app: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app: dcgm-exporter
+      annotations:
+        # Tells Prometheus to scrape this pod automatically
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ dcgm_metrics_port }}"
+    spec:
+      # Only schedule on nodes that have a GPU
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        # Tolerate GPU node taints if any exist
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:{{ dcgm_version }}
+          ports:
+            - name: metrics
+              containerPort: {{ dcgm_metrics_port }}
+          securityContext:
+            runAsNonRoot: false
+            privileged: true
+          volumeMounts:
+            - name: pod-gpu-resources
+              readOnly: true
+              mountPath: /var/lib/kubelet/pod-resources
+      volumes:
+        - name: pod-gpu-resources
+          hostPath:
+            path: /var/lib/kubelet/pod-resources
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  namespace: {{ dcgm_namespace }}
+  labels:
+    app: dcgm-exporter
+spec:
+  clusterIP: None
+  selector:
+    app: dcgm-exporter
+  ports:
+    - name: metrics
+      port: {{ dcgm_metrics_port }}
+      targetPort: {{ dcgm_metrics_port }}
