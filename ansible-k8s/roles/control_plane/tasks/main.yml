@@ -54,13 +54,17 @@
     mode: '0600'
   become: yes
 
-# ── Join command ──────────────────────────────────────────────────────────────
-# FIX: replaced brittle log-parsing (grep/sed on kubeadm-init.log) with
-# kubeadm token create --print-join-command. This always produces a valid,
-# self-contained join command regardless of kubeadm output format changes.
-# A new token is generated on every run — existing tokens remain valid (24h TTL).
+- name: Wait for kube-apiserver to become reachable
+  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: apiserver_ready
+  become: yes
+  retries: 18
+  delay: 10
+  until: apiserver_ready.rc == 0 and 'ok' in apiserver_ready.stdout
+  changed_when: false
+
 - name: Generate worker join command via kubeadm
-  shell: kubeadm token create --print-join-command 2>/dev/null
+  command: kubeadm token create --print-join-command
   register: join_cmd
   become: yes
   changed_when: true
