@@ -34,8 +34,12 @@
     replace: "cidr: {{ pod_cidr }}"
 
 - name: Apply Tigera operator manifest
-  command: kubectl apply -f {{ artifacts_dir }}/calico/tigera-operator.yaml
+  # The Tigera operator manifest contains large CRDs. Plain client-side
+  # kubectl apply can fail because it stores a huge last-applied annotation.
+  # Server-side apply avoids that annotation-size limit.
+  command: kubectl apply --server-side -f {{ artifacts_dir }}/calico/tigera-operator.yaml
   changed_when: false
+
 
 - name: Wait for Tigera operator rollout
   command: kubectl rollout status deployment tigera-operator -n tigera-operator --timeout=120s
