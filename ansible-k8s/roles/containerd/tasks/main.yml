@@ -1,4 +1,8 @@
 ---
+# Container runtime setup.
+# This role follows the same purpose as script2.sh, but uses the Docker apt
+# repository to install a pinned containerd package instead of manual tarballs.
+
 - name: Create apt keyrings dir
   file:
     path: /etc/apt/keyrings
@@ -27,7 +31,9 @@
 - name: Add Docker apt repo
   copy:
     dest: /etc/apt/sources.list.d/docker.list
-    content: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable\n"
+    # Use the detected Ubuntu codename so this works on supported releases
+    # without hardcoding jammy.
+    content: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable\n"
     mode: '0644'
 
 - name: Install containerd at pinned version
@@ -41,6 +47,9 @@
     name: containerd.io
     selection: hold
 
+# script2.sh turns on systemd cgroups for kubelet compatibility.
+# We also pin the pause image and enable certs.d so later registry-specific
+# configuration can be layered in cleanly.
 - name: Generate and write containerd config with correct settings
   shell: |
     containerd config default | \
@@ -65,26 +74,3 @@
   until: cri_check.stdout == "active"
   changed_when: false
   become: yes
-
-- name: Configure insecure GitLab registry for containerd
-  block:
-    - name: Create containerd certs.d directory for GitLab registry
-      file:
-        path: "/etc/containerd/certs.d/{{ gitlab_registry_host | default('') }}"
-        state: directory
-        mode: "0755"
-      when: gitlab_registry_host is defined and gitlab_registry_host != ''
-
-    - name: Write hosts.toml for insecure GitLab registry
-      copy:
-        dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
-        content: |
-          server = "http://{{ gitlab_registry_host }}"
-
-          [host."http://{{ gitlab_registry_host }}"]
-            capabilities = ["pull", "resolve", "push"]
-            skip_verify = true
-        mode: "0644"
-      when: gitlab_registry_host is defined and gitlab_registry_host != ''
-      notify: restart containerd
-  when: gitlab_registry_host is defined and gitlab_registry_host != ''

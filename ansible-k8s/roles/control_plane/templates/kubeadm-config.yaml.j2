@@ -4,6 +4,10 @@ kind: ClusterConfiguration
 kubernetesVersion: "{{ k8s_version }}"
 controlPlaneEndpoint: "{{ cp_ip }}:{{ api_port }}"
 clusterName: "{{ cluster_name }}"
+apiServer:
+  certSANs:
+    - "{{ cp_ip }}"
+    - "{{ cp_hostname }}"
 networking:
   podSubnet:     "{{ pod_cidr }}"
   serviceSubnet: "{{ service_cidr }}"

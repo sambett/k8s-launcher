@@ -1,9 +1,15 @@
 ---
+# Control plane bootstrap.
+# Keep this role simple and close to the working kubeadm flow from the
+# reference scripts, while adding two protections:
+#   1. do not silently trust a stale admin.conf
+#   2. print useful diagnostics when bootstrap fails
+
 - name: Create artifact directory
   file:
     path: "{{ artifacts_dir }}"
     state: directory
-    mode: '0750'
+    mode: "0750"
     owner: "{{ ansible_user }}"
   become: yes
 
@@ -11,60 +17,165 @@
   template:
     src: kubeadm-config.yaml.j2
     dest: "{{ artifacts_dir }}/kubeadm-config.yaml"
-    mode: '0640'
+    mode: "0640"
     owner: "{{ ansible_user }}"
   become: yes
 
-- name: Check if control plane is already initialised
+- name: Check if admin.conf already exists
   stat:
     path: /etc/kubernetes/admin.conf
   register: admin_conf
   become: yes
+
+# admin.conf on disk is not enough to prove the control plane is healthy.
+# If the file exists but /readyz fails, stop immediately and ask for cleanup
+# instead of trying to repair automatically.
+- name: Check whether existing API server is reachable
+  command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+  register: apiserver_readyz
+  changed_when: false
+  failed_when: false
+  become: yes
+  when: admin_conf.stat.exists
+
+- name: Stop on stale control plane leftovers
+  fail:
+    msg: |
+      Found existing /etc/kubernetes/admin.conf, but the API server is not healthy.
+      This usually means old cluster leftovers or a partial kubeadm init.
+      Refusing to auto-reset the node.
+
+      readyz return code: {{ apiserver_readyz.rc }}
+      stderr: {{ apiserver_readyz.stderr | default('') }}
+
+      Clean the node intentionally, then re-run the playbook.
+  when:
+    - admin_conf.stat.exists
+    - apiserver_readyz.rc != 0
 
 - name: Pre-pull control plane images
   command: kubeadm config images pull --kubernetes-version {{ k8s_version }}
   become: yes
   when: not admin_conf.stat.exists
 
-- name: Run kubeadm init
-  shell: >
-    kubeadm init
-    --config {{ artifacts_dir }}/kubeadm-config.yaml
-    --upload-certs
-    2>&1 | tee {{ artifacts_dir }}/kubeadm-init.log
-  when: not admin_conf.stat.exists
-  become: yes
-  async: 600
-  poll: 30
+- block:
+    - name: Run kubeadm init
+      shell: >
+        kubeadm init
+        --config {{ artifacts_dir }}/kubeadm-config.yaml
+        --upload-certs
+        2>&1 | tee {{ artifacts_dir }}/kubeadm-init.log
+      become: yes
+      when: not admin_conf.stat.exists
 
-- name: Create .kube directory for user
+    # Wait for the HTTPS socket first, then for the readyz endpoint.
+    # This gives clearer failure signals than jumping straight to kubectl.
+    - name: Wait for kube-apiserver HTTPS port to open
+      wait_for:
+        host: "{{ cp_ip }}"
+        port: "{{ api_port }}"
+        delay: 5
+        timeout: 180
+
+    - name: Wait for kube-apiserver to become ready
+      command: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
+      register: readyz_after_init
+      retries: 24
+      delay: 10
+      until: readyz_after_init.rc == 0
+      changed_when: false
+      become: yes
+
+  rescue:
+    - name: Read kubeadm init log if present
+      shell: test -f {{ artifacts_dir }}/kubeadm-init.log && cat {{ artifacts_dir }}/kubeadm-init.log || true
+      register: kubeadm_init_log
+      changed_when: false
+      become: yes
+
+    - name: Read kubelet service status
+      shell: systemctl status kubelet --no-pager -l || true
+      register: kubelet_status
+      changed_when: false
+      become: yes
+
+    - name: Read recent kubelet journal
+      shell: journalctl -u kubelet -n 80 --no-pager || true
+      register: kubelet_journal
+      changed_when: false
+      become: yes
+
+    - name: Read recent containerd journal
+      shell: journalctl -u containerd -n 80 --no-pager || true
+      register: containerd_journal
+      changed_when: false
+      become: yes
+
+    - name: List static pod manifests
+      shell: ls -la /etc/kubernetes/manifests 2>&1 || true
+      register: manifest_list
+      changed_when: false
+      become: yes
+
+    - name: Show kubeadm init log
+      debug:
+        msg: "{{ kubeadm_init_log.stdout_lines }}"
+
+    - name: Show kubelet status
+      debug:
+        msg: "{{ kubelet_status.stdout_lines }}"
+
+    - name: Show kubelet journal
+      debug:
+        msg: "{{ kubelet_journal.stdout_lines }}"
+
+    - name: Show containerd journal
+      debug:
+        msg: "{{ containerd_journal.stdout_lines }}"
+
+    - name: Show static pod manifests
+      debug:
+        msg: "{{ manifest_list.stdout_lines }}"
+
+    - name: Fail after printing bootstrap diagnostics
+      fail:
+        msg: "Control plane bootstrap failed. Diagnostic logs were printed above."
+
+- name: Ensure root kubeconfig directory exists
+  file:
+    path: /root/.kube
+    state: directory
+    mode: "0700"
+  become: yes
+
+- name: Copy admin.conf to root kubeconfig
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: yes
+    mode: "0600"
+  become: yes
+
+- name: Create .kube directory for ansible user
   file:
     path: "/home/{{ ansible_user }}/.kube"
     state: directory
-    mode: '0750'
+    mode: "0750"
     owner: "{{ ansible_user }}"
   become: yes
 
-- name: Copy admin.conf to user kubeconfig
+- name: Copy admin.conf to ansible user kubeconfig
   copy:
     src: /etc/kubernetes/admin.conf
     dest: "/home/{{ ansible_user }}/.kube/config"
     remote_src: yes
     owner: "{{ ansible_user }}"
-    mode: '0600'
+    mode: "0600"
   become: yes
 
-- name: Wait for kube-apiserver to become reachable
-  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz
-  register: apiserver_ready
-  become: yes
-  retries: 18
-  delay: 10
-  until: apiserver_ready.rc == 0 and 'ok' in apiserver_ready.stdout
-  changed_when: false
-
+# Generate a fresh worker join command every run and save it for the worker role.
 - name: Generate worker join command via kubeadm
-  command: kubeadm token create --print-join-command
+  shell: kubeadm token create --print-join-command 2>/dev/null
   register: join_cmd
   become: yes
   changed_when: true
@@ -74,5 +185,5 @@
     content: "{{ join_cmd.stdout }}\n"
     dest: "{{ join_command_file }}"
     owner: "{{ ansible_user }}"
-    mode: '0600'
+    mode: "0600"
   become: yes

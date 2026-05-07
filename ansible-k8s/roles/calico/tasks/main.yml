@@ -1,52 +1,53 @@
 ---
-- name: Create calico artifact dir
+# Calico network installation.
+# Keep this as a separate role after kubeadm init so the flow stays clear:
+#   control plane first, cluster networking second.
+# This follows the same spirit as the reference scripts:
+# download/apply the manifests, then wait until pods and nodes are healthy.
+
+- name: Create Calico artifact directory
   file:
     path: "{{ artifacts_dir }}/calico"
     state: directory
+    mode: "0750"
 
+# We keep the operator-based install because it fits the current codebase
+# better than a single giant calico.yaml, but the flow stays simple:
+# operator manifest + custom-resources manifest.
 - name: Download Tigera operator manifest
   get_url:
     url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
     dest: "{{ artifacts_dir }}/calico/tigera-operator.yaml"
     force: no
 
-- name: Download Calico custom-resources manifest
+- name: Download Calico custom resources manifest
   get_url:
     url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/custom-resources.yaml"
     dest: "{{ artifacts_dir }}/calico/custom-resources.yaml"
     force: no
 
-- name: Enforce correct pod CIDR in custom-resources.yaml
+# The pod CIDR in Calico must match the pod network chosen for kubeadm.
+- name: Set Calico pod CIDR
   replace:
     path: "{{ artifacts_dir }}/calico/custom-resources.yaml"
-    regexp:  'cidr:.*'
+    regexp: 'cidr:.*'
     replace: "cidr: {{ pod_cidr }}"
 
-- name: Check if Tigera operator already deployed
-  command: kubectl get deployment tigera-operator -n tigera-operator
-  register: tigera_check
+- name: Apply Tigera operator manifest
+  command: kubectl apply -f {{ artifacts_dir }}/calico/tigera-operator.yaml
   changed_when: false
-  failed_when: false
-
-- name: Apply Tigera operator
-  command: kubectl apply --server-side -f {{ artifacts_dir }}/calico/tigera-operator.yaml
-  when: tigera_check.rc != 0
 
 - name: Wait for Tigera operator rollout
   command: kubectl rollout status deployment tigera-operator -n tigera-operator --timeout=120s
   changed_when: false
 
-- name: Check if Calico Installation CR already exists
-  command: kubectl get installation default
-  register: calico_check
-  changed_when: false
-  failed_when: false
-
 - name: Apply Calico custom resources
   command: kubectl apply -f {{ artifacts_dir }}/calico/custom-resources.yaml
-  when: calico_check.rc != 0
+  changed_when: false
 
-- name: Wait for calico-system namespace to have pods
+# First wait until Calico pods exist, then wait until they are ready.
+# This gives clearer progress than jumping straight to a ready check.
+- name: Wait for Calico pods to appear
   shell: kubectl get pods -n calico-system --no-headers 2>/dev/null | wc -l
   register: calico_pod_count
   retries: 12
@@ -54,10 +55,11 @@
   until: calico_pod_count.stdout | int > 0
   changed_when: false
 
-- name: Wait for Calico pods to be Ready
+- name: Wait for Calico pods to become Ready
   command: kubectl wait pod --all -n calico-system --for=condition=Ready --timeout=300s
   changed_when: false
 
-- name: Wait for control plane node to be Ready
+# The control-plane node usually becomes Ready only after the CNI is healthy.
+- name: Wait for control plane node to become Ready
   command: kubectl wait node {{ cp_hostname }} --for=condition=Ready --timeout=120s
   changed_when: false

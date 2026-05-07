@@ -1,4 +1,14 @@
 ---
+# Kubernetes package installation.
+# This mirrors the reference "script3.sh" flow: add the repo key, add the repo,
+# install kubeadm/kubelet/kubectl, hold them, and start kubelet.
+
+- name: Ensure apt keyrings dir exists for Kubernetes repo key
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
 - name: Install Kubernetes GPG key
   shell: |
     curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_version }}/deb/Release.key \
@@ -10,6 +20,7 @@
   copy:
     dest: /etc/apt/sources.list.d/kubernetes.list
     content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ k8s_repo_version }}/deb/ /\n"
+    mode: "0644"
 
 - name: Install kubeadm, kubelet, kubectl
   apt:
@@ -30,4 +41,6 @@
   systemd:
     name: kubelet
     enabled: yes
+    # kubelet starts here even before init/join completes; that is normal.
+    # It becomes fully useful once kubeadm creates the node's cluster config.
     state: started

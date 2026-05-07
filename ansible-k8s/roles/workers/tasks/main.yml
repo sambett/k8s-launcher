@@ -1,25 +1,69 @@
 ---
-# FIX 3: worker labeling resolves actual K8s node name by IP address
-# instead of assuming inventory_hostname matches the VM hostname.
-# FIX 3b: label task runs on every play — not just on first join —
-# so a failed labeling step is corrected automatically on re-run.
+# Worker node join.
+# This role stays close to the working worker flow you shared, but keeps two
+# improvements from the current codebase:
+#   1. join command is read from the control plane artifacts directory
+#   2. node resolution is done by InternalIP, which is more reliable than
+#      assuming the inventory name always matches the Kubernetes node name
+#
+# It also handles the common stale-state case:
+# /etc/kubernetes/kubelet.conf exists, but kubelet is not actually healthy.
+# In that situation we stop with a clear error instead of auto-resetting.
+# This initial-install playbook expects clean worker VMs.
 
 - name: Check if this node already joined
   stat:
     path: /etc/kubernetes/kubelet.conf
   register: kubelet_conf
 
-- name: Assert VM hostname matches inventory name (catches misconfigured VMs early)
-  assert:
-    that: ansible_hostname == inventory_hostname | lower
-    fail_msg: >
-      VM hostname '{{ ansible_hostname }}' does not match inventory name
-      '{{ inventory_hostname | lower }}'. Fix with:
-      sudo hostnamectl set-hostname {{ inventory_hostname | lower }}
-      Then reboot and re-run.
-    success_msg: "Hostname check passed: {{ ansible_hostname }}"
+# Before deciding to skip the join, confirm whether kubelet is actually active.
+# If kubelet.conf exists but kubelet is down, this usually means stale or
+# partial worker state, and this initial-install role stops instead of repairing it.
+- name: Check whether kubelet is active
+  command: systemctl is-active kubelet
+  register: kubelet_active
+  changed_when: false
+  failed_when: false
+  when: kubelet_conf.stat.exists
+
+- name: Stop on stale partial worker join state
+  fail:
+    msg: |
+      Found existing /etc/kubernetes/kubelet.conf, but kubelet is not healthy.
+      This worker does not look like a clean new machine.
+
+      kubelet state: {{ kubelet_active.stdout | default('unknown') }}
+      stderr: {{ kubelet_active.stderr | default('') }}
+
+      Use the worker reset flow first, then re-run the cluster deployment.
+  when:
+    - kubelet_conf.stat.exists
+    - kubelet_active.stdout is defined
+    - kubelet_active.stdout != "active"
+
+# Align the machine hostname before the first join so kubelet registers a
+# predictable node name. This follows the reference worker playbook.
+- name: Set system hostname to match inventory name
+  hostname:
+    name: "{{ inventory_hostname | lower }}"
   when: not kubelet_conf.stat.exists
 
+- name: Ensure /etc/hostname is correct
+  copy:
+    dest: /etc/hostname
+    content: "{{ inventory_hostname | lower }}\n"
+    mode: "0644"
+  when: not kubelet_conf.stat.exists
+
+- name: Update 127.0.1.1 entry for worker hostname
+  lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s+'
+    line: "127.0.1.1 {{ inventory_hostname | lower }}"
+    state: present
+  when: not kubelet_conf.stat.exists
+
+# Read the fresh join command saved by the control-plane role.
 - name: Read saved join command from control plane
   slurp:
     src: "{{ join_command_file }}"
@@ -27,14 +71,41 @@
   delegate_to: "{{ groups['control_plane'][0] }}"
   when: not kubelet_conf.stat.exists
 
-- name: Run join command
-  shell: "{{ join_command_b64.content | b64decode | trim }}"
-  become: yes
-  when: not kubelet_conf.stat.exists
+# Append --node-name explicitly so the join remains stable even if a VM was
+# originally provisioned with a different cloud-init hostname.
+- block:
+    - name: Run join command
+      shell: "{{ join_command_b64.content | b64decode | trim }} --node-name {{ inventory_hostname | lower }}"
+      become: yes
+      when: not kubelet_conf.stat.exists
 
-# Resolve actual K8s node name by matching node IP via jsonpath + grep.
-# Runs on every play (no when guard) so labeling is always corrected.
-# Retries 6x / 10s delay to allow kubelet registration to complete after join.
+  rescue:
+    - name: Read kubelet service status after join failure
+      shell: systemctl status kubelet --no-pager -l || true
+      register: kubelet_status
+      changed_when: false
+      become: yes
+
+    - name: Read recent kubelet journal after join failure
+      shell: journalctl -u kubelet -n 80 --no-pager || true
+      register: kubelet_journal
+      changed_when: false
+      become: yes
+
+    - name: Show kubelet status
+      debug:
+        msg: "{{ kubelet_status.stdout_lines }}"
+
+    - name: Show kubelet journal
+      debug:
+        msg: "{{ kubelet_journal.stdout_lines }}"
+
+    - name: Fail after printing worker join diagnostics
+      fail:
+        msg: "Worker join failed. Diagnostic logs were printed above."
+
+# Resolve the actual Kubernetes node name by matching InternalIP.
+# This is more robust than trusting inventory_hostname directly.
 - name: Resolve actual Kubernetes node name for this host
   shell: >-
     kubectl get nodes
@@ -44,11 +115,12 @@
   register: k8s_node_name
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
-  retries: 6
-  delay: 10
+  retries: 12
+  delay: 15
   until: k8s_node_name.rc == 0 and k8s_node_name.stdout != ""
   changed_when: false
 
+# Apply the standard worker role label.
 - name: Label node as worker
   command: >
     kubectl label node {{ k8s_node_name.stdout }}
@@ -56,33 +128,10 @@
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: no
 
-# Configure insecure GitLab registry so new workers can pull images immediately.
-# Only runs when gitlab_registry_host is passed in (post-GitLab installs).
-- name: Create containerd certs.d directory for GitLab registry
-  file:
-    path: "/etc/containerd/certs.d/{{ gitlab_registry_host }}"
-    state: directory
-    mode: "0755"
-  when: gitlab_registry_host is defined and gitlab_registry_host != ''
-
-- name: Write hosts.toml for insecure GitLab registry
-  copy:
-    dest: "/etc/containerd/certs.d/{{ gitlab_registry_host }}/hosts.toml"
-    content: |
-      server = "http://{{ gitlab_registry_host }}"
-
-      [host."http://{{ gitlab_registry_host }}"]
-        capabilities = ["pull", "resolve", "push"]
-        skip_verify = true
-    mode: "0644"
-  when: gitlab_registry_host is defined and gitlab_registry_host != ''
-  register: worker_hosts_toml
-
-- name: Restart containerd if registry config changed
-  systemd:
-    name: containerd
-    state: restarted
-    daemon_reload: yes
-  when:
-    - gitlab_registry_host is defined and gitlab_registry_host != ''
-    - worker_hosts_toml.changed
+# Longhorn later expects this label to create the node's default disk entry.
+- name: Label node for Longhorn default disk creation
+  command: >
+    kubectl label node {{ k8s_node_name.stdout }}
+    node.longhorn.io/create-default-disk=true --overwrite
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
