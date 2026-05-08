@@ -173,6 +173,72 @@ def _get_worker_ssh_user(hostname: str) -> str:
     return ""
 
 
+def _get_live_cluster_runtime_vars() -> dict:
+    """
+    Read the running cluster's package/runtime versions from the control plane.
+
+    Why this exists:
+      The add-worker flow must match the live cluster, not whatever version
+      values happen to be sitting in generated/group_vars/all.yml from an older
+      configure run. If the generated file drifts, the worker-add button should
+      still install the exact kubeadm/containerd versions already running on the
+      control plane.
+
+    Returns any subset of:
+      kubernetes_version  e.g. 1.30.5
+      containerd_pkg      e.g. containerd.io=1.7.22-1
+      pause_image         e.g. registry.k8s.io/pause:3.9
+
+    Safe fallback:
+      If the control plane cannot be queried, return {} and let the playbook
+      fall back to generated vars. The caller decides whether to warn.
+    """
+    cp = _get_cp_info()
+    if not cp.get("ip") or not cp.get("user"):
+        return {}
+
+    client = None
+    live = {}
+    try:
+        client = get_client_with_key(cp["ip"], cp["user"])
+
+        out, _, rc = run_command(
+            client,
+            "dpkg-query -W -f='${Version}' kubeadm 2>/dev/null"
+        )
+        if rc == 0 and out.strip():
+            kubeadm_pkg = out.strip().splitlines()[-1].strip()
+            live["kubernetes_version"] = kubeadm_pkg.split("-", 1)[0]
+
+        out, _, rc = run_command(
+            client,
+            "dpkg-query -W -f='${Version}' containerd.io 2>/dev/null"
+        )
+        if rc == 0 and out.strip():
+            containerd_pkg = out.strip().splitlines()[-1].strip()
+            live["containerd_pkg"] = f"containerd.io={containerd_pkg}"
+
+        if live.get("kubernetes_version"):
+            out, _, rc = run_command(
+                client,
+                "kubeadm config images list "
+                f"--kubernetes-version {live['kubernetes_version']} "
+                "2>/dev/null | grep pause"
+            )
+            if rc == 0 and out.strip():
+                pause_image = out.strip().splitlines()[-1].strip()
+                if pause_image.startswith("registry.k8s.io/pause"):
+                    live["pause_image"] = pause_image
+
+    except Exception:
+        return {}
+    finally:
+        if client:
+            client.close()
+
+    return live
+
+
 def _make_worker_inventory(cp: dict, worker_hostname: str,
                             worker_ip: str, worker_user: str) -> str:
     """
@@ -820,6 +886,27 @@ def _add_worker_stream(node: NewWorker):
     inventory = _make_worker_inventory(cp, hostname, node.ip, node.ssh_user)
 
     extra_vars: dict = {"join_command": join_lines[0]}
+    live_runtime_vars = _get_live_cluster_runtime_vars()
+    if live_runtime_vars:
+        extra_vars.update(live_runtime_vars)
+        runtime_summary = []
+        if live_runtime_vars.get("kubernetes_version"):
+            runtime_summary.append(f"kubeadm {live_runtime_vars['kubernetes_version']}")
+        if live_runtime_vars.get("containerd_pkg"):
+            runtime_summary.append(live_runtime_vars["containerd_pkg"])
+        if live_runtime_vars.get("pause_image"):
+            runtime_summary.append(live_runtime_vars["pause_image"])
+        if runtime_summary:
+            yield _ok(
+                "Worker add matched live control-plane versions: "
+                + ", ".join(runtime_summary)
+            )
+    else:
+        yield _log(
+            "WARNING: Could not read live control-plane package versions; "
+            "falling back to generated vars."
+        )
+
     registry_host = _get_registry_host()
     if registry_host:
         extra_vars["gitlab_registry_host"] = registry_host
