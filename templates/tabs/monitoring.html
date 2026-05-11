@@ -38,7 +38,7 @@
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
-      <button class="btn btn-primary" onclick="installMonitoring()">
+      <button class="btn btn-primary" id="btn-install-monitoring" onclick="installMonitoring()">
         Install / Upgrade
         <span style="font-weight:400;opacity:.7;margin-left:4px">(~5 min)</span>
       </button>
@@ -91,7 +91,7 @@
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
-      <button class="btn btn-primary" onclick="installDcgm()">
+      <button class="btn btn-primary" id="btn-install-dcgm" onclick="installDcgm()">
         Deploy DCGM Exporter
         <span style="font-weight:400;opacity:.7;margin-left:4px">(~3 min)</span>
       </button>
@@ -108,6 +108,15 @@
 </div>
 
 <script>
+// ── Shared action-button helper ───────────────────────────────────────────────
+// Both install streams hold the same backend lock, so both buttons must be
+// disabled/enabled together regardless of which one was clicked.
+// Call this once at stream start (true) and once at stream end (false).
+function setMonitoringActionsDisabled(disabled) {
+  document.getElementById('btn-install-monitoring').disabled = disabled;
+  document.getElementById('btn-install-dcgm').disabled       = disabled;
+}
+
 // ── kube-prometheus-stack ────────────────────────────────────────────────────
 
 async function loadMonitoringStatus() {
@@ -120,11 +129,11 @@ async function loadMonitoringStatus() {
     const r = await fetch('/api/monitoring/status');
     const d = await r.json();
     if (d.status === 'installed') {
-      badge.className = 'badge b-ok';
+      badge.className   = 'badge b-ok';
       badge.textContent = '✓ installed ' + (d.chart || '');
       loadMonitoringAccess();
     } else {
-      badge.className = 'badge b-warn';
+      badge.className   = 'badge b-warn';
       badge.textContent = 'not installed';
     }
   } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
@@ -161,19 +170,52 @@ function installMonitoring() {
   const logEl    = document.getElementById('monitoring-install-log');
   const statusEl = document.getElementById('monitoring-install-status');
   if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
-  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
+
+  setMonitoringActionsDisabled(true);
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
   setDot('dot-monitoring', 'running');
+
   const es = new EventSource('/api/monitoring/install/stream?version=' + encodeURIComponent(version));
+
   es.onmessage = e => {
     if (e.data === '__DONE__') {
-      setDot('dot-monitoring','ok'); statusEl.textContent = 'Complete';
-      loadMonitoringStatus(); es.close();
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-monitoring', 'ok');
+      statusEl.textContent = 'Complete';
+      // Refresh both status badges — a base install may affect what DCGM shows.
+      loadMonitoringStatus();
+      loadDcgmStatus();
+    } else if (e.data === '__ERROR__:LOCKED') {
+      // Stable token sent by the backend when the lock is already held.
+      // This path is only reached if the frontend disable somehow raced
+      // (e.g. two tabs open). The backend is the authoritative guard.
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-monitoring', 'error');
+      statusEl.textContent = 'Another install is already running — wait and try again.';
     } else if (e.data.startsWith('__ERROR__')) {
-      setDot('dot-monitoring','error'); statusEl.textContent = 'Failed';
-      makeLogLine('FAILED — ' + e.data, logEl); es.close();
-    } else { makeLogLine(e.data, logEl); }
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-monitoring', 'error');
+      statusEl.textContent = 'Failed — see log above.';
+      makeLogLine('FAILED — ' + e.data, logEl);
+    } else {
+      makeLogLine(e.data, logEl);
+    }
   };
-  es.onerror = () => { setDot('dot-monitoring','error'); es.close(); };
+
+  // onerror fires only for genuine connection-level failures (network drop,
+  // server restart). It will NOT fire for lock contention because the backend
+  // sends __ERROR__:LOCKED through onmessage on a normal 200 stream — there
+  // is no 409 response on this route.
+  es.onerror = () => {
+    es.close();
+    setMonitoringActionsDisabled(false);
+    setDot('dot-monitoring', 'error');
+    statusEl.textContent = 'Connection lost — is the launcher running?';
+  };
 }
 
 async function loadMonitoringAccess() {
@@ -198,13 +240,13 @@ async function loadDcgmStatus() {
     const r = await fetch('/api/monitoring/dcgm/status');
     const d = await r.json();
     if (d.status === 'ready') {
-      badge.className = 'badge b-ok';
+      badge.className   = 'badge b-ok';
       badge.textContent = `✓ running ${d.ready}/${d.desired}`;
     } else if (d.status === 'degraded') {
-      badge.className = 'badge b-warn';
+      badge.className   = 'badge b-warn';
       badge.textContent = `degraded ${d.ready}/${d.desired}`;
     } else {
-      badge.className = 'badge b-warn';
+      badge.className   = 'badge b-warn';
       badge.textContent = 'not installed';
     }
   } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
@@ -240,19 +282,45 @@ function installDcgm() {
   const logEl    = document.getElementById('dcgm-install-log');
   const statusEl = document.getElementById('dcgm-install-status');
   if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
-  logEl.innerHTML = ''; statusEl.textContent = 'Running…';
+
+  setMonitoringActionsDisabled(true);
+  logEl.innerHTML      = '';
+  statusEl.textContent = 'Running…';
   setDot('dot-dcgm', 'running');
+
   const es = new EventSource('/api/monitoring/dcgm/install/stream?version=' + encodeURIComponent(version));
+
   es.onmessage = e => {
     if (e.data === '__DONE__') {
-      setDot('dot-dcgm','ok'); statusEl.textContent = 'Complete';
-      loadDcgmStatus(); es.close();
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-dcgm', 'ok');
+      statusEl.textContent = 'Complete';
+      // Refresh both status badges — DCGM install also upgrades the Helm chart.
+      loadDcgmStatus();
+      loadMonitoringStatus();
+    } else if (e.data === '__ERROR__:LOCKED') {
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-dcgm', 'error');
+      statusEl.textContent = 'Another install is already running — wait and try again.';
     } else if (e.data.startsWith('__ERROR__')) {
-      setDot('dot-dcgm','error'); statusEl.textContent = 'Failed';
-      makeLogLine('FAILED — ' + e.data, logEl); es.close();
-    } else { makeLogLine(e.data, logEl); }
+      es.close();
+      setMonitoringActionsDisabled(false);
+      setDot('dot-dcgm', 'error');
+      statusEl.textContent = 'Failed — see log above.';
+      makeLogLine('FAILED — ' + e.data, logEl);
+    } else {
+      makeLogLine(e.data, logEl);
+    }
   };
-  es.onerror = () => { setDot('dot-dcgm','error'); es.close(); };
+
+  es.onerror = () => {
+    es.close();
+    setMonitoringActionsDisabled(false);
+    setDot('dot-dcgm', 'error');
+    statusEl.textContent = 'Connection lost — is the launcher running?';
+  };
 }
 
 // ── Prereq check ─────────────────────────────────────────────────────────────
@@ -271,8 +339,7 @@ async function checkMonitoringPrereq() {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f5e9;border:1px solid #a5d6a7;border-left:4px solid #2e7d32;color:#1b5e20;';
       icon.textContent  = '✅';
       title.textContent = 'Kubernetes cluster is running';
-      body.textContent  = (d.cluster.node_count ?
-        d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
+      body.textContent  = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
     } else {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
       icon.textContent  = '⚠️';

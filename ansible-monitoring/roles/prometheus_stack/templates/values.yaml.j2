@@ -1,15 +1,52 @@
 # ansible-monitoring/roles/prometheus_stack/templates/values.yaml.j2
-# Rendered at deploy time by Ansible — do not edit the output file directly.
-# chart_version is passed separately via --version flag in the Helm command.
+#
+# This file customises the kube-prometheus-stack Helm chart.
+# It is rendered by Ansible at deploy time into /tmp/monitoring-values.yaml
+# and passed to `helm upgrade --install` via the -f flag.
+#
+# What the chart installs for us (we do not manage these directly):
+#   - Prometheus            — metrics database and query engine
+#   - Alertmanager          — alert routing and deduplication
+#   - Grafana               — dashboard and visualisation UI
+#   - Prometheus Operator   — manages Prometheus/Alertmanager as CRDs
+#   - kube-state-metrics    — exposes Kubernetes object state as metrics
+#   - node-exporter         — exposes per-node OS/hardware metrics
+#
+# What this file does:
+#   - Sets NodePort values so Grafana and Prometheus are reachable externally
+#   - Conditionally provisions Grafana dashboards for GPU monitoring
+#   - Conditionally configures Prometheus to scrape DCGM Exporter
+#
+# GPU monitoring (DCGM) is OPTIONAL and controlled by deploy_dcgm at runtime.
+# When deploy_dcgm=false (default), all GPU-specific blocks below are omitted.
+# When deploy_dcgm=true, the DCGM scrape job and the NVIDIA dashboard are added.
 
+# ── Grafana ────────────────────────────────────────────────────────────────────
 grafana:
   service:
     type: NodePort
     nodePort: {{ grafana_nodeport }}
 
-  # ── Grafana dashboard provisioning ──────────────────────────────────────────
-  # Dashboards are provisioned automatically on Grafana startup.
-  # No manual UI clicks required — they just appear.
+{% if deploy_dcgm | default(false) | bool %}
+  # ── Grafana dashboard provisioning (GPU only) ──────────────────────────────
+  # Grafana supports automatic dashboard provisioning through configuration files.
+  # Rather than clicking through the Grafana UI, we declare dashboards here and
+  # Grafana imports them on startup — fully reproducible with no manual steps.
+  #
+  # dashboardProviders: tells Grafana WHERE to look for dashboard JSON files.
+  #   Each provider defines a folder name and a filesystem path inside the
+  #   Grafana container. The chart creates the folder and mounts the files.
+  #
+  # dashboards: the actual dashboards to provision, referenced by gnetId.
+  #   gnetId is a Grafana.com dashboard ID. Grafana downloads the dashboard
+  #   JSON from https://grafana.com/grafana/dashboards/<gnetId> at startup.
+  #   gnetId 12239 = the official NVIDIA DCGM Exporter dashboard, which shows:
+  #     GPU utilisation, framebuffer memory, temperature, power draw, clock speed.
+  #
+  # To add a custom dashboard instead of a gnetId:
+  #   1. Export your dashboard JSON from Grafana UI (Dashboard → Share → Export)
+  #   2. Save it to ansible-monitoring/roles/prometheus_stack/files/my-dashboard.json
+  #   3. Replace gnetId with: json: "{{ lookup('file', 'my-dashboard.json') }}"
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -25,22 +62,37 @@ grafana:
 
   dashboards:
     nvidia:
-      # Official NVIDIA DCGM Grafana dashboard
-      # Source: https://grafana.com/grafana/dashboards/12239
       dcgm-exporter:
+        # Official NVIDIA DCGM dashboard from Grafana.com
+        # https://grafana.com/grafana/dashboards/12239
         gnetId: 12239
         revision: 1
         datasource: Prometheus
+{% endif %}
 
+# ── Prometheus ─────────────────────────────────────────────────────────────────
 prometheus:
   service:
     type: NodePort
     nodePort: {{ prometheus_nodeport }}
 
   prometheusSpec:
-    # ── DCGM Exporter scrape config ─────────────────────────────────────────
-    # Scrapes all pods in the monitoring namespace that have the
-    # prometheus.io/scrape: "true" annotation — DCGM pods carry this.
+{% if deploy_dcgm | default(false) | bool %}
+    # ── DCGM Exporter scrape config (GPU only) ─────────────────────────────
+    # This block tells Prometheus how to discover and scrape the DCGM Exporter
+    # pods. DCGM Exporter is NOT part of kube-prometheus-stack — it is a
+    # separate DaemonSet we deploy ourselves via the dcgm_exporter role.
+    #
+    # Why we use additionalScrapeConfigs here instead of a ServiceMonitor CRD:
+    #   ServiceMonitors are cleaner but require the Prometheus Operator to have
+    #   permission to read them across namespaces. additionalScrapeConfigs is
+    #   simpler and guaranteed to work with any Operator configuration.
+    #
+    # How it works:
+    #   1. kubernetes_sd_configs discovers all pods in the monitoring namespace
+    #   2. relabel_configs filters to only pods with label app=dcgm-exporter
+    #   3. The pod IP is used as the scrape address on port {{ dcgm_metrics_port }}
+    #   4. node and pod labels are attached so metrics are queryable per-node
     additionalScrapeConfigs:
       - job_name: dcgm-exporter
         scrape_interval: 15s
@@ -61,3 +113,4 @@ prometheus:
             target_label: node
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+{% endif %}
