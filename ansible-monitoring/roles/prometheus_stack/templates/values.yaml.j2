@@ -46,7 +46,7 @@ grafana:
   # To add a custom dashboard instead of a gnetId:
   #   1. Export your dashboard JSON from Grafana UI (Dashboard → Share → Export)
   #   2. Save it to ansible-monitoring/roles/prometheus_stack/files/my-dashboard.json
-  #   3. Replace gnetId with: json: "{{ lookup('file', 'my-dashboard.json') }}"
+  #   3. Replace gnetId with: json: "{% raw %}{{ lookup('file', 'my-dashboard.json') }}{% endraw %}"
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -76,8 +76,8 @@ prometheus:
     type: NodePort
     nodePort: {{ prometheus_nodeport }}
 
-  prometheusSpec:
 {% if deploy_dcgm | default(false) | bool %}
+  prometheusSpec:
     # ── DCGM Exporter scrape config (GPU only) ─────────────────────────────
     # This block tells Prometheus how to discover and scrape the DCGM Exporter
     # pods. DCGM Exporter is NOT part of kube-prometheus-stack — it is a
