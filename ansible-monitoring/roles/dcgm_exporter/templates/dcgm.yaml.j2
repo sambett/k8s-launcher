@@ -1,7 +1,17 @@
-# DCGM Exporter DaemonSet
-# Runs on GPU nodes only — nodeSelector targets nvidia.com/gpu.present=true
-# which is written by GPU Feature Discovery (GFD) and is guaranteed to exist
-# on any node where the Device Plugin is running.
+# ansible-monitoring/roles/dcgm_exporter/templates/dcgm.yaml.j2
+#
+# NVIDIA DCGM Exporter DaemonSet
+#
+# Runs on GPU nodes only and exposes GPU telemetry (utilisation, memory,
+# temperature, power, clock speed) on port {{ dcgm_metrics_port }}.
+# Prometheus scrapes these metrics; Grafana visualises them.
+#
+# nodeSelector — how GPU nodes are identified
+# -------------------------------------------
+# Controlled by dcgm_node_selector_key / dcgm_node_selector_value (group_vars/all.yml).
+# The label nvidia.com/gpu.present=true was written by old standalone GFD (NVDP < 0.14).
+# Newer NVDP/GFD versions dropped it. Default is nvidia.com/gpu.mode=compute which
+# is written by all modern GFD versions on any compute GPU node.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -19,18 +29,21 @@ spec:
       labels:
         app: dcgm-exporter
       annotations:
-        # Tells Prometheus to scrape this pod automatically
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ dcgm_metrics_port }}"
     spec:
-      # Only schedule on nodes that have a GPU
+      # Only schedule on nodes where dcgm_node_selector_key=dcgm_node_selector_value.
+      # Default: nvidia.com/gpu.mode=compute (GFD label, present on all compute GPU nodes).
+      # Override dcgm_node_selector_key / dcgm_node_selector_value in group_vars/all.yml
+      # if your GFD version writes a different discriminating label.
       nodeSelector:
-        nvidia.com/gpu.present: "true"
+        {{ dcgm_node_selector_key }}: "{{ dcgm_node_selector_value }}"
+
       tolerations:
-        # Tolerate GPU node taints if any exist
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule
+
       containers:
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:{{ dcgm_version }}
@@ -44,10 +57,12 @@ spec:
             - name: pod-gpu-resources
               readOnly: true
               mountPath: /var/lib/kubelet/pod-resources
+
       volumes:
         - name: pod-gpu-resources
           hostPath:
             path: /var/lib/kubelet/pod-resources
+
 ---
 apiVersion: v1
 kind: Service
@@ -57,6 +72,7 @@ metadata:
   labels:
     app: dcgm-exporter
 spec:
+  # Headless — Prometheus discovers and scrapes each pod IP directly
   clusterIP: None
   selector:
     app: dcgm-exporter
