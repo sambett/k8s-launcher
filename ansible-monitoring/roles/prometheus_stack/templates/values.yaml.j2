@@ -76,24 +76,32 @@ prometheus:
     type: NodePort
     nodePort: {{ prometheus_nodeport }}
 
-{% if deploy_dcgm | default(false) | bool %}
   prometheusSpec:
-    # ── DCGM Exporter scrape config (GPU only) ─────────────────────────────
-    # This block tells Prometheus how to discover and scrape the DCGM Exporter
-    # pods. DCGM Exporter is NOT part of kube-prometheus-stack — it is a
-    # separate DaemonSet we deploy ourselves via the dcgm_exporter role.
-    #
-    # Why we use additionalScrapeConfigs here instead of a ServiceMonitor CRD:
-    #   ServiceMonitors are cleaner but require the Prometheus Operator to have
-    #   permission to read them across namespaces. additionalScrapeConfigs is
-    #   simpler and guaranteed to work with any Operator configuration.
-    #
-    # How it works:
-    #   1. kubernetes_sd_configs discovers all pods in the monitoring namespace
-    #   2. relabel_configs filters to only pods with label app=dcgm-exporter
-    #   3. The pod IP is used as the scrape address on port {{ dcgm_metrics_port }}
-    #   4. node and pod labels are attached so metrics are queryable per-node
     additionalScrapeConfigs:
+
+      # ── Longhorn storage scrape (always enabled) ───────────────────────────
+      # Longhorn Manager exposes storage metrics on port 9500.
+      # These metrics cover volume health, disk capacity/usage, replica status,
+      # and instance manager resource usage — essential for storage monitoring.
+      # Longhorn does not ship a ServiceMonitor so we scrape it directly here.
+      # The DNS name longhorn-backend.longhorn-system.svc.cluster.local is stable
+      # as long as the Longhorn namespace and service name are unchanged.
+      - job_name: longhorn
+        scrape_interval: 30s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - longhorn-backend.longhorn-system.svc.cluster.local:9500
+            labels:
+              cluster: kubernetes
+
+{% if deploy_dcgm | default(false) | bool %}
+      # ── DCGM Exporter scrape (GPU only, enabled when deploy_dcgm=true) ────
+      # DCGM Exporter is NOT part of kube-prometheus-stack — it is a separate
+      # DaemonSet deployed by the dcgm_exporter role on GPU nodes only.
+      # kubernetes_sd_configs discovers pods labelled app=dcgm-exporter and
+      # relabel_configs stamps node and pod labels onto every metric so panels
+      # can filter by node name in Grafana using {node="$node"}.
       - job_name: dcgm-exporter
         scrape_interval: 15s
         metrics_path: /metrics
