@@ -44,19 +44,17 @@ grafana:
     type: NodePort
     nodePort: {{ grafana_nodeport }}
 
-  # ── AI Workbench dashboard (always provisioned) ────────────────────────────
-  # The workbench-dashboard.json file lives at:
-  #   ansible-monitoring/roles/prometheus_stack/files/workbench-dashboard.json
-  # Ansible's lookup('file', ...) reads it at render time and inlines it here.
-  # Helm passes it to the kube-prometheus-stack chart which stores it in a
-  # ConfigMap and mounts it into Grafana — fully reproducible on every deploy.
-  #
-  # dashboardProviders: tells Grafana which folder to put the dashboard in.
-  # dashboards: the actual dashboard JSON, inlined via Jinja2 file lookup.
+  # ── Dashboard provisioning ─────────────────────────────────────────────────
+  # dashboardProviders defines all Grafana dashboard folders in one block.
+  # YAML does not allow the same key twice — having two dashboardProviders
+  # blocks causes the second to silently overwrite the first.
+  # Both the workbench provider (always) and NVIDIA provider (DCGM only)
+  # live here so Grafana sees both.
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
       providers:
+        # AI Workbench dashboard — always provisioned
         - name: workbench
           orgId: 1
           folder: AI Workbench
@@ -65,37 +63,8 @@ grafana:
           editable: true
           options:
             path: /var/lib/grafana/dashboards/workbench
-
-  dashboards:
-    workbench:
-      workbench-monitor:
-        json: |
-          {{ lookup('file', 'workbench-dashboard.json') | indent(10) }}
-
 {% if deploy_dcgm | default(false) | bool %}
-  # ── Grafana dashboard provisioning (GPU only) ──────────────────────────────
-  # Grafana supports automatic dashboard provisioning through configuration files.
-  # Rather than clicking through the Grafana UI, we declare dashboards here and
-  # Grafana imports them on startup — fully reproducible with no manual steps.
-  #
-  # dashboardProviders: tells Grafana WHERE to look for dashboard JSON files.
-  #   Each provider defines a folder name and a filesystem path inside the
-  #   Grafana container. The chart creates the folder and mounts the files.
-  #
-  # dashboards: the actual dashboards to provision, referenced by gnetId.
-  #   gnetId is a Grafana.com dashboard ID. Grafana downloads the dashboard
-  #   JSON from https://grafana.com/grafana/dashboards/<gnetId> at startup.
-  #   gnetId 12239 = the official NVIDIA DCGM Exporter dashboard, which shows:
-  #     GPU utilisation, framebuffer memory, temperature, power draw, clock speed.
-  #
-  # To add a custom dashboard instead of a gnetId:
-  #   1. Export your dashboard JSON from Grafana UI (Dashboard → Share → Export)
-  #   2. Save it to ansible-monitoring/roles/prometheus_stack/files/my-dashboard.json
-  #   3. Replace gnetId with: json: "{% raw %}{{ lookup('file', 'my-dashboard.json') }}{% endraw %}"
-  dashboardProviders:
-    dashboardproviders.yaml:
-      apiVersion: 1
-      providers:
+        # NVIDIA DCGM dashboard — only when DCGM is deployed
         - name: nvidia
           orgId: 1
           folder: NVIDIA
@@ -104,12 +73,20 @@ grafana:
           editable: true
           options:
             path: /var/lib/grafana/dashboards/nvidia
+{% endif %}
 
+  # dashboards: the actual dashboard definitions.
+  # workbench-dashboard.json is read at Ansible render time via lookup('file').
+  # Helm inlines it into a ConfigMap which Grafana mounts on startup.
   dashboards:
+    workbench:
+      workbench-monitor:
+        json: |
+          {{ lookup('file', 'workbench-dashboard.json') | indent(10) }}
+{% if deploy_dcgm | default(false) | bool %}
     nvidia:
       dcgm-exporter:
-        # Official NVIDIA DCGM dashboard from Grafana.com
-        # https://grafana.com/grafana/dashboards/12239
+        # Official NVIDIA DCGM Exporter dashboard — https://grafana.com/grafana/dashboards/12239
         gnetId: 12239
         revision: 1
         datasource: Prometheus
