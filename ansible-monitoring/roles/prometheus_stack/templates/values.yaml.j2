@@ -44,6 +44,34 @@ grafana:
     type: NodePort
     nodePort: {{ grafana_nodeport }}
 
+  # ── AI Workbench dashboard (always provisioned) ────────────────────────────
+  # The workbench-dashboard.json file lives at:
+  #   ansible-monitoring/roles/prometheus_stack/files/workbench-dashboard.json
+  # Ansible's lookup('file', ...) reads it at render time and inlines it here.
+  # Helm passes it to the kube-prometheus-stack chart which stores it in a
+  # ConfigMap and mounts it into Grafana — fully reproducible on every deploy.
+  #
+  # dashboardProviders: tells Grafana which folder to put the dashboard in.
+  # dashboards: the actual dashboard JSON, inlined via Jinja2 file lookup.
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: workbench
+          orgId: 1
+          folder: AI Workbench
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/workbench
+
+  dashboards:
+    workbench:
+      workbench-monitor:
+        json: |
+          {{ lookup('file', 'workbench-dashboard.json') | indent(10) }}
+
 {% if deploy_dcgm | default(false) | bool %}
   # ── Grafana dashboard provisioning (GPU only) ──────────────────────────────
   # Grafana supports automatic dashboard provisioning through configuration files.
@@ -97,20 +125,28 @@ prometheus:
     additionalScrapeConfigs:
 
       # ── Longhorn storage scrape (always enabled) ───────────────────────────
-      # Longhorn Manager exposes storage metrics on port 9500.
-      # These metrics cover volume health, disk capacity/usage, replica status,
-      # and instance manager resource usage — essential for storage monitoring.
-      # Longhorn does not ship a ServiceMonitor so we scrape it directly here.
-      # The DNS name longhorn-backend.longhorn-system.svc.cluster.local is stable
-      # as long as the Longhorn namespace and service name are unchanged.
+      # Longhorn Manager exposes metrics on port 9500, but only for the node
+      # it runs on. A static service target only scrapes whichever pod the
+      # load-balancer picks — giving metrics for one node only.
+      # Pod-level discovery scrapes every Manager pod individually so all
+      # nodes (ansibleworker1, w1-temp, w2-temp, etc.) appear in Prometheus.
       - job_name: longhorn
         scrape_interval: 30s
         metrics_path: /metrics
-        static_configs:
-          - targets:
-              - longhorn-backend.longhorn-system.svc.cluster.local:9500
-            labels:
-              cluster: kubernetes
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - longhorn-system
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: longhorn-manager
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: $1:9500
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
 
 {% if deploy_dcgm | default(false) | bool %}
       # ── DCGM Exporter scrape (GPU only, enabled when deploy_dcgm=true) ────
