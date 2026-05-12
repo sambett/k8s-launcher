@@ -109,7 +109,7 @@ prometheus:
           - source_labels: [__meta_kubernetes_pod_ip]
             target_label: __address__
             replacement: $1:{{ dcgm_metrics_port }}
-          - source_labels: [__meta_kubernetes_node_name]
+          - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
