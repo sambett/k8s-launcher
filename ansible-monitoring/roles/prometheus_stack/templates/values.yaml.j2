@@ -21,6 +21,23 @@
 # When deploy_dcgm=false (default), all GPU-specific blocks below are omitted.
 # When deploy_dcgm=true, the DCGM scrape job and the NVIDIA dashboard are added.
 
+# ── kube-state-metrics ────────────────────────────────────────────────────────
+# By default kube-state-metrics only exposes pod labels that are explicitly
+# allowlisted. JupyterHub pod labels are not in the default list, so
+# kube_pod_labels never carries label_hub_jupyter_org_username — the Grafana
+# username variable and per-user joins return empty even with active sessions.
+#
+# extraArgs adds these three labels to the allowlist:
+#   label_hub_jupyter_org_username  — researcher's JupyterHub username
+#   label_workbench_gitlab_group    — researcher's GitLab group
+#   label_workbench_profile_slug    — the launched profile (cpu-only, gpu-small)
+#
+# After Helm upgrade, the username dropdown populates when notebooks are
+# running, and per-user RAM/CPU panels correctly show real usernames.
+kube-state-metrics:
+  extraArgs:
+    - --metric-labels-allowlist=pods=[hub.jupyter.org/username,workbench/gitlab-group,workbench/profile-slug]
+
 # ── Grafana ────────────────────────────────────────────────────────────────────
 grafana:
   service:
