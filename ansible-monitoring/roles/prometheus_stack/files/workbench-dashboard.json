@@ -421,6 +421,7 @@
     },
     {
       "datasource": {
+        "default": true,
         "type": "prometheus",
         "uid": "prometheus"
       },
@@ -503,8 +504,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "DCGM_FI_DEV_GPU_UTIL{node=~\"$node\"}",
+          "editorMode": "code",
+          "expr": "max by (node, modelName, gpu) (DCGM_FI_DEV_GPU_UTIL{node=~\"$node\"})\r\n",
           "legendFormat": "{{node}} — {{modelName}} GPU{{gpu}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -513,6 +516,7 @@
     },
     {
       "datasource": {
+        "default": true,
         "type": "prometheus",
         "uid": "prometheus"
       },
@@ -593,8 +597,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "DCGM_FI_DEV_FB_USED{node=~\"$node\"}",
+          "editorMode": "code",
+          "expr": "max by (node, modelName, gpu) (\r\n  DCGM_FI_DEV_FB_USED{node=~\"$node\"}\r\n)\r\n",
           "legendFormat": "{{node}} — {{modelName}} GPU{{gpu}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -1232,208 +1238,12 @@
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RAM"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bytes"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CPU (cores)"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "decimals",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Node"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 140
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Username"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 120
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 42
-      },
-      "id": 45,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "11.2.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max by(pod,node,label_hub_jupyter_org_username)(\n  kube_pod_info{namespace=\"jhub\",pod=~\"jupyter-.*\"}\n  * on(namespace,pod) group_left(label_hub_jupyter_org_username)\n  kube_pod_labels{namespace=\"jhub\",label_hub_jupyter_org_username=~\"$username\"}\n  * on(namespace,pod) group_left()\n  (max by(namespace,pod)(kube_pod_status_phase{namespace=\"jhub\",pod=~\"jupyter-.*\",phase=\"Running\"}) == 1)\n)",
-          "instant": true,
-          "legendFormat": "{{pod}}",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by(pod)(container_memory_usage_bytes{namespace=\"jhub\",pod=~\"jupyter-.*\",container!=\"\",image!=\"\"})",
-          "instant": true,
-          "legendFormat": "{{pod}}",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by(pod)(rate(container_cpu_usage_seconds_total{namespace=\"jhub\",pod=~\"jupyter-.*\",container!=\"\",image!=\"\"}[5m]))",
-          "instant": true,
-          "legendFormat": "{{pod}}",
-          "refId": "C"
-        }
-      ],
-      "title": "Running Sessions — Username · Node · RAM · CPU",
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        },
-        {
-          "id": "joinByField",
-          "options": {
-            "byField": "pod",
-            "mode": "outer"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "Time 1": true,
-              "Time 2": true,
-              "Time 3": true,
-              "Value 1": true,
-              "__name__": true,
-              "container": true,
-              "created_by_kind": true,
-              "created_by_name": true,
-              "endpoint": true,
-              "host_ip": true,
-              "host_network": true,
-              "instance": true,
-              "job": true,
-              "namespace": true,
-              "phase": true,
-              "pod_ip": true,
-              "priority_class": true,
-              "ready": true,
-              "service": true,
-              "uid": true
-            },
-            "indexByName": {
-              "CPU (cores)": 4,
-              "Node": 2,
-              "Pod": 1,
-              "RAM": 3,
-              "Username": 0
-            },
-            "renameByName": {
-              "Value 2": "RAM",
-              "Value 3": "CPU (cores)",
-              "label_hub_jupyter_org_username": "Username",
-              "node": "Node",
-              "pod": "Pod"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 42
       },
       "id": 50,
       "panels": [],
@@ -1478,7 +1288,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 51
+        "y": 43
       },
       "id": 51,
       "options": {
@@ -1553,7 +1363,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 51
+        "y": 43
       },
       "id": 52,
       "options": {
@@ -1651,7 +1461,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 50
       },
       "id": 53,
       "options": {
@@ -1741,7 +1551,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 50
       },
       "id": 54,
       "options": {
@@ -1831,7 +1641,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 58
       },
       "id": 56,
       "options": {
@@ -1923,7 +1733,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 58
       },
       "id": 55,
       "options": {
@@ -1957,7 +1767,7 @@
         "h": 2,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 66
       },
       "id": 57,
       "options": {
@@ -1979,7 +1789,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 76
+        "y": 68
       },
       "id": 60,
       "panels": [],
@@ -2024,7 +1834,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 77
+        "y": 69
       },
       "id": 61,
       "options": {
@@ -2096,7 +1906,7 @@
         "h": 8,
         "w": 10,
         "x": 6,
-        "y": 77
+        "y": 69
       },
       "id": 62,
       "options": {
@@ -2165,7 +1975,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 77
+        "y": 69
       },
       "id": 65,
       "options": {
@@ -2233,7 +2043,7 @@
         "h": 4,
         "w": 2,
         "x": 20,
-        "y": 77
+        "y": 69
       },
       "id": 66,
       "options": {
@@ -2301,7 +2111,7 @@
         "h": 4,
         "w": 2,
         "x": 22,
-        "y": 77
+        "y": 69
       },
       "id": 67,
       "options": {
@@ -2352,8 +2162,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
-                "value": null
+                "color": "blue"
               }
             ]
           },
@@ -2365,7 +2174,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 81
+        "y": 73
       },
       "id": 63,
       "options": {
@@ -2416,8 +2225,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
-                "value": null
+                "color": "blue"
               }
             ]
           },
@@ -2429,7 +2237,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 81
+        "y": 73
       },
       "id": 64,
       "options": {
@@ -2513,8 +2321,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2526,7 +2333,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 85
+        "y": 77
       },
       "id": 68,
       "options": {
@@ -2603,8 +2410,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           },
@@ -2616,7 +2422,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 85
       },
       "id": 69,
       "options": {
@@ -2668,13 +2474,9 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
@@ -2700,13 +2502,9 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
@@ -2739,6 +2537,6 @@
   "timezone": "browser",
   "title": "AI Workbench Monitor3",
   "uid": "workbench-monitor-final3",
-  "version": 2,
+  "version": 4,
   "weekStart": ""
 }
