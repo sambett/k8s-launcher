@@ -147,8 +147,11 @@ prometheus:
           - source_labels: [__meta_kubernetes_pod_ip]
             target_label: __address__
             replacement: $1:{{ dcgm_metrics_port }}
+          # Stamp the Kubernetes node name so panels can filter by node.
+          # Do NOT relabel "pod" here — when DCGM Kubernetes mode is active,
+          # DCGM sets pod/namespace/container labels itself from the kubelet
+          # pod-resources API. Overwriting "pod" with the scraper pod name
+          # (dcgm-exporter-*) would hide the real notebook pod attribution.
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
 {% endif %}
