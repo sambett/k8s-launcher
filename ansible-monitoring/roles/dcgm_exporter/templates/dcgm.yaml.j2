@@ -1,17 +1,52 @@
 # ansible-monitoring/roles/dcgm_exporter/templates/dcgm.yaml.j2
 #
-# NVIDIA DCGM Exporter DaemonSet
+# NVIDIA DCGM Exporter — Kubernetes-aware mode
 #
-# Runs on GPU nodes only and exposes GPU telemetry (utilisation, memory,
-# temperature, power, clock speed) on port {{ dcgm_metrics_port }}.
-# Prometheus scrapes these metrics; Grafana visualises them.
+# DCGM_EXPORTER_KUBERNETES=true tells DCGM to query the Kubelet
+# pod-resources API socket to discover which pod is using which GPU.
+# This stamps pod, namespace, and container labels onto every GPU metric
+# giving real per-pod attribution for VRAM and GPU utilisation.
 #
-# nodeSelector — how GPU nodes are identified
-# -------------------------------------------
-# Controlled by dcgm_node_selector_key / dcgm_node_selector_value (group_vars/all.yml).
-# The label nvidia.com/gpu.present=true was written by old standalone GFD (NVDP < 0.14).
-# Newer NVDP/GFD versions dropped it. Default is nvidia.com/gpu.mode=compute which
-# is written by all modern GFD versions on any compute GPU node.
+# What is needed for Kubernetes mode:
+#   1. DCGM_EXPORTER_KUBERNETES=true env var
+#   2. /var/lib/kubelet/pod-resources socket mounted (already present)
+#   3. ServiceAccount + ClusterRole with get/list on pods and nodes
+#      so DCGM can map GPU device IDs to running pods
+#
+# nodeSelector uses dcgm_node_selector_key / dcgm_node_selector_value
+# from group_vars/all.yml. Default: nvidia.com/gpu.mode=compute which
+# is written by GFD on all compute GPU nodes (confirmed on w1-temp).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dcgm-exporter
+  namespace: {{ dcgm_namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dcgm-exporter
+rules:
+  # Required for DCGM Kubernetes mode:
+  # DCGM reads pod metadata to map GPU device IDs to running pods.
+  # Without this, DCGM_EXPORTER_KUBERNETES=true falls back to node-level metrics.
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dcgm-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dcgm-exporter
+subjects:
+  - kind: ServiceAccount
+    name: dcgm-exporter
+    namespace: {{ dcgm_namespace }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -32,21 +67,26 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ dcgm_metrics_port }}"
     spec:
-      # Only schedule on nodes where dcgm_node_selector_key=dcgm_node_selector_value.
-      # Default: nvidia.com/gpu.mode=compute (GFD label, present on all compute GPU nodes).
-      # Override dcgm_node_selector_key / dcgm_node_selector_value in group_vars/all.yml
-      # if your GFD version writes a different discriminating label.
+      serviceAccountName: dcgm-exporter
       nodeSelector:
         {{ dcgm_node_selector_key }}: "{{ dcgm_node_selector_value }}"
-
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule
-
       containers:
         - name: dcgm-exporter
           image: nvcr.io/nvidia/k8s/dcgm-exporter:{{ dcgm_version }}
+          env:
+            # Kubernetes-aware mode: DCGM queries the Kubelet pod-resources
+            # socket to discover which pod/container is using which GPU.
+            # Result: pod, namespace, container labels on every GPU metric.
+            - name: DCGM_EXPORTER_KUBERNETES
+              value: "true"
+            # Namespace to watch for pod-to-GPU mapping.
+            # Empty string means all namespaces — correct for a shared cluster.
+            - name: DCGM_EXPORTER_KUBERNETES_GPU_ID_TYPE
+              value: "uid"
           ports:
             - name: metrics
               containerPort: {{ dcgm_metrics_port }}
@@ -57,12 +97,10 @@ spec:
             - name: pod-gpu-resources
               readOnly: true
               mountPath: /var/lib/kubelet/pod-resources
-
       volumes:
         - name: pod-gpu-resources
           hostPath:
             path: /var/lib/kubelet/pod-resources
-
 ---
 apiVersion: v1
 kind: Service
@@ -72,7 +110,6 @@ metadata:
   labels:
     app: dcgm-exporter
 spec:
-  # Headless — Prometheus discovers and scrapes each pod IP directly
   clusterIP: None
   selector:
     app: dcgm-exporter
