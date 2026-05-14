@@ -68,20 +68,6 @@
   <div class="card">
     <h2>Phase 1 - SSH key bootstrap (cluster nodes)</h2>
     <div class="card-hint">
-<<<<<<< HEAD
-      Fill in each cluster node below. The password is used once to push the
-      SSH key and is never stored after this step.
-    </div>
-    <div style="display:flex;gap:10px;align-items:flex-start;background:#e8f4fd;border:1px solid #90caf9;border-radius:6px;padding:10px 14px;margin-bottom:.75rem;font-size:12.5px;color:#0d47a1;line-height:1.6">
-      <span style="font-size:17px;flex-shrink:0">ℹ️</span>
-      <div>
-        <strong>Hostname affects both Ansible and Kubernetes.</strong><br>
-        This name is used by Ansible as the inventory hostname and later becomes
-        the Kubernetes node name registered by kubelet. If it differs from the
-        VM's real hostname, Ansible and <code>kubectl get nodes</code> may show
-        different names for the same machine. Use a unique lowercase RFC
-        1123 name and keep it aligned with the VM hostname where possible.
-=======
       Fill in the machines to bootstrap with Ansible. The password is used
       once to set up SSH access and is not stored afterward.
     </div>
@@ -89,11 +75,11 @@
       <span style="font-size:16px;flex-shrink:0">i</span>
       <div>
         <strong>Hostname best practice</strong><br>
-        The hostname entered here must match the machine's real hostname for
-        best practice. This helps Ansible and Kubernetes refer to the machine
-        consistently later. Use lowercase letters, numbers, and hyphens only,
-        because Kubernetes hostnames follow lowercase DNS-style naming rules.
->>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
+        The hostname entered here and the machine's real hostname must be the
+        same for best practices. This helps Ansible and Kubernetes refer to
+        the machine consistently later. Use lowercase letters, numbers, and
+        hyphens only, because Kubernetes hostnames follow lowercase DNS-style
+        naming rules.
       </div>
     </div>
     <div id="banner-bootstrap-validation" style="display:none;background:#fff3e0;border:1px solid #ffb300;border-radius:6px;padding:9px 13px;margin-bottom:.75rem;font-size:12.5px;color:#e65100;line-height:1.6"></div>
@@ -189,11 +175,7 @@ function addBNode(ip='', hn='', user='') {
     <input type="text" placeholder="e.g. cp-01" value="${hn}" class="bh" oninput="this.value=this.value.toLowerCase();validateBootstrapForm()">
     <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu" oninput="this.value=this.value.toLowerCase()">
     <input type="password" placeholder="SSH password (used once)" class="bp">
-<<<<<<< HEAD
     <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();validateBootstrapForm()">✕</button>`;
-=======
-    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();validateBootstrapForm()">x</button>`;
->>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
   document.getElementById('bnodes').appendChild(d);
   validateBootstrapForm();
 }
@@ -240,11 +222,7 @@ function validateBootstrapForm() {
 
   if (errors.length) {
     banner.style.display = 'block';
-<<<<<<< HEAD
     banner.innerHTML = errors.map(error => `<div style="margin-bottom:4px">⚠ ${error}</div>`).join('');
-=======
-    banner.innerHTML = errors.map(error => `<div style="margin-bottom:4px">Warning: ${error}</div>`).join('');
->>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
     sshBtn.disabled = true;
   } else {
     banner.style.display = 'none';
