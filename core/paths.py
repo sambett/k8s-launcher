@@ -20,6 +20,7 @@ SSH_PUB_KEY_PATH     = Path.home() / ".ssh" / "id_ed25519.pub"
 
 INVENTORY_PATH       = GENERATED_DIR / "inventory.ini"
 VARS_PATH            = GENERATED_DIR / "group_vars" / "all.yml"
+BOOTSTRAP_NODES_PATH = GENERATED_DIR / "bootstrap-nodes.json"
 
 GITLAB_INVENTORY_PATH   = GENERATED_DIR / "gitlab-inventory.ini"
 GITLAB_VARS_PATH        = GENERATED_DIR / "gitlab-vars.yml"

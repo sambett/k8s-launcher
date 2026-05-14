@@ -1,24 +1,36 @@
 <div id="tab-configure" class="panel">
 
   <div class="card">
-    <h2>Control plane</h2>
-    <div class="card-hint">Hostname and SSH user are enforced lowercase (RFC 1123).</div>
-    <div class="field-row"><label>IP address</label>
-      <input type="text" id="cp-ip" placeholder="e.g. 10.0.0.10  (control plane IP)"></div>
-    <div class="field-row"><label>Hostname</label>
-      <input type="text" id="cp-hostname" placeholder="e.g. cp-01  (must match VM hostname)" oninput="this.value=this.value.toLowerCase()"></div>
-    <div class="field-row"><label>SSH user</label>
-      <input type="text" id="cp-user" placeholder="e.g. ubuntu" oninput="this.value=this.value.toLowerCase()"></div>
+    <h2>Cluster machines</h2>
+    <div class="card-hint">
+      Configure uses only machines that completed Bootstrap SSH successfully.
+      Pick one saved machine as the control plane and the remaining saved
+      machines as workers.
+    </div>
+    <div id="configure-machines-empty" style="display:none;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 14px;font-size:13px;color:#5d4037;margin-bottom:.75rem">
+      No bootstrapped machines were found yet. Go back to Bootstrap, prepare
+      your machines there, then return here to generate the cluster
+      configuration.
+    </div>
+    <div class="field-row">
+      <label>Control plane</label>
+      <div style="display:flex;flex-direction:column;flex:1;gap:4px">
+        <select id="cp-select" onchange="onConfigureControlPlaneChange()" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px">
+          <option value="">— choose control plane —</option>
+        </select>
+        <span style="font-size:11px;color:#9e9e9e">Only saved bootstrapped machines appear here.</span>
+      </div>
+    </div>
+    <div id="cp-summary" style="display:none;background:#f8fbff;border:1px solid #d7e9ff;border-radius:6px;padding:10px 14px;font-size:12.5px;color:#234;line-height:1.6;margin-top:.5rem"></div>
   </div>
 
   <div class="card">
     <h2>Worker nodes</h2>
     <p style="font-size:12px;color:#1565c0;background:#e3f2fd;border-radius:4px;padding:6px 10px;margin-bottom:.75rem">
-      Add or remove rows as needed before generating configuration.
-      Hostnames and SSH usernames are enforced lowercase (RFC 1123).
+      Select the saved bootstrapped machines that should join as workers. The
+      machine chosen as control plane is excluded automatically.
     </p>
-    <div id="workers"></div>
-    <button class="btn btn-sm" style="margin-top:4px" onclick="addWorker()">+ Add worker</button>
+    <div id="worker-checklist" style="display:flex;flex-direction:column;gap:6px"></div>
   </div>
 
   <div class="card">
@@ -94,20 +106,113 @@
 </div>
 
 <script>
-let wc = 0;
-function addWorker(ip='', hn='', user='') {
-  wc++;
-  const d = document.createElement('div');
-  d.className = 'node-row';
-  d.innerHTML = `
-    <input type="text" placeholder="e.g. 10.0.0.11" value="${ip}" class="wi">
-    <input type="text" placeholder="e.g. worker-01" value="${hn}" class="wh" oninput="this.value=this.value.toLowerCase()">
-    <input type="text" placeholder="e.g. ubuntu" value="${user}" class="wu" oninput="this.value=this.value.toLowerCase()">
-    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
-  document.getElementById('workers').appendChild(d);
+let CONFIG_BOOTSTRAPPED_NODES = [];
+
+function renderConfigureMachineState() {
+  const empty = document.getElementById('configure-machines-empty');
+  const select = document.getElementById('cp-select');
+  const cpSummary = document.getElementById('cp-summary');
+  const workerList = document.getElementById('worker-checklist');
+
+  if (!CONFIG_BOOTSTRAPPED_NODES.length) {
+    empty.style.display = 'block';
+    select.disabled = true;
+    cpSummary.style.display = 'none';
+    workerList.innerHTML = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+  select.disabled = false;
 }
-addWorker();
-addWorker();
+
+function renderConfigureControlPlaneOptions() {
+  const select = document.getElementById('cp-select');
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">— choose control plane —</option>';
+
+  CONFIG_BOOTSTRAPPED_NODES.forEach(node => {
+    const option = document.createElement('option');
+    option.value = node.ip;
+    option.textContent = `${node.hostname} (${node.ip}) — ${node.ssh_user}`;
+    select.appendChild(option);
+  });
+
+  if (CONFIG_BOOTSTRAPPED_NODES.some(node => node.ip === currentValue)) {
+    select.value = currentValue;
+  } else if (CONFIG_BOOTSTRAPPED_NODES.length === 1) {
+    select.value = CONFIG_BOOTSTRAPPED_NODES[0].ip;
+  }
+}
+
+function renderConfigureControlPlaneSummary() {
+  const select = document.getElementById('cp-select');
+  const cpSummary = document.getElementById('cp-summary');
+  const selected = CONFIG_BOOTSTRAPPED_NODES.find(node => node.ip === select.value);
+
+  if (!selected) {
+    cpSummary.style.display = 'none';
+    cpSummary.innerHTML = '';
+    return;
+  }
+
+  cpSummary.style.display = 'block';
+  cpSummary.innerHTML = `
+    <strong>Selected control plane</strong><br>
+    Hostname: <code>${selected.hostname}</code><br>
+    IP: <code>${selected.ip}</code><br>
+    SSH user: <code>${selected.ssh_user}</code>
+  `;
+}
+
+function renderConfigureWorkers() {
+  const select = document.getElementById('cp-select');
+  const workerList = document.getElementById('worker-checklist');
+  const selectedCpIp = select.value;
+  const workers = CONFIG_BOOTSTRAPPED_NODES.filter(node => node.ip !== selectedCpIp);
+
+  if (!workers.length) {
+    workerList.innerHTML = '<span style="color:#888;font-size:13px">No worker machines available yet.</span>';
+    return;
+  }
+
+  workerList.innerHTML = workers.map(node => `
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;cursor:pointer;font-size:13px;background:#fafafa">
+      <input type="checkbox" class="worker-check" value="${node.ip}" data-hostname="${node.hostname}" data-user="${node.ssh_user}" style="width:16px;height:16px;accent-color:#1976d2" checked>
+      <span style="font-weight:500;min-width:120px">${node.hostname}</span>
+      <span style="color:#757575">${node.ip}</span>
+      <span style="color:#9e9e9e;font-size:12px">user: ${node.ssh_user}</span>
+    </label>
+  `).join('');
+}
+
+function onConfigureControlPlaneChange() {
+  renderConfigureControlPlaneSummary();
+  renderConfigureWorkers();
+}
+
+async function loadBootstrappedNodes() {
+  try {
+    const response = await fetch('/api/bootstrap/nodes');
+    const data = await response.json();
+    CONFIG_BOOTSTRAPPED_NODES = Array.isArray(data.nodes) ? data.nodes : [];
+  } catch (e) {
+    CONFIG_BOOTSTRAPPED_NODES = [];
+  }
+
+  renderConfigureMachineState();
+  renderConfigureControlPlaneOptions();
+  renderConfigureControlPlaneSummary();
+  renderConfigureWorkers();
+}
+
+function getSelectedConfigureWorkers() {
+  return Array.from(document.querySelectorAll('.worker-check:checked')).map(checkbox => ({
+    ip: checkbox.value,
+    hostname: checkbox.dataset.hostname,
+    ssh_user: checkbox.dataset.user,
+  }));
+}
 
 let COMPAT_RULES = [];
 async function loadCompatMatrix() {
@@ -144,17 +249,22 @@ function checkCompat() {
 loadCompatMatrix();
 
 async function generateConfig() {
-  const workers = Array.from(document.querySelectorAll('#workers .node-row')).map(r => ({
-    ip:       r.querySelector('.wi').value,
-    hostname: r.querySelector('.wh').value,
-    ssh_user: r.querySelector('.wu').value,
-  })).filter(w => w.ip);
+  const cpIp = document.getElementById('cp-select').value;
+  const controlPlane = CONFIG_BOOTSTRAPPED_NODES.find(node => node.ip === cpIp);
+  const workers = getSelectedConfigureWorkers();
+  const el = document.getElementById('r-config');
+
+  if (!controlPlane) {
+    el.innerHTML = '<span class="badge b-warn">Choose one saved bootstrapped machine as the control plane.</span>';
+    return;
+  }
+  if (!workers.length) {
+    el.innerHTML = '<span class="badge b-warn">Select at least one saved bootstrapped worker machine.</span>';
+    return;
+  }
+
   const body = {
-    control_plane: {
-      ip:       document.getElementById('cp-ip').value,
-      hostname: document.getElementById('cp-hostname').value,
-      ssh_user: document.getElementById('cp-user').value,
-    },
+    control_plane: controlPlane,
     workers,
     kubernetes_version: document.getElementById('v-k8s').value,
     containerd_version: document.getElementById('v-containerd').value,
@@ -164,7 +274,6 @@ async function generateConfig() {
     service_cidr:       document.getElementById('svc-cidr').value,
     cluster_name:       document.getElementById('cluster-name').value,
   };
-  const el = document.getElementById('r-config');
   el.innerHTML = '<span class="badge b-run">Generating...</span>';
   const resp = await fetch('/api/configure', {
     method: 'POST',

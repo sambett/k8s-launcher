@@ -18,17 +18,19 @@ Phase 1: For each cluster node, using the password the user typed ONCE:
 The password is used exactly once per node (step 1-3) and never stored anywhere.
 """
 import os
+import json
 import shutil
 import socket
 import subprocess
 from pathlib import Path
 from typing import List, Optional
+from datetime import datetime, timezone
 
 import paramiko
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH
+from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH, BOOTSTRAP_NODES_PATH
 from core.ssh import get_client_with_password, get_client_with_key, run_command
 
 # Import the shared ansible.cfg writer so bootstrap guarantees
@@ -38,6 +40,32 @@ from core.ssh import get_client_with_password, get_client_with_key, run_command
 from core.ansible_cfg import write_ansible_cfgs
 
 router = APIRouter()
+
+
+def _upsert_bootstrap_registry(nodes: List[dict]) -> None:
+    """
+    Persist successful bootstrap records so Configure can offer only machines
+    that already passed SSH bootstrap. IP is the stable upsert key.
+    """
+    existing = []
+    if BOOTSTRAP_NODES_PATH.exists():
+        try:
+            existing = json.loads(BOOTSTRAP_NODES_PATH.read_text())
+        except Exception:
+            existing = []
+
+    by_ip = {node["ip"]: node for node in existing if isinstance(node, dict) and node.get("ip")}
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    for node in nodes:
+        by_ip[node["ip"]] = {
+            "ip": node["ip"],
+            "hostname": node["hostname"],
+            "ssh_user": node["ssh_user"],
+            "bootstrapped_at": timestamp,
+        }
+
+    BOOTSTRAP_NODES_PATH.write_text(json.dumps(list(by_ip.values()), indent=2))
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -329,9 +357,34 @@ async def bootstrap_ssh(request: BootstrapSSHRequest):
     # Always overwrites so stale or missing files can't cause a regression.
     cfgs_written = write_ansible_cfgs()
 
+    # Save only the nodes that completed SSH bootstrap successfully. Configure
+    # consumes this registry so users do not retype or select unprepared nodes.
+    succeeded = [
+        {"ip": node.ip, "hostname": node.hostname, "ssh_user": node.ssh_user}
+        for node, result in zip(request.nodes, results)
+        if result["status"] == "ok"
+    ]
+    if succeeded:
+        _upsert_bootstrap_registry(succeeded)
+
     failed = [r for r in results if r["status"] == "error"]
     return {
         "status":           "error" if failed else "ok",
         "results":          results,
         "ansible_cfgs":     len(cfgs_written)
     }
+
+
+@router.get("/api/bootstrap/nodes")
+async def get_bootstrap_nodes():
+    """
+    Return the saved list of successfully bootstrapped machines for Configure.
+    """
+    if not BOOTSTRAP_NODES_PATH.exists():
+        return {"nodes": []}
+
+    try:
+        data = json.loads(BOOTSTRAP_NODES_PATH.read_text())
+        return {"nodes": data if isinstance(data, list) else []}
+    except Exception:
+        return {"nodes": []}

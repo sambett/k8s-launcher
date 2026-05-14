@@ -68,14 +68,32 @@
   <div class="card">
     <h2>Phase 1 — SSH key bootstrap (cluster nodes)</h2>
     <div class="card-hint">
-      Fill in the IP, hostname, and SSH user for each cluster node.
-      The password is used once to push the SSH key — it is never saved anywhere.
-      Hostnames and SSH usernames are enforced lowercase (RFC 1123).
+      Fill in each cluster node below. The password is used once to push the
+      SSH key and is never stored after this step.
+    </div>
+    <div style="display:flex;gap:10px;align-items:flex-start;background:#e8f4fd;border:1px solid #90caf9;border-radius:6px;padding:10px 14px;margin-bottom:.75rem;font-size:12.5px;color:#0d47a1;line-height:1.6">
+      <span style="font-size:17px;flex-shrink:0">ℹ️</span>
+      <div>
+        <strong>Hostname affects both Ansible and Kubernetes.</strong><br>
+        This name is used by Ansible as the inventory hostname and later becomes
+        the Kubernetes node name registered by kubelet. If it differs from the
+        VM's real hostname, Ansible and <code>kubectl get nodes</code> may show
+        different names for the same machine. Use a unique lowercase RFC
+        1123 name and keep it aligned with the VM hostname where possible.
+      </div>
+    </div>
+    <div id="banner-bootstrap-validation" style="display:none;background:#fff3e0;border:1px solid #ffb300;border-radius:6px;padding:9px 13px;margin-bottom:.75rem;font-size:12.5px;color:#e65100;line-height:1.6"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 32px;gap:6px;padding:0 4px;margin-bottom:4px">
+      <span style="font-size:11px;color:#9e9e9e;font-weight:600">IP ADDRESS</span>
+      <span style="font-size:11px;color:#9e9e9e;font-weight:600">HOSTNAME</span>
+      <span style="font-size:11px;color:#9e9e9e;font-weight:600">SSH USER</span>
+      <span style="font-size:11px;color:#9e9e9e;font-weight:600">SSH PASSWORD</span>
+      <span></span>
     </div>
     <div id="bnodes"></div>
     <button class="btn btn-sm" style="margin-top:4px" onclick="addBNode()">+ Add node</button>
     <div style="margin-top:.75rem">
-      <button class="btn btn-primary" onclick="runBootstrapSSH()">Bootstrap SSH</button>
+      <button class="btn btn-primary" id="btn-bootstrap-ssh" onclick="runBootstrapSSH()">Bootstrap SSH</button>
     </div>
     <div id="r-ssh" style="margin-top:.5rem"></div>
   </div>
@@ -141,31 +159,87 @@ async function installAnsible() {
 
 // ── Phase 1 node rows ──────────────────────────────────────────────────────────
 let bnc = 0;
+const RFC1123_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
 function addBNode(ip='', hn='', user='') {
   bnc++;
   const d = document.createElement('div');
   d.className = 'node-row';
   d.innerHTML = `
-    <input type="text" placeholder="e.g. 10.0.0.10  (node IP)" value="${ip}" class="bi">
-    <input type="text" placeholder="e.g. cp-01  (hostname)" value="${hn}" class="bh" oninput="this.value=this.value.toLowerCase()">
+    <input type="text" placeholder="e.g. 10.0.0.10" value="${ip}" class="bi" oninput="validateBootstrapForm()">
+    <input type="text" placeholder="e.g. cp-01" value="${hn}" class="bh" oninput="this.value=this.value.toLowerCase();validateBootstrapForm()">
     <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu" oninput="this.value=this.value.toLowerCase()">
     <input type="password" placeholder="SSH password (used once)" class="bp">
-    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>`;
+    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();validateBootstrapForm()">✕</button>`;
   document.getElementById('bnodes').appendChild(d);
+  validateBootstrapForm();
 }
 addBNode();
 addBNode();
 addBNode();
 
+function validateBootstrapForm() {
+  const rows = document.querySelectorAll('#bnodes .node-row');
+  const banner = document.getElementById('banner-bootstrap-validation');
+  const sshBtn = document.getElementById('btn-bootstrap-ssh');
+  const errors = [];
+  const hostnames = [];
+  const ips = [];
+
+  rows.forEach(row => {
+    const hostname = row.querySelector('.bh').value.trim();
+    const ip = row.querySelector('.bi').value.trim();
+    if (hostname) hostnames.push(hostname);
+    if (ip) ips.push(ip);
+  });
+
+  const duplicateHostnames = hostnames.filter((hostname, index) => hostnames.indexOf(hostname) !== index);
+  [...new Set(duplicateHostnames)].forEach(hostname => {
+    errors.push(
+      `<strong>"${hostname}"</strong> is used twice. Ansible treats hostnames as dictionary keys; the second entry can replace the first. Each machine needs a unique name.`
+    );
+  });
+
+  const duplicateIps = ips.filter((ip, index) => ips.indexOf(ip) !== index);
+  [...new Set(duplicateIps)].forEach(ip => {
+    errors.push(
+      `<strong>${ip}</strong> appears in two rows. Two different hostnames cannot point at the same machine.`
+    );
+  });
+
+  hostnames.forEach(hostname => {
+    if (!RFC1123_RE.test(hostname)) {
+      errors.push(
+        `<strong>"${hostname}"</strong> is not a valid Kubernetes hostname. Use lowercase letters, digits, and hyphens only.`
+      );
+    }
+  });
+
+  if (errors.length) {
+    banner.style.display = 'block';
+    banner.innerHTML = errors.map(error => `<div style="margin-bottom:4px">⚠ ${error}</div>`).join('');
+    sshBtn.disabled = true;
+  } else {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    sshBtn.disabled = false;
+  }
+}
+
 async function runBootstrapSSH() {
   const rows  = document.querySelectorAll('#bnodes .node-row');
   const nodes = Array.from(rows).map(r => ({
-    ip:       r.querySelector('.bi').value,
-    hostname: r.querySelector('.bh').value,
-    ssh_user: r.querySelector('.bu').value,
+    ip:       r.querySelector('.bi').value.trim(),
+    hostname: r.querySelector('.bh').value.trim(),
+    ssh_user: r.querySelector('.bu').value.trim(),
     ssh_pass: r.querySelector('.bp').value,
-  })).filter(n => n.ip && n.ssh_pass);
+  })).filter(n => n.ip && n.hostname && n.ssh_user && n.ssh_pass);
   const el = document.getElementById('r-ssh');
+  validateBootstrapForm();
+  if (document.getElementById('btn-bootstrap-ssh').disabled) {
+    el.innerHTML = '<span class="badge b-warn">Fix the hostname or IP validation issues before bootstrapping.</span>';
+    return;
+  }
   el.innerHTML = '<span class="badge b-run">Pushing keys...</span>';
   const resp = await fetch('/api/bootstrap/ssh', {
     method: 'POST',

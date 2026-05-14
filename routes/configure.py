@@ -28,7 +28,14 @@ import paramiko
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.paths import SSH_KEY_PATH, SSH_PUB_KEY_PATH, INVENTORY_PATH, VARS_PATH, COMPAT_MATRIX_PATH
+from core.paths import (
+    SSH_KEY_PATH,
+    SSH_PUB_KEY_PATH,
+    INVENTORY_PATH,
+    VARS_PATH,
+    COMPAT_MATRIX_PATH,
+    BOOTSTRAP_NODES_PATH,
+)
 from core.ssh import get_client_with_key, run_command
 
 # Shared helper — writes ansible.cfg with StrictHostKeyChecking=no to every
@@ -37,6 +44,71 @@ from core.ssh import get_client_with_key, run_command
 from core.ansible_cfg import write_ansible_cfgs
 
 router = APIRouter()
+
+
+def _load_bootstrap_nodes() -> list:
+    """
+    Read the saved bootstrap registry. Configure uses this as the allowed
+    machine set so cluster config cannot drift from bootstrapped nodes.
+    """
+    if not BOOTSTRAP_NODES_PATH.exists():
+        return []
+
+    try:
+        data = json.loads(BOOTSTRAP_NODES_PATH.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _validate_config_nodes(config: "ClusterConfig") -> None:
+    """
+    Enforce the same machine-selection contract on the backend that the UI
+    enforces in the browser.
+    """
+    saved_nodes = _load_bootstrap_nodes()
+    if not saved_nodes:
+        raise HTTPException(
+            status_code=400,
+            detail="No bootstrapped machines found. Run Bootstrap SSH first."
+        )
+
+    saved_by_ip = {node.get("ip"): node for node in saved_nodes if node.get("ip")}
+    requested = [config.control_plane] + config.workers
+
+    seen_hostnames = set()
+    seen_ips = set()
+
+    for node in requested:
+        if node.ip not in saved_by_ip:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{node.hostname} ({node.ip}) is not in the bootstrapped machine list."
+            )
+
+        saved = saved_by_ip[node.ip]
+        if node.hostname != saved.get("hostname") or node.ssh_user != saved.get("ssh_user"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{node.ip} does not match the saved bootstrap record "
+                    f"({saved.get('hostname')} / {saved.get('ssh_user')})."
+                )
+            )
+
+        if node.hostname in seen_hostnames:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Duplicate hostname in cluster configuration: {node.hostname}"
+            )
+        if node.ip in seen_ips:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Duplicate IP in cluster configuration: {node.ip}"
+            )
+
+        seen_hostnames.add(node.hostname)
+        seen_ips.add(node.ip)
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -409,6 +481,8 @@ async def configure(config: ClusterConfig):
     inventory and group_vars are valid — but the operator must know to re-run
     or investigate before relying on cplane→worker SSH.
     """
+    _validate_config_nodes(config)
+
     # 1. Derive pause_image from the control plane before writing group_vars.
     pause_image = _get_pause_image(config.control_plane, config.kubernetes_version)
 
