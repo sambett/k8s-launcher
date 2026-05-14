@@ -2,15 +2,15 @@
 
   <div class="platform-req-banner">
     <div class="platform-req-header">
-      <span class="platform-req-icon">⚠️</span>
-      <strong>Read before you start — Platform requirements</strong>
+      <span class="platform-req-icon">!</span>
+      <strong>Read before you start - Platform requirements</strong>
     </div>
     <div class="platform-req-body">
       <div class="platform-req-row">
         <span class="platform-req-label">Supported OS</span>
         <span class="platform-req-value">
           <strong>Ubuntu 22.04 LTS</strong> or <strong>Ubuntu 24.04 LTS</strong>
-          — all nodes (control plane + workers) must run the <em>same</em> version.
+          - all nodes (control plane + workers) must run the <em>same</em> version.
         </span>
       </div>
       <div class="platform-req-row">
@@ -20,7 +20,7 @@
       <div class="platform-req-row">
         <span class="platform-req-label">Why same OS?</span>
         <span class="platform-req-value">
-          Longhorn relies on kernel modules — iSCSI, device-mapper — that differ between
+          Longhorn relies on kernel modules - iSCSI, device-mapper - that differ between
           Ubuntu LTS generations. A mixed-OS cluster produces subtle, hard-to-diagnose
           storage failures under load.
         </span>
@@ -29,10 +29,10 @@
   </div>
 
   <div class="card">
-    <h2>Phase 0 — Install Ansible on the controller</h2>
+    <h2>Phase 0 - Install Ansible on the controller</h2>
     <div class="card-hint">
       The controller is the machine that runs Ansible and orchestrates the cluster.
-      It must NOT be one of your cluster nodes — it stays separate.
+      It must NOT be one of your cluster nodes - it stays separate.
       If you are running this launcher directly on the controller, tick the checkbox below.
     </div>
 
@@ -66,8 +66,9 @@
   </div>
 
   <div class="card">
-    <h2>Phase 1 — SSH key bootstrap (cluster nodes)</h2>
+    <h2>Phase 1 - SSH key bootstrap (cluster nodes)</h2>
     <div class="card-hint">
+<<<<<<< HEAD
       Fill in each cluster node below. The password is used once to push the
       SSH key and is never stored after this step.
     </div>
@@ -80,6 +81,19 @@
         VM's real hostname, Ansible and <code>kubectl get nodes</code> may show
         different names for the same machine. Use a unique lowercase RFC
         1123 name and keep it aligned with the VM hostname where possible.
+=======
+      Fill in the machines to bootstrap with Ansible. The password is used
+      once to set up SSH access and is not stored afterward.
+    </div>
+    <div style="display:flex;gap:10px;align-items:flex-start;background:#f5f8ff;border:1px solid #d7e4ff;border-radius:6px;padding:9px 12px;margin-bottom:.75rem;font-size:12.5px;color:#35506b;line-height:1.6">
+      <span style="font-size:16px;flex-shrink:0">i</span>
+      <div>
+        <strong>Hostname best practice</strong><br>
+        The hostname entered here must match the machine's real hostname for
+        best practice. This helps Ansible and Kubernetes refer to the machine
+        consistently later. Use lowercase letters, numbers, and hyphens only,
+        because Kubernetes hostnames follow lowercase DNS-style naming rules.
+>>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
       </div>
     </div>
     <div id="banner-bootstrap-validation" style="display:none;background:#fff3e0;border:1px solid #ffb300;border-radius:6px;padding:9px 13px;margin-bottom:.75rem;font-size:12.5px;color:#e65100;line-height:1.6"></div>
@@ -99,23 +113,29 @@
   </div>
 
   <div class="card">
-    <h2>Phase 2 — Preflight checks</h2>
-    <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      Verifies OS, RAM, disk, swap, Python 3, and clean state on every node.
-    </p>
+    <h2>Phase 2 - Preflight checks</h2>
+    <div class="card-hint">
+      This step checks whether all selected machines are ready for installation.
+      It verifies operating system, memory, free disk space, swap, Python,
+      SSH bootstrap, and whether the machine is still in a clean state.
+    </div>
+    <div style="font-size:12px;color:#8a5a00;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:8px 10px;margin-bottom:.75rem;line-height:1.55">
+      If you continue after failed checks, deployment may fail or behave
+      unexpectedly. It is safer to correct the reported issues first.
+    </div>
     <button class="btn btn-primary" onclick="runPreflight()">Run preflight</button>
     <div id="r-preflight" style="margin-top:.5rem"></div>
   </div>
 
   <div id="next-step-bootstrap" class="next-step-cta">
-    <span class="cta-icon">✅</span>
+    <span class="cta-icon">OK</span>
     <div class="cta-text">
       <div class="cta-title">All nodes passed preflight checks</div>
       <div class="cta-sub">Next: define your node roles, versions, and network settings</div>
     </div>
     <button class="btn btn-primary"
       onclick="showTab('configure',document.getElementById('step-configure'))">
-      Continue to Configure →
+      Continue to Configure ->
     </button>
   </div>
 
@@ -157,7 +177,6 @@ async function installAnsible() {
     : `<span class="badge b-err">${d.message || d.detail}</span>`;
 }
 
-// ── Phase 1 node rows ──────────────────────────────────────────────────────────
 let bnc = 0;
 const RFC1123_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
@@ -170,7 +189,11 @@ function addBNode(ip='', hn='', user='') {
     <input type="text" placeholder="e.g. cp-01" value="${hn}" class="bh" oninput="this.value=this.value.toLowerCase();validateBootstrapForm()">
     <input type="text" placeholder="e.g. ubuntu  (SSH user)" value="${user}" class="bu" oninput="this.value=this.value.toLowerCase()">
     <input type="password" placeholder="SSH password (used once)" class="bp">
+<<<<<<< HEAD
     <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();validateBootstrapForm()">✕</button>`;
+=======
+    <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();validateBootstrapForm()">x</button>`;
+>>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
   document.getElementById('bnodes').appendChild(d);
   validateBootstrapForm();
 }
@@ -217,7 +240,11 @@ function validateBootstrapForm() {
 
   if (errors.length) {
     banner.style.display = 'block';
+<<<<<<< HEAD
     banner.innerHTML = errors.map(error => `<div style="margin-bottom:4px">⚠ ${error}</div>`).join('');
+=======
+    banner.innerHTML = errors.map(error => `<div style="margin-bottom:4px">Warning: ${error}</div>`).join('');
+>>>>>>> 7bfc967 (reconfigured bootstrap and preflight)
     sshBtn.disabled = true;
   } else {
     banner.style.display = 'none';
@@ -270,14 +297,29 @@ async function runPreflight() {
     body: JSON.stringify({ nodes })
   });
   const d = await resp.json();
-  el.innerHTML = d.results.map(node => {
+  const clusterChecks = Object.entries(d.cluster_checks || {}).map(([k, v]) =>
+    `<div class="check-row ${v.startsWith('FAIL') ? 'check-fail' : v.startsWith('WARN') ? 'check-warn' : 'check-ok'}">
+      ${v.startsWith('FAIL') ? 'x' : v.startsWith('WARN') ? '!' : 'OK'} ${k}: ${v}</div>`
+  ).join('');
+  const summaryText = d.status === 'ok'
+    ? 'All machines look ready.'
+    : d.status === 'warn'
+    ? 'Preflight completed with warnings. Review them before proceeding.'
+    : 'Some machines need attention before installation.';
+  el.innerHTML = `
+    <div style="margin-bottom:10px;padding:10px 12px;border:1px solid ${d.status === 'error' ? '#ef9a9a' : d.status === 'warn' ? '#ffcc80' : '#a5d6a7'};background:${d.status === 'error' ? '#ffebee' : d.status === 'warn' ? '#fff3e0' : '#e8f5e9'};border-radius:6px;font-size:12.5px;line-height:1.55">
+      <strong>Readiness report</strong><br>
+      ${summaryText}
+    </div>
+    ${clusterChecks ? `<div style="margin-bottom:10px">${clusterChecks}</div>` : ''}
+  ` + d.results.map(node => {
     const checks = Object.entries(node.checks).map(([k, v]) =>
-      `<div class="check-row ${v.startsWith('FAIL') ? 'check-fail' : 'check-ok'}">
-        ${v.startsWith('FAIL') ? '✗' : '✓'} ${k}: ${v}</div>`
+      `<div class="check-row ${v.startsWith('FAIL') ? 'check-fail' : v.startsWith('WARN') ? 'check-warn' : 'check-ok'}">
+        ${v.startsWith('FAIL') ? 'x' : v.startsWith('WARN') ? '!' : 'OK'} ${k}: ${v}</div>`
     ).join('');
     return `<div style="margin:6px 0">
       <strong>${node.hostname}</strong>
-      <span class="badge ${node.status === 'ok' ? 'b-ok' : 'b-err'}" style="margin-left:6px">${node.status}</span>
+      <span class="badge ${node.status === 'ok' ? 'b-ok' : node.status === 'warn' ? 'b-warn' : 'b-err'}" style="margin-left:6px">${node.status}</span>
       <div style="margin-left:1rem;margin-top:3px">${checks}</div></div>`;
   }).join('');
   if (d.status === 'ok') {
@@ -315,4 +357,11 @@ async function runPreflight() {
   padding-top: 1px;
 }
 .platform-req-value { color: #1a1a2e; }
+.check-warn {
+  color: #8a5a00;
+  background: #fff8e1;
+  border-left: 3px solid #ffb300;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
 </style>
