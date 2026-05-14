@@ -1,0 +1,65 @@
+---
+# Shared cleanup for broken kubeadm bootstrap leftovers.
+# Policy stays in the caller; this role only performs node-local recovery.
+
+- name: Validate recovery node role
+  assert:
+    that:
+      - recovery_node_role is defined
+      - recovery_node_role in ['control_plane', 'worker']
+    fail_msg: "recovery_node_role must be set to 'control_plane' or 'worker'."
+
+- name: Show recovery target
+  debug:
+    msg: "Recovering broken Kubernetes bootstrap state for {{ recovery_node_role }}"
+
+- name: Run kubeadm reset
+  command: kubeadm reset -f
+  register: kubeadm_reset
+  changed_when: kubeadm_reset.rc == 0
+  become: yes
+
+- name: Stop kubelet after reset
+  systemd:
+    name: kubelet
+    state: stopped
+  become: yes
+
+# kubeadm reset usually cleans these rules, but partial installs and version
+# differences can leave networking state behind that breaks the next bootstrap.
+- name: Flush iptables rules left by kubeadm
+  shell: |
+    iptables -F
+    iptables -t nat -F
+    iptables -t mangle -F
+    iptables -X
+  become: yes
+  changed_when: true
+
+# Remove state that often survives an interrupted init or join and can poison
+# the next kubeadm run.
+- name: Remove common bootstrap leftovers
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cni/net.d
+    - /etc/kubernetes/kubelet.conf
+    - /etc/kubernetes/bootstrap-kubelet.conf
+    - /var/lib/cni
+    - /var/lib/kubelet
+  become: yes
+
+- name: Remove control plane bootstrap leftovers
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes/admin.conf
+    - /etc/kubernetes/controller-manager.conf
+    - /etc/kubernetes/scheduler.conf
+    - /etc/kubernetes/manifests
+    - /etc/kubernetes/pki
+    - /var/lib/etcd
+  when: recovery_node_role == 'control_plane'
+  become: yes

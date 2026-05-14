@@ -13,6 +13,14 @@
     owner: "{{ ansible_user }}"
   become: yes
 
+- name: Show control plane bootstrap policy
+  debug:
+    msg:
+      - "This launcher bootstraps only brand new Kubernetes nodes."
+      - "Fresh node: install."
+      - "Partial or broken bootstrap state: recovery handling will be used."
+      - "Healthy existing Kubernetes control plane: stop without changing it."
+
 - name: Write kubeadm config from template
   template:
     src: kubeadm-config.yaml.j2
@@ -38,25 +46,53 @@
   become: yes
   when: admin_conf.stat.exists
 
-- name: Stop on stale control plane leftovers
+# Explicitly separate three states:
+# - fresh: no admin.conf, so normal bootstrap can proceed
+# - healthy: admin.conf exists and readyz succeeds, so this launcher must stop
+# - partial: leftovers exist but health is not proven, so recovery will own it
+- name: Classify control plane bootstrap state
+  set_fact:
+    control_plane_bootstrap_state: >-
+      {{ 'fresh'
+         if not admin_conf.stat.exists else
+         ('healthy' if apiserver_readyz.rc == 0 else 'partial') }}
+
+- name: Show detected control plane bootstrap state
+  debug:
+    msg: "Detected control plane bootstrap state: {{ control_plane_bootstrap_state }}"
+
+# A healthy cluster is never reset automatically by this bootstrap-only launcher.
+- name: Stop on healthy existing control plane
   fail:
     msg: |
-      Found existing /etc/kubernetes/admin.conf, but the API server is not healthy.
-      This usually means old cluster leftovers or a partial kubeadm init.
-      Refusing to auto-reset the node.
+      A healthy Kubernetes control plane already exists on this node.
+      This launcher only creates a brand new cluster and will not modify an
+      existing healthy cluster.
 
-      readyz return code: {{ apiserver_readyz.rc }}
-      stderr: {{ apiserver_readyz.stderr | default('') }}
+      No cleanup was performed.
+      Use a separate lifecycle, upgrade, or reset workflow if you intend to
+      replace this cluster.
+  when: control_plane_bootstrap_state == 'healthy'
 
-      Clean the node intentionally, then re-run the playbook.
-  when:
-    - admin_conf.stat.exists
-    - apiserver_readyz.rc != 0
+# Partial state is recoverable because health was not proven. Clean the node,
+# then continue through the same fresh bootstrap path below.
+- name: Recover partial control plane leftovers
+  include_role:
+    name: recovery
+  vars:
+    recovery_node_role: control_plane
+  when: control_plane_bootstrap_state == 'partial'
 
+- name: Reclassify recovered control plane as fresh
+  set_fact:
+    control_plane_bootstrap_state: fresh
+  when: control_plane_bootstrap_state == 'partial'
+
+# Keep the working bootstrap path untouched for fresh nodes.
 - name: Pre-pull control plane images
   command: kubeadm config images pull --kubernetes-version {{ k8s_version }}
   become: yes
-  when: not admin_conf.stat.exists
+  when: control_plane_bootstrap_state == 'fresh'
 
 - block:
     - name: Run kubeadm init
@@ -66,7 +102,6 @@
         --upload-certs
         2>&1 | tee {{ artifacts_dir }}/kubeadm-init.log
       become: yes
-      when: not admin_conf.stat.exists
 
     # Wait for the HTTPS socket first, then for the readyz endpoint.
     # This gives clearer failure signals than jumping straight to kubectl.
@@ -85,6 +120,7 @@
       until: readyz_after_init.rc == 0
       changed_when: false
       become: yes
+  when: control_plane_bootstrap_state == 'fresh'
 
   rescue:
     - name: Read kubeadm init log if present

@@ -6,19 +6,27 @@
 #   2. node resolution is done by InternalIP, which is more reliable than
 #      assuming the inventory name always matches the Kubernetes node name
 #
-# It also handles the common stale-state case:
-# /etc/kubernetes/kubelet.conf exists, but kubelet is not actually healthy.
-# In that situation we stop with a clear error instead of auto-resetting.
-# This initial-install playbook expects clean worker VMs.
+# It now follows the same bootstrap-only policy as the control plane:
+#   - fresh node: join
+#   - partial leftovers: recover and rejoin
+#   - healthy existing joined node: stop without changing it
+
+- name: Show worker bootstrap policy
+  debug:
+    msg:
+      - "This launcher bootstraps only brand new Kubernetes nodes."
+      - "Fresh worker: join."
+      - "Partial or broken worker state: recovery handling will be used."
+      - "Healthy existing joined worker: stop without changing it."
 
 - name: Check if this node already joined
   stat:
     path: /etc/kubernetes/kubelet.conf
   register: kubelet_conf
 
-# Before deciding to skip the join, confirm whether kubelet is actually active.
-# If kubelet.conf exists but kubelet is down, this usually means stale or
-# partial worker state, and this initial-install role stops instead of repairing it.
+# Before deciding whether this worker is healthy, confirm whether kubelet is
+# actually active. If kubelet.conf exists but kubelet is down, this falls into
+# partial state and recovery will own it.
 - name: Check whether kubelet is active
   command: systemctl is-active kubelet
   register: kubelet_active
@@ -26,34 +34,81 @@
   failed_when: false
   when: kubelet_conf.stat.exists
 
-- name: Stop on stale partial worker join state
-  fail:
-    msg: |
-      Found existing /etc/kubernetes/kubelet.conf, but kubelet is not healthy.
-      This worker does not look like a clean new machine.
-
-      kubelet state: {{ kubelet_active.stdout | default('unknown') }}
-      stderr: {{ kubelet_active.stderr | default('') }}
-
-      Use the worker reset flow first, then re-run the cluster deployment.
+- name: Check whether worker is registered in the cluster
+  shell: >-
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+    | grep '{{ ansible_host }}'
+  register: worker_cluster_registration
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  become: no
+  changed_when: false
+  failed_when: false
   when:
     - kubelet_conf.stat.exists
     - kubelet_active.stdout is defined
-    - kubelet_active.stdout != "active"
+    - kubelet_active.stdout == "active"
+
+# Explicitly separate three states:
+# - fresh: no kubelet.conf, so normal join can proceed
+# - healthy: kubelet is active and this host is already registered as Ready
+# - partial: leftovers exist but healthy cluster membership is not proven
+- name: Classify worker bootstrap state
+  set_fact:
+    worker_bootstrap_state: >-
+      {{ 'fresh'
+         if not kubelet_conf.stat.exists else
+         ('healthy'
+           if (kubelet_active.stdout is defined
+               and kubelet_active.stdout == 'active'
+               and worker_cluster_registration.rc == 0
+               and '\tTrue\t' in worker_cluster_registration.stdout)
+           else 'partial') }}
+
+- name: Show detected worker bootstrap state
+  debug:
+    msg: "Detected worker bootstrap state: {{ worker_bootstrap_state }}"
+
+# A healthy joined worker is never reset automatically by this bootstrap-only launcher.
+- name: Stop on healthy existing worker
+  fail:
+    msg: |
+      This worker is already joined to a healthy Kubernetes cluster.
+      This launcher only joins brand new worker nodes and will not reset a
+      healthy existing node automatically.
+
+      No cleanup was performed.
+      Use a separate worker reset or cluster lifecycle workflow if you intend
+      to replace this node.
+  when: worker_bootstrap_state == 'healthy'
+
+# Partial state is recoverable because healthy cluster membership was not
+# proven. Clean the node, then continue through the same fresh join path below.
+- name: Recover partial worker leftovers
+  include_role:
+    name: recovery
+  vars:
+    recovery_node_role: worker
+  when: worker_bootstrap_state == 'partial'
+
+- name: Reclassify recovered worker as fresh
+  set_fact:
+    worker_bootstrap_state: fresh
+  when: worker_bootstrap_state == 'partial'
 
 # Align the machine hostname before the first join so kubelet registers a
 # predictable node name. This follows the reference worker playbook.
 - name: Set system hostname to match inventory name
   hostname:
     name: "{{ inventory_hostname | lower }}"
-  when: not kubelet_conf.stat.exists
+  when: worker_bootstrap_state == 'fresh'
 
 - name: Ensure /etc/hostname is correct
   copy:
     dest: /etc/hostname
     content: "{{ inventory_hostname | lower }}\n"
     mode: "0644"
-  when: not kubelet_conf.stat.exists
+  when: worker_bootstrap_state == 'fresh'
 
 - name: Update 127.0.1.1 entry for worker hostname
   lineinfile:
@@ -61,7 +116,7 @@
     regexp: '^127\.0\.1\.1\s+'
     line: "127.0.1.1 {{ inventory_hostname | lower }}"
     state: present
-  when: not kubelet_conf.stat.exists
+  when: worker_bootstrap_state == 'fresh'
 
 # Read the fresh join command saved by the control-plane role.
 - name: Read saved join command from control plane
@@ -69,7 +124,7 @@
     src: "{{ join_command_file }}"
   register: join_command_b64
   delegate_to: "{{ groups['control_plane'][0] }}"
-  when: not kubelet_conf.stat.exists
+  when: worker_bootstrap_state == 'fresh'
 
 # Append --node-name explicitly so the join remains stable even if a VM was
 # originally provisioned with a different cloud-init hostname.
@@ -77,7 +132,6 @@
     - name: Run join command
       shell: "{{ join_command_b64.content | b64decode | trim }} --node-name {{ inventory_hostname | lower }}"
       become: yes
-      when: not kubelet_conf.stat.exists
 
   rescue:
     - name: Read kubelet service status after join failure
@@ -103,6 +157,7 @@
     - name: Fail after printing worker join diagnostics
       fail:
         msg: "Worker join failed. Diagnostic logs were printed above."
+  when: worker_bootstrap_state == 'fresh'
 
 # Resolve the actual Kubernetes node name by matching InternalIP.
 # This is more robust than trusting inventory_hostname directly.
