@@ -37,15 +37,21 @@
         placeholder="glpat-xxxxxxxxxxxx"/>
     </div>
     <div class="field-row">
-      <label>JupyterHub worker IP</label>
-      <input type="text" id="gc-worker-ip"
-        placeholder="worker node IP — where JupyterHub NodePort is reachable"
-        oninput="gcUpdatePreview()"/>
+      <label>JupyterHub access node IP</label>
+      <select id="gc-worker-ip" onchange="gcUpdatePreview()">
+        <option value="">Loading cluster nodes...</option>
+      </select>
+    </div>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .55rem 168px">
+      Use the control plane IP unless you intentionally want another node to handle access.
     </div>
     <div class="field-row">
       <label>JupyterHub NodePort</label>
       <input type="number" id="gc-nodeport" value="32080"
         oninput="gcUpdatePreview()"/>
+    </div>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .2rem 168px">
+      This must match the JupyterHub NodePort.
     </div>
 
     <div id="gc-callback-preview"
@@ -84,7 +90,6 @@
       <span class="mono">generated/gitlab-outputs.json</span>.
       JupyterHub and Admin Dashboard tabs will read these automatically.
     </p>
-    <div id="gc-outputs-body" class="outputs-grid"></div>
     <div class="info-box" style="margin-top:1rem">
       GitLab UI: <a id="gc-url-link" href="#" target="_blank"
         style="color:#1976d2"></a>
@@ -109,6 +114,7 @@
 function gcStripProtocol(val) {
   return val.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
+
 function gcUpdatePreview() {
   const ip   = gcStripProtocol(document.getElementById('gc-worker-ip').value.trim());
   const port = document.getElementById('gc-nodeport').value.trim();
@@ -119,6 +125,87 @@ function gcUpdatePreview() {
   } else {
     prev.style.display = 'none';
   }
+}
+
+function gcParseInventoryNodes(inventoryText) {
+  const lines = (inventoryText || '').split(/\r?\n/);
+  const nodes = [];
+  let section = '';
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      section = line.slice(1, -1);
+      continue;
+    }
+    if (line.startsWith('#')) continue;
+    if (section !== 'control_plane' && section !== 'workers') continue;
+    const parts = line.split(/\s+/);
+    const hostname = parts[0];
+    const ansibleHost = parts.find(part => part.startsWith('ansible_host='));
+    if (!hostname || !ansibleHost) continue;
+    nodes.push({
+      hostname,
+      ip: ansibleHost.split('=')[1],
+      role: section,
+    });
+  }
+  return nodes;
+}
+
+function gcRenderWorkerIpOptions(nodes, preferredIp) {
+  const select = document.getElementById('gc-worker-ip');
+  if (!select) return;
+
+  if (!nodes.length) {
+    select.innerHTML = '<option value="">No configured cluster nodes found yet</option>';
+    select.value = '';
+    gcUpdatePreview();
+    return;
+  }
+
+  select.innerHTML = nodes.map(node =>
+    `<option value="${node.ip}">${node.hostname} (${node.ip})${node.role === 'control_plane' ? ' - control plane' : ''}</option>`
+  ).join('');
+
+  const defaultNode = nodes.find(node => node.role === 'control_plane') || nodes[0];
+  const nextValue = nodes.some(node => node.ip === preferredIp)
+    ? preferredIp
+    : defaultNode.ip;
+  select.value = nextValue;
+  gcUpdatePreview();
+}
+
+async function gcLoadWorkerIpOptions() {
+  const select = document.getElementById('gc-worker-ip');
+  if (!select) return;
+
+  let nodes = [];
+  let preferredIp = '';
+
+  try {
+    const previewResp = await fetch('/api/configure/preview');
+    if (previewResp.ok) {
+      const preview = await previewResp.json();
+      nodes = gcParseInventoryNodes(preview.inventory);
+      const controlPlane = nodes.find(node => node.role === 'control_plane');
+      preferredIp = controlPlane ? controlPlane.ip : '';
+    }
+  } catch (e) {}
+
+  if (!nodes.length) {
+    try {
+      const bootstrapResp = await fetch('/api/bootstrap/nodes');
+      const bootstrap = await bootstrapResp.json();
+      nodes = (bootstrap.nodes || []).map(node => ({
+        hostname: node.hostname,
+        ip: node.ip,
+        role: '',
+      }));
+    } catch (e) {}
+  }
+
+  gcRenderWorkerIpOptions(nodes, preferredIp);
 }
 
 async function gcConfigure() {
@@ -187,22 +274,10 @@ async function gcLoadOutputs() {
   const link = document.getElementById('gc-url-link');
   link.href        = d.gitlab_url;
   link.textContent = d.gitlab_url;
-  document.getElementById('gc-outputs-body').innerHTML = `
-    <span style="color:#666">GitLab URL</span>       <span>${d.gitlab_url}</span>
-    <span style="color:#666">Registry host</span>    <span class="mono">${d.registry_host}</span>
-    <span style="color:#666">OAuth client ID</span>  <span class="mono">${d.oauth_client_id}</span>
-    <span style="color:#666">Project ID</span>       <span>${d.project_id}</span>
-    <span style="color:#666">Deploy token user</span><span class="mono">${d.deploy_token_user}</span>
-    <span style="color:#666">Admin token</span>
-      <span class="badge ${d.admin_token_set?'b-ok':'b-err'}">${d.admin_token_set?'✓ saved':'✗ missing'}</span>
-    <span style="color:#666">OAuth secret</span>
-      <span class="badge ${d.oauth_secret_set?'b-ok':'b-err'}">${d.oauth_secret_set?'✓ saved':'✗ missing'}</span>
-    <span style="color:#666">Registry token</span>
-      <span class="badge ${d.deploy_token_pass_set?'b-ok':'b-err'}">${d.deploy_token_pass_set?'✓ saved':'✗ missing'}</span>
-  `;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  gcLoadWorkerIpOptions();
   gcLoadOutputs();
 });
 </script>
