@@ -2,83 +2,257 @@
 
   <div class="card">
     <h2>Phases</h2>
+    <div class="card-hint">
+      Follow the platform setup in order. Each phase stays visible on this page,
+      and later phases become available after the earlier ones complete successfully.
+    </div>
     <ul class="phase-list">
       <li>
         <span class="dot" id="dot-k8s"></span>
-        Phase 4 — Deploy Kubernetes
-        <button class="btn btn-sm btn-primary" style="margin-left:auto"
-          onclick="deployK8s()">
-          Deploy
-          <span style="font-weight:400;opacity:.7;margin-left:4px">(~12 min)</span>
-        </button>
+        Phase 4 - Deploy Kubernetes
       </li>
       <li>
         <span class="dot" id="dot-vk8s"></span>
-        Phase 5 — Validate Kubernetes
-        <button class="btn btn-sm" style="margin-left:auto" onclick="validateK8s()">Validate</button>
+        Phase 5 - Validate Kubernetes
       </li>
       <li>
         <span class="dot" id="dot-lh"></span>
-        Phase 6 — Deploy Longhorn
-        <button class="btn btn-sm btn-primary" style="margin-left:auto"
-          onclick="deployLonghorn()">
-          Deploy
-          <span style="font-weight:400;opacity:.7;margin-left:4px">(~7 min)</span>
-        </button>
+        Phase 6 - Deploy Longhorn
       </li>
       <li>
         <span class="dot" id="dot-vlh"></span>
-        Phase 7 — Validate Longhorn
-        <button class="btn btn-sm" style="margin-left:auto" onclick="validateLonghorn()">Validate</button>
+        Phase 7 - Validate Longhorn
       </li>
     </ul>
   </div>
 
-  <div class="card">
-    <h2>Phase 4 — Kubernetes deploy log</h2>
+  <div class="card phase-card" id="card-k8s-deploy">
+    <div class="phase-card-head">
+      <div>
+        <h2>Phase 4 - Deploy Kubernetes</h2>
+        <div class="phase-subtext">
+          Start the Kubernetes installation first. The deployment log appears below.
+        </div>
+      </div>
+      <button class="btn btn-sm btn-primary" id="btn-k8s-deploy" onclick="deployK8s()">
+        Deploy
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~12 min)</span>
+      </button>
+    </div>
     <div class="log" id="k8s-log">Waiting for deployment...</div>
   </div>
 
-  <div class="card" id="vk8s-log-card" style="display:none">
-    <h2>Phase 5 — Validation results</h2>
-    <div id="st-k8s" style="font-size:13px;color:#888">Run Validate to see results.</div>
+  <div class="card phase-card phase-locked" id="card-k8s-validate">
+    <div class="phase-card-head">
+      <div>
+        <h2>Phase 5 - Validate Kubernetes</h2>
+        <div class="phase-subtext">
+          Confirm that the cluster is healthy before moving on to storage.
+        </div>
+      </div>
+      <button class="btn btn-sm" id="btn-k8s-validate" onclick="validateK8s()" disabled>Validate</button>
+    </div>
+    <div class="phase-waiting" id="msg-k8s-validate">
+      Available after Kubernetes deployment completes successfully.
+    </div>
+    <div class="card-inline-results" id="vk8s-log-card" style="display:none">
+      <div id="st-k8s" style="font-size:13px;color:#888">Run Validate to see results.</div>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>Phase 6 — Longhorn deploy log</h2>
+  <div class="card phase-card phase-locked" id="card-lh-deploy">
+    <div class="phase-card-head">
+      <div>
+        <h2>Phase 6 - Deploy Longhorn</h2>
+        <div class="phase-subtext">
+          Install Longhorn only after Kubernetes validation succeeds.
+        </div>
+      </div>
+      <button class="btn btn-sm btn-primary" id="btn-lh-deploy" onclick="deployLonghorn()" disabled>
+        Deploy
+        <span style="font-weight:400;opacity:.7;margin-left:4px">(~7 min)</span>
+      </button>
+    </div>
+    <div class="phase-waiting" id="msg-lh-deploy">
+      Available after Kubernetes validation succeeds.
+    </div>
     <div class="log" id="lh-log">Waiting for deployment...</div>
   </div>
 
-  <div class="card" id="vlh-log-card" style="display:none">
-    <h2>Phase 7 — Validation results</h2>
-    <div id="st-lh" style="font-size:13px;color:#888">Run Validate to see results.</div>
-    <div id="st-ui" style="margin-top:.5rem;font-size:13px;color:#888"></div>
+  <div class="card phase-card phase-locked" id="card-lh-validate">
+    <div class="phase-card-head">
+      <div>
+        <h2>Phase 7 - Validate Longhorn</h2>
+        <div class="phase-subtext">
+          Run the final storage checks and confirm the Longhorn UI is reachable.
+        </div>
+      </div>
+      <button class="btn btn-sm" id="btn-lh-validate" onclick="validateLonghorn()" disabled>Validate</button>
+    </div>
+    <div class="phase-waiting" id="msg-lh-validate">
+      Available after Longhorn deployment completes successfully.
+    </div>
+    <div class="card-inline-results" id="vlh-log-card" style="display:none">
+      <div id="st-lh" style="font-size:13px;color:#888">Run Validate to see results.</div>
+      <div id="st-ui" style="margin-top:.5rem;font-size:13px;color:#888"></div>
+    </div>
   </div>
 
   <div id="next-step-kubernetes" class="next-step-cta">
-    <span class="cta-icon">✅</span>
+    <span class="cta-icon">OK</span>
     <div class="cta-text">
       <div class="cta-title">Kubernetes cluster + Longhorn storage ready</div>
       <div class="cta-sub">Next: deploy GitLab as your identity provider and container registry</div>
     </div>
     <button class="btn btn-primary"
       onclick="showTab('gitlab',document.getElementById('step-gitlab'))">
-      Continue to GitLab →
+      Continue to GitLab ->
     </button>
   </div>
 
 </div>
 
 <script>
-function deployK8s()      { streamToLog('/api/deploy/k8s/stream',     'dot-k8s', 'k8s-log'); }
-function deployLonghorn() { streamToLog('/api/deploy/longhorn/stream', 'dot-lh',  'lh-log'); }
+const K8S_PHASE_STORAGE_KEY = 'k8s-phase-state-v1';
+
+function defaultK8sPhaseState() {
+  return {
+    k8sDeployDone: false,
+    k8sValidateDone: false,
+    longhornDeployDone: false,
+    longhornValidateDone: false,
+  };
+}
+
+function loadK8sPhaseState() {
+  try {
+    const raw = localStorage.getItem(K8S_PHASE_STORAGE_KEY);
+    if (!raw) return defaultK8sPhaseState();
+    return { ...defaultK8sPhaseState(), ...JSON.parse(raw) };
+  } catch (e) {
+    return defaultK8sPhaseState();
+  }
+}
+
+function saveK8sPhaseState() {
+  localStorage.setItem(K8S_PHASE_STORAGE_KEY, JSON.stringify(k8sPhaseState));
+}
+
+let k8sPhaseState = loadK8sPhaseState();
+
+function setPhaseAvailability(cardId, buttonId, messageId, enabled, waitingText) {
+  const card = document.getElementById(cardId);
+  const button = document.getElementById(buttonId);
+  const message = document.getElementById(messageId);
+  if (card) card.classList.toggle('phase-locked', !enabled);
+  if (button) button.disabled = !enabled;
+  if (message) message.style.display = enabled ? 'none' : 'block';
+  if (message && waitingText) message.textContent = waitingText;
+}
+
+function refreshK8sPhaseUi() {
+  setPhaseAvailability(
+    'card-k8s-validate',
+    'btn-k8s-validate',
+    'msg-k8s-validate',
+    k8sPhaseState.k8sDeployDone,
+    'Available after Kubernetes deployment completes successfully.'
+  );
+  setPhaseAvailability(
+    'card-lh-deploy',
+    'btn-lh-deploy',
+    'msg-lh-deploy',
+    k8sPhaseState.k8sValidateDone,
+    'Available after Kubernetes validation succeeds.'
+  );
+  setPhaseAvailability(
+    'card-lh-validate',
+    'btn-lh-validate',
+    'msg-lh-validate',
+    k8sPhaseState.longhornDeployDone,
+    'Available after Longhorn deployment completes successfully.'
+  );
+}
+
+function runStreamPhase(url, dotId, logElId, onSuccess, onError) {
+  const logEl = document.getElementById(logElId);
+  logEl.innerHTML = '';
+  setDot(dotId, 'running');
+  const es = new EventSource(url);
+  es.onmessage = e => {
+    if (e.data === '__DONE__') {
+      setDot(dotId, 'ok');
+      es.close();
+      if (onSuccess) onSuccess();
+    } else if (e.data.startsWith('__ERROR__')) {
+      setDot(dotId, 'error');
+      makeLogLine('FAILED - exit code: ' + e.data.split(':')[1], logEl);
+      es.close();
+      if (onError) onError();
+    } else {
+      makeLogLine(e.data, logEl);
+    }
+  };
+  es.onerror = () => {
+    setDot(dotId, 'error');
+    es.close();
+    if (onError) onError();
+  };
+  return es;
+}
+
+function deployK8s() {
+  k8sPhaseState.k8sDeployDone = false;
+  k8sPhaseState.k8sValidateDone = false;
+  k8sPhaseState.longhornDeployDone = false;
+  k8sPhaseState.longhornValidateDone = false;
+  saveK8sPhaseState();
+  refreshK8sPhaseUi();
+  runStreamPhase('/api/deploy/k8s/stream', 'dot-k8s', 'k8s-log', () => {
+    k8sPhaseState.k8sDeployDone = true;
+    saveK8sPhaseState();
+    refreshK8sPhaseUi();
+  }, () => {
+    k8sPhaseState.k8sDeployDone = false;
+    k8sPhaseState.k8sValidateDone = false;
+    k8sPhaseState.longhornDeployDone = false;
+    k8sPhaseState.longhornValidateDone = false;
+    saveK8sPhaseState();
+    refreshK8sPhaseUi();
+  });
+}
+
+function deployLonghorn() {
+  k8sPhaseState.longhornDeployDone = false;
+  k8sPhaseState.longhornValidateDone = false;
+  saveK8sPhaseState();
+  refreshK8sPhaseUi();
+  runStreamPhase('/api/deploy/longhorn/stream', 'dot-lh', 'lh-log', () => {
+    k8sPhaseState.longhornDeployDone = true;
+    saveK8sPhaseState();
+    refreshK8sPhaseUi();
+  }, () => {
+    k8sPhaseState.longhornDeployDone = false;
+    k8sPhaseState.longhornValidateDone = false;
+    saveK8sPhaseState();
+    refreshK8sPhaseUi();
+  });
+}
 
 async function validateK8s() {
   document.getElementById('vk8s-log-card').style.display = 'block';
   setDot('dot-vk8s', 'running');
   const r = await fetch('/api/validate/k8s', { method: 'POST' });
   const d = await r.json();
-  setDot('dot-vk8s', d.status === 'ok' ? 'ok' : 'error');
+  const ok = d.status === 'ok';
+  setDot('dot-vk8s', ok ? 'ok' : 'error');
+  k8sPhaseState.k8sValidateDone = ok;
+  if (!ok) {
+    k8sPhaseState.longhornDeployDone = false;
+    k8sPhaseState.longhornValidateDone = false;
+  }
+  saveK8sPhaseState();
+  refreshK8sPhaseUi();
   renderChecks('st-k8s', d.checks);
 }
 
@@ -87,8 +261,11 @@ async function validateLonghorn() {
   setDot('dot-vlh', 'running');
   const r = await fetch('/api/validate/longhorn', { method: 'POST' });
   const d = await r.json();
-  setDot('dot-vlh', d.status === 'ok' ? 'ok' : 'error');
-  if (d.status === 'ok') {
+  const ok = d.status === 'ok';
+  setDot('dot-vlh', ok ? 'ok' : 'error');
+  k8sPhaseState.longhornValidateDone = ok;
+  saveK8sPhaseState();
+  if (ok) {
     markStepDone('kubernetes');
     showNextStep('kubernetes');
   } else {
@@ -97,9 +274,51 @@ async function validateLonghorn() {
   renderChecks('st-lh', d.checks);
   const ui = d.checks && d.checks.longhorn_ui;
   if (ui && ui.startsWith('ok')) {
-    const url = ui.replace(/^ok — /, '');
+    const url = ui.replace(/^ok [—-] /, '');
     document.getElementById('st-ui').innerHTML =
       `Longhorn UI: <a href="${url}" target="_blank" style="color:#1976d2;font-size:13px">${url}</a>`;
+  } else {
+    document.getElementById('st-ui').innerHTML = '';
   }
 }
+
+refreshK8sPhaseUi();
 </script>
+
+<style>
+.phase-card-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  margin-bottom:.75rem;
+}
+.phase-subtext{
+  font-size:12px;
+  color:#555;
+  line-height:1.55;
+}
+.phase-locked{
+  opacity:.72;
+}
+.phase-locked .log,
+.phase-locked .card-inline-results{
+  opacity:.9;
+}
+.phase-locked .btn{
+  cursor:not-allowed;
+}
+.phase-waiting{
+  font-size:12px;
+  color:#777;
+  background:#f7f7f7;
+  border:1px solid #ececec;
+  border-radius:6px;
+  padding:8px 10px;
+  margin-bottom:.75rem;
+}
+.card-inline-results{
+  border-top:1px solid #f0f0f0;
+  padding-top:.75rem;
+}
+</style>

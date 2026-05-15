@@ -49,7 +49,7 @@ def _check_node(ip: str, ssh_user: str, hostname: str) -> dict:
     out, _ = run("free -m | awk '/^Mem:/{print $2}'")
     try:
         ram_mb = int(out)
-        if ram_mb < 2000:
+        if ram_mb < 2048:
             checks["Memory"] = (
                 f"FAIL - This machine has {ram_mb} MB of RAM. At least 2000 MB is required to continue."
             )
@@ -68,7 +68,7 @@ def _check_node(ip: str, ssh_user: str, hostname: str) -> dict:
         disk_mb = int(out)
         checks["Free disk space"] = (
             f"OK - {disk_mb} MB of free disk space is available."
-            if disk_mb >= 20000
+            if disk_mb >= 10240
             else f"FAIL - This machine has {disk_mb} MB of free disk space. At least 20000 MB free is required."
         )
     except ValueError:
