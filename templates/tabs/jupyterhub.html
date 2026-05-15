@@ -29,7 +29,7 @@
     <h2>JupyterHub deployment</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
       Credentials are read automatically from the GitLab tab outputs.
-      You only need to confirm the NodePort.
+      Confirm the NodePort and the per-user storage size below.
     </p>
 
     <div id="jhub-prefill-status" style="margin-bottom:1rem"></div>
@@ -38,13 +38,15 @@
       <label>NodePort</label>
       <input type="number" id="jhub-nodeport" value="32080"/>
     </div>
-    <div class="field-row">
-      <label>Storage class</label>
-      <input type="text" id="jhub-storage-class" value="longhorn-jupyterhomes"/>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .7rem 168px">
+      This NodePort must match the JupyterHub NodePort configured in the GitLab tab.
     </div>
     <div class="field-row">
       <label>User storage</label>
       <input type="text" id="jhub-user-storage" value="10Gi"/>
+    </div>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .2rem 168px">
+      The storage size each user gets for notebooks and personal files. Use Gi, for example 10Gi or 20Gi.
     </div>
 
     <button class="btn btn-primary" style="margin-top:.75rem"
@@ -113,12 +115,15 @@ async function loadJhubPrefill() {
       banner.style.color        = '#1b5e20';
       icon.textContent          = '✅';
       title.textContent         = 'GitLab is deployed — credentials loaded automatically';
-      body.textContent          = `Connected to ${d.gitlab_url} · OAuth client ID confirmed · Registry ready`;
+      body.textContent          = `Connected to ${d.gitlab_url} · OAuth client ID confirmed · Deploy token ready`;
 
       const el = document.getElementById('jhub-prefill-status');
       if (el) el.innerHTML =
         `<div class="badge b-ok" style="font-size:12px">
           ✓ GitLab at ${d.gitlab_url} · OAuth ID confirmed · Deploy token ready
+        </div>
+        <div style="font-size:12px;color:#666;margin-top:.45rem">
+          Keep the JupyterHub NodePort the same as the value configured in the GitLab tab.
         </div>`;
     } else {
       banner.style.background   = '#fff3e0';
@@ -144,13 +149,30 @@ async function loadJhubPrefill() {
   }
 }
 
+function validateJhubUserStorage(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return 'User storage is required.';
+  if (!/^\d+Gi$/.test(trimmed)) {
+    return 'User storage must use Gi, for example 10Gi or 20Gi.';
+  }
+  return '';
+}
+
 async function jhubConfigure() {
   const el   = document.getElementById('r-jhub-cfg');
+  const storageValue = document.getElementById('jhub-user-storage').value.trim();
   const body = {
     nodeport:      parseInt(document.getElementById('jhub-nodeport').value),
-    storage_class: document.getElementById('jhub-storage-class').value.trim(),
-    user_storage:  document.getElementById('jhub-user-storage').value.trim(),
+    storage_class: 'longhorn-jupyterhomes',
+    user_storage:  storageValue,
   };
+
+  const storageError = validateJhubUserStorage(storageValue);
+  if (storageError) {
+    el.innerHTML = `<span class="badge b-warn">${storageError}</span>`;
+    return;
+  }
+
   el.innerHTML = '<span class="badge b-run">Generating...</span>';
   const resp = await fetch('/api/jupyterhub/configure', {
     method: 'POST',
@@ -170,7 +192,7 @@ function jhubDeploy() {
   const logEl    = document.getElementById('jhub-log');
   const statusEl = document.getElementById('jhub-deploy-status');
   logEl.innerHTML      = '';
-  statusEl.textContent = 'Running\u2026';
+  statusEl.textContent = 'Running…';
   setDot('dot-jhub', 'running');
 
   const es = new EventSource('/api/jupyterhub/stream');
