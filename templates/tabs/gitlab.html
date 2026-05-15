@@ -22,7 +22,8 @@
   <div class="card">
     <h2>Step 2 — Configure</h2>
     <div class="card-hint">
-      All credentials are written locally to generated/ — never committed to git.
+      All credentials are written locally to generated/ and are never committed to Git.
+      Use the control plane IP for JupyterHub access unless you have a specific reason to change it.
     </div>
 
     <p style="font-size:12px;font-weight:600;color:#1565c0;margin:.75rem 0 .4rem">
@@ -32,14 +33,14 @@
       <input type="text" id="gl-version" value="18.9.1"></div>
     <div class="field-row"><label>Root password</label>
       <input type="password" id="gl-root-pass"
-        placeholder="GitLab root account password"></div>
-    <div class="field-row"><label>Sudo password</label>
-      <input type="password" id="gl-become-pass"
-        placeholder="sudo password for the GitLab VM SSH user"></div>
+        placeholder="strong GitLab root account password"></div>
     <div class="field-row"><label>JupyterHub access IP</label>
-      <input type="text" id="gl-worker-ip"
-        placeholder="worker IP — where JupyterHub NodePort is reachable"
-        oninput="updateCallbackPreview()"></div>
+      <select id="gl-worker-ip" onchange="updateCallbackPreview()">
+        <option value="">Loading cluster nodes...</option>
+      </select></div>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .55rem 168px">
+      Keep this set to the control plane IP unless you intentionally want another node to handle access.
+    </div>
     <div class="field-row"><label>JupyterHub NodePort</label>
       <input type="number" id="gl-nodeport" value="32080"
         oninput="updateCallbackPreview()"></div>
@@ -75,7 +76,7 @@
     <div class="field-row">
       <label>Test password</label>
       <input type="password" id="gl-seed-pass"
-        placeholder="min 8 chars — this user will log into JupyterHub">
+        placeholder="strong password for the test GitLab user">
     </div>
 
     <div id="gl-already-deployed" style="display:none;margin-top:.75rem;
@@ -87,6 +88,14 @@
         <input type="checkbox" id="gl-force-redeploy">
         I understand — force redeploy anyway
       </label>
+    </div>
+
+    <div class="field-row" style="margin-top:.85rem">
+      <label>Sudo password</label>
+      <input type="password" id="gl-become-pass"
+        placeholder="re-enter the current VM sudo password"></div>
+    <div style="font-size:12px;color:#666;margin:-2px 0 .2rem 168px">
+      Please re-enter the current VM sudo password.
     </div>
 
     <button class="btn btn-primary" style="margin-top:.75rem"
@@ -118,17 +127,15 @@
   <div class="card" id="gl-outputs-card" style="display:none;border-color:#c8e6c9">
     <h2 style="color:#2e7d32">✓ GitLab is ready</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      All credentials saved to
+      All credentials are saved to
       <span class="mono">generated/gitlab-outputs.json</span>.
       JupyterHub and Dashboard tabs will read these automatically.
     </p>
-    <div id="gl-outputs-body" class="outputs-grid"></div>
     <div class="info-box" style="margin-top:1rem">
       GitLab UI: <a id="gl-url-link" href="#" target="_blank"
         style="color:#1976d2"></a>
       &nbsp;·&nbsp; Login: <strong>root</strong> / your root password
     </div>
-    <div id="gitlab-url-badge" style="margin-top:.5rem;font-size:13px"></div>
   </div>
 
   <div id="next-step-gitlab" class="next-step-cta">
@@ -147,7 +154,7 @@
 
 <script>
 function updateCallbackPreview() {
-  const ip   = document.getElementById('gl-worker-ip').value.trim();
+  const ip = document.getElementById('gl-worker-ip').value.trim();
   const port = document.getElementById('gl-nodeport').value.trim();
   const prev = document.getElementById('gl-callback-preview');
   if (ip && port) {
@@ -158,10 +165,128 @@ function updateCallbackPreview() {
   }
 }
 
+function parseInventoryNodes(inventoryText) {
+  const lines = (inventoryText || '').split(/\r?\n/);
+  const nodes = [];
+  let section = '';
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      section = line.slice(1, -1);
+      continue;
+    }
+    if (line.startsWith('#')) continue;
+    if (section !== 'control_plane' && section !== 'workers') continue;
+    const parts = line.split(/\s+/);
+    const hostname = parts[0];
+    const ansibleHost = parts.find(part => part.startsWith('ansible_host='));
+    if (!hostname || !ansibleHost) continue;
+    nodes.push({
+      hostname,
+      ip: ansibleHost.split('=')[1],
+      role: section,
+    });
+  }
+  return nodes;
+}
+
+function renderGitLabWorkerIpOptions(nodes, preferredIp) {
+  const select = document.getElementById('gl-worker-ip');
+  if (!select) return;
+
+  if (!nodes.length) {
+    select.innerHTML = '<option value="">No configured cluster nodes found yet</option>';
+    select.value = '';
+    updateCallbackPreview();
+    return;
+  }
+
+  select.innerHTML = nodes.map(node =>
+    `<option value="${node.ip}">${node.hostname} (${node.ip})${node.role === 'control_plane' ? ' - control plane' : ''}</option>`
+  ).join('');
+
+  const defaultNode = nodes.find(node => node.role === 'control_plane') || nodes[0];
+  const nextValue = nodes.some(node => node.ip === preferredIp)
+    ? preferredIp
+    : defaultNode.ip;
+  select.value = nextValue;
+  updateCallbackPreview();
+}
+
+async function loadGitLabWorkerIpOptions() {
+  const select = document.getElementById('gl-worker-ip');
+  if (!select) return;
+
+  let nodes = [];
+  let preferredIp = '';
+
+  try {
+    const previewResp = await fetch('/api/configure/preview');
+    if (previewResp.ok) {
+      const preview = await previewResp.json();
+      nodes = parseInventoryNodes(preview.inventory);
+      const controlPlane = nodes.find(node => node.role === 'control_plane');
+      preferredIp = controlPlane ? controlPlane.ip : '';
+    }
+  } catch (e) {}
+
+  if (!nodes.length) {
+    try {
+      const bootstrapResp = await fetch('/api/bootstrap/nodes');
+      const bootstrap = await bootstrapResp.json();
+      nodes = (bootstrap.nodes || []).map(node => ({
+        hostname: node.hostname,
+        ip: node.ip,
+        role: '',
+      }));
+    } catch (e) {}
+  }
+
+  renderGitLabWorkerIpOptions(nodes, preferredIp);
+}
+
+function isCommonWeakPassword(value) {
+  const weakValues = new Set([
+    'password',
+    'password123',
+    '12345678',
+    '123456789',
+    'qwerty123',
+    'admin123',
+    'gitlab123',
+    'testuser123',
+  ]);
+  return weakValues.has(String(value || '').toLowerCase());
+}
+
+function validateGitLabPassword(label, value) {
+  if (!value) return `${label} is required.`;
+  if (value.length < 12) return `${label} must be at least 12 characters long.`;
+  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
+    return `${label} must include both letters and numbers.`;
+  }
+  if (isCommonWeakPassword(value)) {
+    return `${label} is too common. Choose a stronger password.`;
+  }
+  return '';
+}
+
+function validateGitLabSeedUsername(value) {
+  if (!value) return 'Test username is required.';
+  if (!/^[a-z0-9_.-]+$/i.test(value)) {
+    return 'Test username can use letters, numbers, dots, hyphens, and underscores only.';
+  }
+  if (/\s/.test(value)) {
+    return 'Test username cannot contain spaces.';
+  }
+  return '';
+}
+
 async function gitlabBootstrapSSH() {
-  const el   = document.getElementById('r-gl-ssh');
+  const el = document.getElementById('r-gl-ssh');
   const body = {
-    ip:       document.getElementById('gl-ip').value.trim(),
+    ip: document.getElementById('gl-ip').value.trim(),
     ssh_user: document.getElementById('gl-user').value.trim(),
     ssh_pass: document.getElementById('gl-pass').value,
   };
@@ -183,29 +308,49 @@ async function gitlabBootstrapSSH() {
 }
 
 async function gitlabConfigure() {
-  const el            = document.getElementById('r-gl-cfg');
+  const el = document.getElementById('r-gl-cfg');
   const forceRedeploy = document.getElementById('gl-force-redeploy')?.checked || false;
   const body = {
-    ip:                   document.getElementById('gl-ip').value.trim(),
-    ssh_user:             document.getElementById('gl-user').value.trim(),
-    become_pass:          document.getElementById('gl-become-pass').value,
-    gitlab_version:       document.getElementById('gl-version').value.trim(),
+    ip: document.getElementById('gl-ip').value.trim(),
+    ssh_user: document.getElementById('gl-user').value.trim(),
+    become_pass: document.getElementById('gl-become-pass').value,
+    gitlab_version: document.getElementById('gl-version').value.trim(),
     gitlab_root_password: document.getElementById('gl-root-pass').value,
-    worker_ip:            document.getElementById('gl-worker-ip').value.trim(),
-    worker_nodeport:      parseInt(document.getElementById('gl-nodeport').value),
-    force_redeploy:       forceRedeploy,
-    seed_group_name:      document.getElementById('gl-seed-group').value.trim(),
-    seed_user_username:   document.getElementById('gl-seed-user').value.trim(),
-    seed_user_password:   document.getElementById('gl-seed-pass').value,
+    worker_ip: document.getElementById('gl-worker-ip').value.trim(),
+    worker_nodeport: parseInt(document.getElementById('gl-nodeport').value),
+    force_redeploy: forceRedeploy,
+    seed_group_name: document.getElementById('gl-seed-group').value.trim(),
+    seed_user_username: document.getElementById('gl-seed-user').value.trim(),
+    seed_user_password: document.getElementById('gl-seed-pass').value,
   };
+
   if (!body.ip || !body.gitlab_root_password || !body.worker_ip || !body.become_pass) {
     el.innerHTML = '<span class="badge b-warn">Fill in all GitLab fields.</span>';
     return;
   }
   if (!body.seed_user_password) {
-    el.innerHTML = '<span class="badge b-warn">Seed user password is required.</span>';
+    el.innerHTML = '<span class="badge b-warn">Test password is required.</span>';
     return;
   }
+
+  const rootPasswordError = validateGitLabPassword('Root password', body.gitlab_root_password);
+  if (rootPasswordError) {
+    el.innerHTML = `<span class="badge b-warn">${rootPasswordError}</span>`;
+    return;
+  }
+
+  const seedUsernameError = validateGitLabSeedUsername(body.seed_user_username);
+  if (seedUsernameError) {
+    el.innerHTML = `<span class="badge b-warn">${seedUsernameError}</span>`;
+    return;
+  }
+
+  const seedPasswordError = validateGitLabPassword('Test password', body.seed_user_password);
+  if (seedPasswordError) {
+    el.innerHTML = `<span class="badge b-warn">${seedPasswordError}</span>`;
+    return;
+  }
+
   el.innerHTML = '<span class="badge b-run">Generating...</span>';
   const resp = await fetch('/api/gitlab/configure', {
     method: 'POST',
@@ -220,8 +365,8 @@ async function gitlabConfigure() {
   }
   if (d.status === 'ok') {
     document.getElementById('gl-become-pass').value = '';
-    document.getElementById('gl-root-pass').value   = '';
-    document.getElementById('gl-seed-pass').value   = '';
+    document.getElementById('gl-root-pass').value = '';
+    document.getElementById('gl-seed-pass').value = '';
     document.getElementById('gl-already-deployed').style.display = 'none';
     el.innerHTML = `<span class="badge b-ok">Config saved — callback: ${d.callback_url}</span>`;
   } else {
@@ -230,9 +375,9 @@ async function gitlabConfigure() {
 }
 
 function gitlabDeploy() {
-  const logEl    = document.getElementById('gl-log');
+  const logEl = document.getElementById('gl-log');
   const statusEl = document.getElementById('gl-deploy-status');
-  logEl.innerHTML      = '';
+  logEl.innerHTML = '';
   statusEl.textContent = 'Running…';
   setDot('dot-gitlab', 'running');
   const es = new EventSource('/api/gitlab/stream');
@@ -269,22 +414,10 @@ async function loadGitLabOutputs() {
   const link = document.getElementById('gl-url-link');
   link.href = d.gitlab_url;
   link.textContent = d.gitlab_url;
-  document.getElementById('gl-outputs-body').innerHTML = `
-    <span style="color:#666">GitLab URL</span>       <span>${d.gitlab_url}</span>
-    <span style="color:#666">Registry host</span>    <span class="mono">${d.registry_host}</span>
-    <span style="color:#666">OAuth client ID</span>  <span class="mono">${d.oauth_client_id}</span>
-    <span style="color:#666">Project ID</span>       <span>${d.project_id}</span>
-    <span style="color:#666">Deploy token user</span><span class="mono">${d.deploy_token_user}</span>
-    <span style="color:#666">Admin token</span>
-      <span class="badge ${d.admin_token_set?'b-ok':'b-err'}">${d.admin_token_set?'✓ saved':'✗ missing'}</span>
-    <span style="color:#666">OAuth secret</span>
-      <span class="badge ${d.oauth_secret_set?'b-ok':'b-err'}">${d.oauth_secret_set?'✓ saved':'✗ missing'}</span>
-    <span style="color:#666">Registry token</span>
-      <span class="badge ${d.deploy_token_pass_set?'b-ok':'b-err'}">${d.deploy_token_pass_set?'✓ saved':'✗ missing'}</span>
-  `;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  loadGitLabWorkerIpOptions();
   loadGitLabOutputs();
 });
 </script>
