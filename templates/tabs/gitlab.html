@@ -1,6 +1,13 @@
 <div id="tab-gitlab" class="panel">
   <div id="prereq-gitlab" class="prereq-banner"></div>
 
+  <div style="display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f4fd;border:1px solid #b3d9f7;border-left:4px solid #42a5f5;color:#1a1a2e;">
+    <span style="font-size:20px;flex-shrink:0">🖧</span>
+    <div>
+      <strong>Network requirement</strong><br>
+      The GitLab VM must be reachable from all Kubernetes nodes. Same VLAN is best for reliable GitLab, registry, and JupyterHub connectivity.
+    </div>
+  </div>
 
   <div class="card">
     <h2>Step 1 — SSH bootstrap to GitLab VM</h2>
@@ -35,6 +42,13 @@
     <div class="field-row"><label>Root password</label>
       <input type="password" id="gl-root-pass"
         placeholder="strong GitLab root account password"></div>
+    <div id="gl-root-pass-hint" style="font-size:12px;color:#666;margin:-2px 0 .65rem 168px;display:none">
+      <div id="gl-root-pass-len">• Use at least 8 characters</div>
+      <div id="gl-root-pass-upper">• Include an uppercase letter</div>
+      <div id="gl-root-pass-lower">• Include a lowercase letter</div>
+      <div id="gl-root-pass-number">• Include a number</div>
+      <div id="gl-root-pass-symbol">• Include a symbol</div>
+    </div>
     <div class="field-row"><label>JupyterHub access IP</label>
       <select id="gl-worker-ip" onchange="updateCallbackPreview()">
         <option value="">Loading cluster nodes...</option>
@@ -78,6 +92,13 @@
       <label>Test password</label>
       <input type="password" id="gl-seed-pass"
         placeholder="strong password for the test GitLab user">
+    </div>
+    <div id="gl-seed-pass-hint" style="font-size:12px;color:#666;margin:-2px 0 .65rem 168px;display:none">
+      <div id="gl-seed-pass-len">• Use at least 8 characters</div>
+      <div id="gl-seed-pass-upper">• Include an uppercase letter</div>
+      <div id="gl-seed-pass-lower">• Include a lowercase letter</div>
+      <div id="gl-seed-pass-number">• Include a number</div>
+      <div id="gl-seed-pass-symbol">• Include a symbol</div>
     </div>
 
     <div id="gl-already-deployed" style="display:none;margin-top:.75rem;
@@ -261,12 +282,55 @@ function isCommonWeakPassword(value) {
   return weakValues.has(String(value || '').toLowerCase());
 }
 
+function getGitLabPasswordChecks(value) {
+  const text = String(value || '');
+  return {
+    len: text.length >= 8,
+    upper: /[A-Z]/.test(text),
+    lower: /[a-z]/.test(text),
+    number: /[0-9]/.test(text),
+    symbol: /[^A-Za-z0-9]/.test(text),
+  };
+}
+
+function renderGitLabPasswordHint(fieldId, hintId) {
+  const input = document.getElementById(fieldId);
+  const hint = document.getElementById(hintId);
+  if (!input || !hint) return;
+
+  const value = input.value || '';
+  if (!value) {
+    hint.style.display = 'none';
+    return;
+  }
+
+  hint.style.display = 'block';
+  const checks = getGitLabPasswordChecks(value);
+  const labels = {
+    len: 'Use at least 8 characters',
+    upper: 'Include an uppercase letter',
+    lower: 'Include a lowercase letter',
+    number: 'Include a number',
+    symbol: 'Include a symbol',
+  };
+
+  Object.entries(labels).forEach(([key, label]) => {
+    const row = document.getElementById(`${fieldId}-${key}`);
+    if (!row) return;
+    const ok = checks[key];
+    row.textContent = `${ok ? '✓' : '•'} ${label}`;
+    row.style.color = ok ? '#2e7d32' : '#666';
+  });
+}
+
 function validateGitLabPassword(label, value) {
   if (!value) return `${label} is required.`;
-  if (value.length < 12) return `${label} must be at least 12 characters long.`;
-  if (!/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
-    return `${label} must include both letters and numbers.`;
-  }
+  const checks = getGitLabPasswordChecks(value);
+  if (!checks.len) return `${label} must be at least 8 characters long.`;
+  if (!checks.upper) return `${label} must include at least one uppercase letter.`;
+  if (!checks.lower) return `${label} must include at least one lowercase letter.`;
+  if (!checks.number) return `${label} must include at least one number.`;
+  if (!checks.symbol) return `${label} must include at least one symbol.`;
   if (isCommonWeakPassword(value)) {
     return `${label} is too common. Choose a stronger password.`;
   }
@@ -368,6 +432,8 @@ async function gitlabConfigure() {
     document.getElementById('gl-become-pass').value = '';
     document.getElementById('gl-root-pass').value = '';
     document.getElementById('gl-seed-pass').value = '';
+    renderGitLabPasswordHint('gl-root-pass', 'gl-root-pass-hint');
+    renderGitLabPasswordHint('gl-seed-pass', 'gl-seed-pass-hint');
     document.getElementById('gl-already-deployed').style.display = 'none';
     el.innerHTML = `<span class="badge b-ok">Config saved — callback: ${d.callback_url}</span>`;
   } else {
@@ -420,5 +486,11 @@ async function loadGitLabOutputs() {
 document.addEventListener('DOMContentLoaded', () => {
   loadGitLabWorkerIpOptions();
   loadGitLabOutputs();
+  document.getElementById('gl-root-pass')?.addEventListener('input', () => {
+    renderGitLabPasswordHint('gl-root-pass', 'gl-root-pass-hint');
+  });
+  document.getElementById('gl-seed-pass')?.addEventListener('input', () => {
+    renderGitLabPasswordHint('gl-seed-pass', 'gl-seed-pass-hint');
+  });
 });
 </script>
