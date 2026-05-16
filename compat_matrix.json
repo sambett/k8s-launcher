@@ -11,6 +11,36 @@
   "rules": [
     {
       "if": {
+        "kubernetes_gte": "1.29",
+        "containerd_lt": "1.7"
+      },
+      "affects": "containerd",
+      "severity": "warning",
+      "message": "This launcher validates Kubernetes 1.29+ with containerd 1.7.x. Use containerd 1.7.22.",
+      "source_type": "platform"
+    },
+    {
+      "if": {
+        "kubernetes_gte": "1.32",
+        "calico_major": "3.28"
+      },
+      "affects": "calico",
+      "severity": "warning",
+      "message": "This launcher validates Kubernetes 1.32+ with a newer Calico release. Calico 3.28.x is outside the tested stack.",
+      "source_type": "platform"
+    },
+    {
+      "if": {
+        "kubernetes_lt": "1.28",
+        "longhorn_major": "1.7"
+      },
+      "affects": "longhorn",
+      "severity": "warning",
+      "message": "This launcher validates Longhorn 1.7.x with Kubernetes 1.28 or higher. Use Kubernetes 1.28+ for the tested stack.",
+      "source_type": "platform"
+    },
+    {
+      "if": {
         "kubernetes_lt": "1.25",
         "longhorn_major": "1.7"
       },

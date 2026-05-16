@@ -44,7 +44,7 @@
       <input type="text" id="v-containerd" value="1.7.22" oninput="checkCompat()"></div>
     <div id="w-containerd"></div>
     <div class="field-row"><label>Calico</label>
-      <input type="text" id="v-calico" value="v3.28.2"></div>
+      <input type="text" id="v-calico" value="v3.28.2" oninput="checkCompat()"></div>
     <div class="field-row"><label>Longhorn</label>
       <input type="text" id="v-longhorn" value="1.7.2" oninput="checkCompat()"></div>
     <div id="w-longhorn"></div>
@@ -215,14 +215,12 @@ function getSelectedConfigureWorkers() {
 }
 
 let COMPAT_RULES = [];
-let COMPAT_PRESET = null;
 async function loadCompatMatrix() {
   try {
     const r = await fetch('/api/compat-matrix');
     const d = await r.json();
     COMPAT_RULES = d.rules || [];
     const p = d.presets && d.presets['stable-sprint2'];
-    COMPAT_PRESET = p || null;
     if (p) {
       document.getElementById('v-k8s').value        = p.kubernetes  || '1.30.5';
       document.getElementById('v-containerd').value = p.containerd  || '1.7.22';
@@ -259,25 +257,6 @@ function checkCompat() {
       document.getElementById(warnEl).innerHTML +=
         `<div class="warn-box">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
   });
-
-  if (COMPAT_PRESET) {
-    if (k8sRaw && k8sRaw !== COMPAT_PRESET.kubernetes) {
-      document.getElementById('w-k8s').innerHTML +=
-        `<div class="warn-box">Warning: Kubernetes ${k8sRaw} is outside this launcher's validated default stack. Tested default: ${COMPAT_PRESET.kubernetes}.</div>`;
-    }
-    if (containerd && containerd !== COMPAT_PRESET.containerd) {
-      document.getElementById('w-containerd').innerHTML +=
-        `<div class="warn-box">Warning: containerd ${containerd} is outside this launcher's validated default stack. Tested default: ${COMPAT_PRESET.containerd}.</div>`;
-    }
-    if (calicoRaw && calicoRaw !== COMPAT_PRESET.calico) {
-      document.getElementById('w-calico').innerHTML +=
-        `<div class="warn-box">Warning: Calico ${calicoRaw} is outside this launcher's validated default stack. Tested default: ${COMPAT_PRESET.calico}.</div>`;
-    }
-    if (longhorn && longhorn !== COMPAT_PRESET.longhorn) {
-      document.getElementById('w-longhorn').innerHTML +=
-        `<div class="warn-box">Warning: Longhorn ${longhorn} is outside this launcher's validated default stack. Tested default: ${COMPAT_PRESET.longhorn}.</div>`;
-    }
-  }
 }
 loadCompatMatrix().then(checkCompat);
 
