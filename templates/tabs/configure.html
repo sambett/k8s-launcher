@@ -231,22 +231,32 @@ async function loadCompatMatrix() {
 }
 
 function checkCompat() {
-  ['w-k8s', 'w-containerd', 'w-longhorn'].forEach(id =>
+  ['w-k8s', 'w-containerd', 'w-calico', 'w-longhorn'].forEach(id =>
     document.getElementById(id).innerHTML = '');
   const k8s        = parseFloat(document.getElementById('v-k8s').value.replace('v', ''));
   const containerd = document.getElementById('v-containerd').value;
+  const calico     = document.getElementById('v-calico').value.replace(/^v/i, '');
+  const longhorn   = document.getElementById('v-longhorn').value;
   COMPAT_RULES.forEach(rule => {
     const c = rule.if;
-    let triggered = false, warnEl = 'w-k8s';
-    if (c.kubernetes_gte && k8s >= parseFloat(c.kubernetes_gte)) { triggered = true; warnEl = 'w-k8s'; }
-    if (c.kubernetes_lt  && k8s <  parseFloat(c.kubernetes_lt))  { triggered = true; warnEl = 'w-k8s'; }
-    if (c.containerd_major && containerd.startsWith(c.containerd_major + '.')) { triggered = true; warnEl = 'w-containerd'; }
+    let triggered = true;
+    let warnEl = 'w-k8s';
+    if (c.kubernetes_gte && !(k8s >= parseFloat(c.kubernetes_gte))) triggered = false;
+    if (c.kubernetes_lt  && !(k8s <  parseFloat(c.kubernetes_lt)))  triggered = false;
+    if (c.containerd_major && !containerd.startsWith(c.containerd_major + '.')) triggered = false;
+    if (c.containerd_lt && !(parseFloat(containerd) < parseFloat(c.containerd_lt))) triggered = false;
+    if (c.calico_major && !calico.startsWith(c.calico_major + '.')) triggered = false;
+    if (c.longhorn_major && !longhorn.startsWith(c.longhorn_major + '.')) triggered = false;
+    if (rule.affects === 'containerd') warnEl = 'w-containerd';
+    if (rule.affects === 'calico') warnEl = 'w-calico';
+    if (rule.affects === 'longhorn') warnEl = 'w-longhorn';
+    if (!rule.affects && (c.containerd_major || c.containerd_lt)) warnEl = 'w-containerd';
     if (triggered)
       document.getElementById(warnEl).innerHTML +=
         `<div class="warn-box">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
   });
 }
-loadCompatMatrix();
+loadCompatMatrix().then(checkCompat);
 
 async function generateConfig() {
   const cpIp = document.getElementById('cp-select').value;

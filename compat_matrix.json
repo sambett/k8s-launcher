@@ -11,33 +11,14 @@
   "rules": [
     {
       "if": {
-        "containerd_major": "1.5"
-      },
-      "severity": "breaking",
-      "message": "containerd 1.5.x is not supported on Kubernetes 1.24+. Use 1.7.x."
-    },
-    {
-      "if": {
-        "kubernetes_gte": "1.29"
-      },
-      "severity": "warning",
-      "message": "Kubernetes 1.29+ requires containerd 1.7.0+. Verify your containerd version."
-    },
-    {
-      "if": {
-        "kubernetes_gte": "1.32"
-      },
-      "affects": "calico",
-      "severity": "breaking",
-      "message": "Calico 3.28 does not support Kubernetes 1.32+."
-    },
-    {
-      "if": {
-        "kubernetes_lt": "1.28"
+        "kubernetes_lt": "1.25",
+        "longhorn_major": "1.7"
       },
       "affects": "longhorn",
       "severity": "breaking",
-      "message": "Longhorn 1.7 requires Kubernetes 1.28 or higher."
+      "message": "Longhorn requires Kubernetes 1.25 or higher.",
+      "source_type": "official",
+      "source_url": "https://longhorn.io/docs/latest/deploy/install/"
     }
   ],
   "nvidia_device_plugin": [
