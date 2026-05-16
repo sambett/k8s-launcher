@@ -45,6 +45,7 @@
     <div id="w-containerd"></div>
     <div class="field-row"><label>Calico</label>
       <input type="text" id="v-calico" value="v3.28.2" oninput="checkCompat()"></div>
+    <div id="w-calico"></div>
     <div class="field-row"><label>Longhorn</label>
       <input type="text" id="v-longhorn" value="1.7.2" oninput="checkCompat()"></div>
     <div id="w-longhorn"></div>
@@ -231,8 +232,10 @@ async function loadCompatMatrix() {
 }
 
 function checkCompat() {
-  ['w-k8s', 'w-containerd', 'w-calico', 'w-longhorn'].forEach(id =>
-    document.getElementById(id).innerHTML = '');
+  ['w-k8s', 'w-containerd', 'w-calico', 'w-longhorn'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '';
+  });
   const k8sRaw     = document.getElementById('v-k8s').value.trim();
   const k8s        = parseFloat(k8sRaw.replace('v', ''));
   const containerd = document.getElementById('v-containerd').value.trim();
@@ -253,9 +256,13 @@ function checkCompat() {
     if (rule.affects === 'calico') warnEl = 'w-calico';
     if (rule.affects === 'longhorn') warnEl = 'w-longhorn';
     if (!rule.affects && (c.containerd_major || c.containerd_lt)) warnEl = 'w-containerd';
-    if (triggered)
-      document.getElementById(warnEl).innerHTML +=
-        `<div class="warn-box">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
+    if (triggered) {
+      const warnTarget = document.getElementById(warnEl);
+      if (warnTarget) {
+        warnTarget.innerHTML +=
+          `<div class="warn-box">${rule.severity === 'breaking' ? 'Breaking: ' : 'Warning: '}${rule.message}</div>`;
+      }
+    }
   });
 }
 loadCompatMatrix().then(checkCompat);
