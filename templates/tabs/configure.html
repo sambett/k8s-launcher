@@ -216,14 +216,12 @@ function getSelectedConfigureWorkers() {
 }
 
 let COMPAT_RULES = [];
-let COMPAT_PRESET = null;
 async function loadCompatMatrix() {
   try {
     const r = await fetch('/api/compat-matrix');
     const d = await r.json();
     COMPAT_RULES = d.rules || [];
     const p = d.presets && d.presets['stable-sprint2'];
-    COMPAT_PRESET = p || null;
     if (p) {
       document.getElementById('v-k8s').value        = p.kubernetes  || '1.30.5';
       document.getElementById('v-containerd').value = p.containerd  || '1.7.22';
@@ -267,32 +265,6 @@ function checkCompat() {
     }
   });
 
-  if (COMPAT_PRESET) {
-    if (k8sRaw && k8sRaw !== COMPAT_PRESET.kubernetes) {
-      const el = document.getElementById('w-k8s');
-      if (el) {
-        el.innerHTML += `<div class="warn-box">Warning: Kubernetes ${k8sRaw} is outside this launcher's validated default stack. Use ${COMPAT_PRESET.kubernetes}.</div>`;
-      }
-    }
-    if (containerd && containerd !== COMPAT_PRESET.containerd) {
-      const el = document.getElementById('w-containerd');
-      if (el) {
-        el.innerHTML += `<div class="warn-box">Warning: containerd ${containerd} is outside this launcher's validated default stack. Use ${COMPAT_PRESET.containerd}.</div>`;
-      }
-    }
-    if (calicoRaw && calicoRaw !== COMPAT_PRESET.calico) {
-      const el = document.getElementById('w-calico');
-      if (el) {
-        el.innerHTML += `<div class="warn-box">Warning: Calico ${calicoRaw} is outside this launcher's validated default stack. Use ${COMPAT_PRESET.calico}.</div>`;
-      }
-    }
-    if (longhorn && longhorn !== COMPAT_PRESET.longhorn) {
-      const el = document.getElementById('w-longhorn');
-      if (el) {
-        el.innerHTML += `<div class="warn-box">Warning: Longhorn ${longhorn} is outside this launcher's validated default stack. Use ${COMPAT_PRESET.longhorn}.</div>`;
-      }
-    }
-  }
 }
 loadCompatMatrix().then(checkCompat);
 
