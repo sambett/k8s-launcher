@@ -265,6 +265,8 @@ function installKyverno() {
   const statusEl = document.getElementById('kyverno-install-status');
   if (!version) { statusEl.textContent = 'Select a version first.'; return; }
   logEl.innerHTML = '';
+  makeLogLine(`Starting Kyverno install for version ${version}...`, logEl);
+  makeLogLine('Waiting for Ansible output...', logEl);
   statusEl.textContent = 'Running…';
   setDot('dot-kyverno-install', 'running');
 
