@@ -181,19 +181,40 @@ async function refreshPlatformOverview() {
   if (!el) return;
   el.innerHTML = '<span style="color:#888;font-size:13px">Checking...</span>';
   try {
-    const r = await fetch('/api/platform/status');
-    const d = await r.json();
+    const [platformResp, monitoringResp] = await Promise.all([
+      fetch('/api/platform/status'),
+      fetch('/api/monitoring/access').catch(() => null),
+    ]);
+    const d = await platformResp.json();
+    let monitoring = { grafana_url: null, prometheus_url: null };
+    if (monitoringResp && monitoringResp.ok) {
+      monitoring = await monitoringResp.json();
+    }
+
     if (d.cluster?.status    === 'ready') markStepDone('kubernetes');
     if (d.gitlab?.status     === 'ready') markStepDone('gitlab');
     if (d.jupyterhub?.status === 'ready') markStepDone('jupyterhub');
     if (d.dashboard?.status  === 'ready') markStepDone('admindashboard');
+
+    d.grafana = {
+      status: monitoring.grafana_url ? 'ready' : 'not_deployed',
+      url: monitoring.grafana_url,
+    };
+    d.prometheus = {
+      status: monitoring.prometheus_url ? 'ready' : 'not_deployed',
+      url: monitoring.prometheus_url,
+    };
+
     const LABELS = {
       cluster:    { label: 'Kubernetes Cluster', icon: '⎈' },
       longhorn:   { label: 'Longhorn Storage',   icon: '💾' },
       gitlab:     { label: 'GitLab',             icon: '🦊' },
       jupyterhub: { label: 'JupyterHub',         icon: '📓' },
       dashboard:  { label: 'Admin Dashboard',    icon: '⚙' },
+      grafana:    { label: 'Grafana',            icon: '📊' },
+      prometheus: { label: 'Prometheus',         icon: '🔭' },
     };
+
     const rows = Object.entries(LABELS).map(([key, meta]) => {
       const comp    = d[key] || { status: 'unknown' };
       const isReady = comp.status === 'ready';
