@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.ansible import run_on_cp
-from core.paths import BASE_DIR, INVENTORY_PATH, VARS_PATH
+from core.paths import BASE_DIR, INVENTORY_PATH, VARS_PATH, SSH_KEY_PATH
 
 router = APIRouter()
 
@@ -147,6 +147,66 @@ def _run_on_node(node: str, cmd: str, become: bool = False, timeout: int = 60):
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
+
+def _run_on_node_by_ip(k8s_node: str, cmd: str, become: bool = False, timeout: int = 30):
+    """
+    Run a shell command on a node using its current Kubernetes InternalIP.
+
+    The GPU prerequisites checker should trust Kubernetes for node identity
+    instead of bridging through inventory.ini. That keeps checks accurate even
+    if VM IPs changed after a reboot and the inventory was not regenerated yet.
+    """
+    ip_out, rc = run_on_cp(
+        f"kubectl get node {k8s_node} "
+        f"-o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'"
+    )
+    ip = _strip(ip_out).strip().strip("'\"")
+    if not ip or rc != 0:
+        return f"Could not resolve InternalIP for node {k8s_node}", 1
+
+    ssh_user = "ubuntu"
+    try:
+        if INVENTORY_PATH.exists():
+            for inv_line in INVENTORY_PATH.read_text().splitlines():
+                stripped = inv_line.strip()
+                if not stripped or stripped.startswith("[") or stripped.startswith("#"):
+                    continue
+                parts = stripped.split()
+                part_map = {}
+                for part in parts[1:]:
+                    if "=" in part:
+                        key, value = part.split("=", 1)
+                        part_map[key] = value
+                if part_map.get("ansible_host") == ip and part_map.get("ansible_user"):
+                    ssh_user = part_map["ansible_user"]
+                    break
+    except Exception:
+        pass
+
+    args = [
+        "ansible", ip,
+        "-i", f"{ip},",
+        "-m", "shell",
+        "-a", cmd,
+        "--private-key", str(SSH_KEY_PATH),
+        "-u", ssh_user,
+    ]
+    if become:
+        args.append("--become")
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        lines = [
+            l.strip() for l in (r.stdout + r.stderr).splitlines()
+            if l.strip()
+            and "| CHANGED |" not in l and "| SUCCESS |" not in l
+            and "| rc=" not in l and not l.startswith("WARNING")
+        ]
+        return (lines[0] if lines else ""), r.returncode
+    except subprocess.TimeoutExpired:
+        return f"Timed out after {timeout}s â€” node may be unresponsive", 1
+    except Exception as e:
+        return str(e), 1
+
 
 class NodeAction(BaseModel):
     node_name: str
@@ -587,15 +647,14 @@ async def gpu_node_prereqs(node: str):
       4. Runtime loaded    - containerd config dump confirms the runtime is
                              ACTIVE in the running daemon (not just on disk)
 
-    node is the K8s node name, resolved to inventory hostname via IP lookup
-    so the check works even when kubeadm registered a different name.
+    node is the K8s node name. Checks run against the node's current InternalIP
+    from Kubernetes so IP drift in inventory.ini does not break the checker.
     """
-    inv_hostname = _resolve_inventory_hostname(node)
-    result = {"node": node, "inv_hostname": inv_hostname}
+    result = {"node": node}
 
     # 1. NVIDIA driver
-    drv, _ = _run_on_node(
-        inv_hostname,
+    drv, _ = _run_on_node_by_ip(
+        node,
         "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader 2>/dev/null"
         " | head -1 || echo NOT_FOUND"
     )
@@ -612,8 +671,8 @@ async def gpu_node_prereqs(node: str):
         result["driver"] = {"status": "missing", "version": "", "gpu_name": ""}
 
     # 2. Container Toolkit
-    ctk, _ = _run_on_node(
-        inv_hostname,
+    ctk, _ = _run_on_node_by_ip(
+        node,
         "nvidia-ctk --version 2>&1 | head -1 || echo NOT_FOUND"
     )
     if ctk and ctk != "NOT_FOUND":
@@ -636,8 +695,8 @@ async def gpu_node_prereqs(node: str):
     # 3. containerd config file present
     # nvidia-ctk writes to /etc/containerd/conf.d/99-nvidia.toml, NOT config.toml.
     # Recursive search covers both paths regardless of containerd version.
-    ctd, _ = _run_on_node(
-        inv_hostname,
+    ctd, _ = _run_on_node_by_ip(
+        node,
         "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | wc -l",
         become=True,
     )
@@ -646,8 +705,8 @@ async def gpu_node_prereqs(node: str):
     except Exception:
         configured = False
 
-    conf_path, _ = _run_on_node(
-        inv_hostname,
+    conf_path, _ = _run_on_node_by_ip(
+        node,
         "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null"
         " | head -1 || echo not found",
         become=True,
@@ -661,8 +720,8 @@ async def gpu_node_prereqs(node: str):
     # 4. Runtime loaded — containerd config dump reflects the EFFECTIVE running
     #    config including all conf.d drop-ins.
     #    Catches "file written but containerd not yet restarted" edge case.
-    cdump, _ = _run_on_node(
-        inv_hostname,
+    cdump, _ = _run_on_node_by_ip(
+        node,
         "containerd config dump 2>/dev/null | grep -c nvidia-container-runtime || echo 0",
         become=True,
     )
