@@ -13,10 +13,25 @@
     state: present
   become: yes
 
+- name: longhorn_prereqs | Load dm_crypt kernel module
+  community.general.modprobe:
+    name: dm_crypt
+    state: present
+  become: yes
+
 - name: longhorn_prereqs | Persist iscsi_tcp across reboots
   copy:
     dest: /etc/modules-load.d/iscsi_tcp.conf
     content: "iscsi_tcp\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: yes
+
+- name: longhorn_prereqs | Persist dm_crypt across reboots
+  copy:
+    dest: /etc/modules-load.d/dm_crypt.conf
+    content: "dm_crypt\n"
     owner: root
     group: root
     mode: "0644"
