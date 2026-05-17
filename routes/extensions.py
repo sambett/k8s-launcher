@@ -614,7 +614,7 @@ async def gpu_node_prereqs(node: str):
     # 2. Container Toolkit
     ctk, _ = _run_on_node(
         inv_hostname,
-        "nvidia-ctk --version 2>/dev/null | head -1 || echo NOT_FOUND"
+        "nvidia-ctk --version 2>&1 | head -1 || echo NOT_FOUND"
     )
     if ctk and ctk != "NOT_FOUND":
         m = re.search(r"(\d+\.\d+\.\d+)", ctk)
@@ -638,7 +638,8 @@ async def gpu_node_prereqs(node: str):
     # Recursive search covers both paths regardless of containerd version.
     ctd, _ = _run_on_node(
         inv_hostname,
-        "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | wc -l"
+        "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null | wc -l",
+        become=True,
     )
     try:
         configured = int(ctd.strip()) > 0
@@ -648,7 +649,8 @@ async def gpu_node_prereqs(node: str):
     conf_path, _ = _run_on_node(
         inv_hostname,
         "grep -rl nvidia-container-runtime /etc/containerd/ 2>/dev/null"
-        " | head -1 || echo not found"
+        " | head -1 || echo not found",
+        become=True,
     )
     result["containerd"] = {
         "status":      "ok" if configured else "not_configured",
@@ -661,7 +663,8 @@ async def gpu_node_prereqs(node: str):
     #    Catches "file written but containerd not yet restarted" edge case.
     cdump, _ = _run_on_node(
         inv_hostname,
-        "containerd config dump 2>/dev/null | grep -c nvidia-container-runtime || echo 0"
+        "containerd config dump 2>/dev/null | grep -c nvidia-container-runtime || echo 0",
+        become=True,
     )
     try:
         runtime_loaded = int(cdump.strip()) > 0
