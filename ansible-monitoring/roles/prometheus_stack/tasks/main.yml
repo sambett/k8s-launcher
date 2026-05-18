@@ -73,7 +73,9 @@
     # If the release does not exist yet, helm status returns nothing useful —
     # that is fine, we are doing a first install.
     release_json: >-
-      {{ (helm_preflight.stdout | trim != 'NOT_FOUND')
+      {{ (helm_preflight.stdout | trim | length > 0 and
+          helm_preflight.stdout | trim != 'NOT_FOUND' and
+          helm_preflight.stdout | trim | first == '{')
          | ternary(helm_preflight.stdout | from_json, {}) }}
     release_status: "{{ release_json.info.status | default('not_installed') }}"
   fail:
