@@ -68,16 +68,28 @@
   register: helm_preflight
   changed_when: false
 
+- name: Default Helm release status to not installed
+  set_fact:
+    release_json: {}
+    release_status: "not_installed"
+
+- name: Parse Helm release JSON when present
+  vars:
+    helm_preflight_trimmed: "{{ helm_preflight.stdout | trim }}"
+  set_fact:
+    release_json: "{{ helm_preflight_trimmed | from_json }}"
+    release_status: "{{ (helm_preflight_trimmed | from_json).info.status | default('not_installed') }}"
+  when:
+    - helm_preflight_trimmed | length > 0
+    - helm_preflight_trimmed != 'NOT_FOUND'
+    - helm_preflight_trimmed[0] == '{'
+
 - name: Parse Helm release status and fail clearly if locked
   vars:
     # If the release does not exist yet, helm status returns nothing useful —
     # that is fine, we are doing a first install.
-    release_json: >-
-      {{ (helm_preflight.stdout | trim | length > 0 and
-          helm_preflight.stdout | trim != 'NOT_FOUND' and
-          helm_preflight.stdout | trim | first == '{')
-         | ternary(helm_preflight.stdout | from_json, {}) }}
-    release_status: "{{ release_json.info.status | default('not_installed') }}"
+    release_json: "{{ release_json | default({}) }}"
+    release_status: "{{ release_status | default('not_installed') }}"
   fail:
     msg: |
       ────────────────────────────────────────────────────────────────
