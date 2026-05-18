@@ -24,7 +24,10 @@
       A <strong style="color:#e65100">👻 ghost</strong> node appears when a VM was added to
       the inventory during a failed join attempt but never actually joined the cluster —
       use <strong style="color:#e65100">Remove ghost</strong> to clean it from the inventory.
-      This does <em>not</em> touch the cluster.
+      This does <em>not</em> touch the cluster.<br>
+      A <strong style="color:#6a1b9a">⚠ not in inventory</strong> node still exists in Kubernetes
+      but no longer exists in the launcher inventory. Delete it manually from the cluster with
+      <code>kubectl delete node &lt;name&gt;</code>.
     </p>
     <div id="worker-nodes-table">
       <span style="color:#888;font-size:13px">Loading...</span>
