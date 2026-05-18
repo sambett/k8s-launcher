@@ -42,26 +42,16 @@
   command: helm repo update
   changed_when: true
 
-# Pre-flight: detect a genuinely stuck Helm release before running upgrade.
-# We intentionally reduce Helm's JSON output to a single plain status string
-# inside the shell step so Ansible never has to parse uncertain JSON during
-# templating on first install / empty output paths.
-- name: Pre-flight - read Helm release status safely
-  shell: |
-    out="$(helm status kube-prometheus-stack \
-      --namespace {{ monitoring_namespace }} \
-      --output json 2>/dev/null || true)"
-
-    if [ -z "$out" ]; then
-      echo "not_installed"
-    else
-      python3 -c 'import json, sys
-data = sys.stdin.read().strip()
-print(json.loads(data).get("info", {}).get("status", "not_installed"))' <<< "$out" 2>/dev/null \
-      || echo "invalid"
-    fi
+# Pre-flight: check for stuck Helm release
+- name: Pre-flight - read Helm release status
+  shell: >
+    helm status kube-prometheus-stack
+    --namespace {{ monitoring_namespace }}
+    --output json 2>/dev/null
+    | python3 -c "import json,sys; s=sys.stdin.read().strip(); print(json.loads(s).get('info',{}).get('status','not_installed') if s else 'not_installed')"
   register: helm_release_status
   changed_when: false
+  failed_when: false
 
 - name: Fail clearly if Helm release is locked
   vars:
@@ -84,8 +74,7 @@ print(json.loads(data).get("info", {}).get("status", "not_installed"))' <<< "$ou
       If the release is genuinely stuck (e.g. after a network drop):
         Run: helm history kube-prometheus-stack -n monitoring
         If the last revision shows 'pending-*' and nothing is running,
-        inspect the Helm secrets in the monitoring namespace and clear
-        the stuck revision manually before retrying.
+        follow the manual recovery steps in this task's comments.
       ----------------------------------------------------------------
   when: release_status in ['pending-install', 'pending-upgrade', 'pending-rollback']
 
@@ -93,7 +82,7 @@ print(json.loads(data).get("info", {}).get("status", "not_installed"))' <<< "$ou
   template:
     src: values.yaml.j2
     dest: /tmp/monitoring-values.yaml
-    mode: '0644'
+    mode: "0644"
 
 - name: Install kube-prometheus-stack {{ chart_version }} via Helm
   command: >
@@ -108,6 +97,7 @@ print(json.loads(data).get("info", {}).get("status", "not_installed"))' <<< "$ou
   register: helm_result
   changed_when: true
 
+# Readiness checks
 - name: Wait for Grafana deployment to be ready
   command: >
     kubectl rollout status deployment
