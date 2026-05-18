@@ -42,54 +42,33 @@
   command: helm repo update
   changed_when: true
 
-# ── Pre-flight: check for stuck Helm release ──────────────────────────────────
-# Helm serialises operations through a state machine stored in Kubernetes
-# Secrets. If a previous helm upgrade was interrupted (network drop, SIGTERM,
-# timeout), the release can be left in a pending-upgrade or pending-rollback
-# state. Any new helm upgrade call immediately fails with:
-#   "another operation (install/upgrade/rollback) is in progress"
-#
-# This task detects that condition early and gives the operator a clear message
-# instead of a cryptic Helm error.
-#
-# Recovery path (manual, break-glass only):
-#   1. Confirm the release is genuinely stuck:
-#        helm history kube-prometheus-stack -n monitoring
-#   2. If no active process is running and the last revision is pending-*:
-#        kubectl get secrets -n monitoring -l owner=helm,name=kube-prometheus-stack
-#        kubectl patch secret <stuck-secret-name> -n monitoring \
-#          --type=merge -p '{"metadata":{"labels":{"status":"failed"}}}'
-#   3. Re-run this playbook normally.
-- name: Pre-flight — check Helm release is not in a pending state
-  shell: >
-    helm status kube-prometheus-stack
-    --namespace {{ monitoring_namespace }}
-    --output json 2>/dev/null || echo "NOT_FOUND"
-  register: helm_preflight
+# Pre-flight: detect a genuinely stuck Helm release before running upgrade.
+# We intentionally reduce Helm's JSON output to a single plain status string
+# inside the shell step so Ansible never has to parse uncertain JSON during
+# templating on first install / empty output paths.
+- name: Pre-flight - read Helm release status safely
+  shell: |
+    out="$(helm status kube-prometheus-stack \
+      --namespace {{ monitoring_namespace }} \
+      --output json 2>/dev/null || true)"
+
+    if [ -z "$out" ]; then
+      echo "not_installed"
+    else
+      python3 -c 'import json, sys
+data = sys.stdin.read().strip()
+print(json.loads(data).get("info", {}).get("status", "not_installed"))' <<< "$out" 2>/dev/null \
+      || echo "invalid"
+    fi
+  register: helm_release_status
   changed_when: false
 
-- name: Default Helm release status to not installed
-  set_fact:
-    release_status: "not_installed"
-
-- name: Parse Helm release JSON when present
+- name: Fail clearly if Helm release is locked
   vars:
-    helm_preflight_trimmed: "{{ helm_preflight.stdout | trim }}"
-  set_fact:
-    release_status: "{{ ((helm_preflight_trimmed | string) | from_json).info.status | default('not_installed') }}"
-  when:
-    - helm_preflight_trimmed | length > 0
-    - helm_preflight_trimmed != 'NOT_FOUND'
-    - helm_preflight_trimmed | regex_search('^\\{')
-
-- name: Parse Helm release status and fail clearly if locked
-  vars:
-    # If the release does not exist yet, helm status returns nothing useful —
-    # that is fine, we are doing a first install.
-    release_status: "{{ release_status | default('not_installed') }}"
+    release_status: "{{ helm_release_status.stdout | trim | default('not_installed') }}"
   fail:
     msg: |
-      ────────────────────────────────────────────────────────────────
+      ----------------------------------------------------------------
       Helm release 'kube-prometheus-stack' is currently in state:
         {{ release_status }}
 
@@ -97,19 +76,19 @@
       progress (or a previous run was interrupted and left a lock).
 
       What to do:
-        1. Wait a few minutes — if a legitimate upgrade is still
+        1. Wait a few minutes - if a legitimate upgrade is still
            running, it will complete and the lock will clear.
-        2. Re-run this playbook.  Do not run it a second time while
+        2. Re-run this playbook. Do not run it a second time while
            the first is still streaming.
 
       If the release is genuinely stuck (e.g. after a network drop):
         Run: helm history kube-prometheus-stack -n monitoring
         If the last revision shows 'pending-*' and nothing is running,
-        follow the manual recovery steps in this task's comments.
-      ────────────────────────────────────────────────────────────────
+        inspect the Helm secrets in the monitoring namespace and clear
+        the stuck revision manually before retrying.
+      ----------------------------------------------------------------
   when: release_status in ['pending-install', 'pending-upgrade', 'pending-rollback']
 
-# ── Helm install / upgrade ─────────────────────────────────────────────────────
 - name: Render Helm values from template
   template:
     src: values.yaml.j2
@@ -129,9 +108,6 @@
   register: helm_result
   changed_when: true
 
-# ── Readiness checks ──────────────────────────────────────────────────────────
-# These verify that the most critical workloads are up before we declare
-# success. They are not a substitute for monitoring the cluster long-term.
 - name: Wait for Grafana deployment to be ready
   command: >
     kubectl rollout status deployment
