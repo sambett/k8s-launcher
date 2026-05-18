@@ -11,7 +11,7 @@ It provisions the cluster, installs storage, deploys GitLab and JupyterHub, and 
 
     sudo apt update && sudo apt install -y python3-pip git
     cd ~/k8s-launcher
-    pip3 install -r requirements.txt
+    python3 -m pip install --user --break-system-packages -r requirements.txt
 
 requirements.txt installs: fastapi, uvicorn, paramiko, jinja2, pyyaml, ansible.
 
@@ -79,7 +79,7 @@ Verify version is >= 1.7.0:
 
 ### Step 4 — Verify runtime is active
 
-    containerd config dump 2>/dev/null | grep -c nvidia-container-runtime \
+    sudo containerd config dump 2>/dev/null | grep -c nvidia-container-runtime \
       | grep -q "^0$" \
       && echo "WARNING: runtime not loaded — run: sudo systemctl restart containerd" \
       || echo "OK: NVIDIA runtime is active in containerd"
@@ -89,7 +89,7 @@ Verify version is >= 1.7.0:
     echo "=== 1. Driver ===" && nvidia-smi --query-gpu=driver_version,name --format=csv,noheader
     echo "=== 2. Toolkit ===" && nvidia-ctk --version
     echo "=== 3. Config file ===" && grep -rl nvidia-container-runtime /etc/containerd/
-    echo "=== 4. Runtime loaded ===" && containerd config dump 2>/dev/null | grep -c nvidia-container-runtime
+    echo "=== 4. Runtime loaded ===" && sudo containerd config dump 2>/dev/null | grep -c nvidia-container-runtime
 
 All four must return real output. Step 4 must return a number greater than 0.
 
