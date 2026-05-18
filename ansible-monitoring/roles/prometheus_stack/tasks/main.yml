@@ -82,7 +82,7 @@
   when:
     - helm_preflight_trimmed | length > 0
     - helm_preflight_trimmed != 'NOT_FOUND'
-    - helm_preflight_trimmed[0] == '{'
+    - helm_preflight_trimmed | regex_search('^\\{')
 
 - name: Parse Helm release status and fail clearly if locked
   vars:
