@@ -215,8 +215,8 @@ def _get_live_cluster_runtime_vars() -> dict:
             "dpkg-query -W -f='${Version}' containerd.io 2>/dev/null"
         )
         if rc == 0 and out.strip():
-            containerd_pkg = out.strip().splitlines()[-1].strip()
-            live["containerd_pkg"] = f"containerd.io={containerd_pkg}"
+            containerd_raw = out.strip().splitlines()[-1].strip()
+            live["containerd_version"] = containerd_raw.split("-", 1)[0]
 
         if live.get("kubernetes_version"):
             out, _, rc = run_command(
@@ -892,8 +892,10 @@ def _add_worker_stream(node: NewWorker):
         runtime_summary = []
         if live_runtime_vars.get("kubernetes_version"):
             runtime_summary.append(f"kubeadm {live_runtime_vars['kubernetes_version']}")
-        if live_runtime_vars.get("containerd_pkg"):
-            runtime_summary.append(live_runtime_vars["containerd_pkg"])
+        if live_runtime_vars.get("containerd_version"):
+            runtime_summary.append(
+                f"containerd.io={live_runtime_vars['containerd_version']}-1"
+            )
         if live_runtime_vars.get("pause_image"):
             runtime_summary.append(live_runtime_vars["pause_image"])
         if runtime_summary:
