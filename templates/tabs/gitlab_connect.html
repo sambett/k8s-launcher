@@ -12,9 +12,11 @@
     color:#94a3b8">
     <strong style="color:#7dd3fc">ℹ Already have a running GitLab instance?</strong>
     Use this tab to connect it to the platform without reinstalling anything.
-    The launcher will create the required group, project, deploy token, and OAuth app
-    via the GitLab API — no SSH, no <code>gitlab-ctl reconfigure</code>, no data loss.
-    Your existing users and groups are never touched.
+    The launcher uses the GitLab API only — no SSH and no <code>gitlab-ctl reconfigure</code>.
+    It creates or reuses the required registry resources, rotates the platform deploy token
+    and JupyterHub OAuth app, and leaves unrelated users, groups, and projects untouched.
+    Before connecting, make sure the GitLab Container Registry is already enabled and
+    reachable on the same host over HTTP port <code>5050</code>.
   </div>
 
   <div class="card">
@@ -66,10 +68,10 @@
   <div class="card">
     <h2>Step 2 — Connect</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
-      Creates the <code>registry/notebook-images</code> project (if missing),
-      rotates the deploy token and OAuth app, writes
-      <code>generated/gitlab-outputs.json</code>, then configures the
-      containerd registry on all cluster nodes.
+      Creates or reuses the <code>registry</code> group and the
+      <code>registry/notebook-images</code> project, rotates the deploy token and
+      JupyterHub OAuth app, writes <code>generated/gitlab-outputs.json</code>, then
+      configures the containerd registry on all cluster nodes.
     </p>
     <div style="display:flex;align-items:center;gap:12px">
       <button class="btn btn-primary" onclick="gcConnect()">Connect GitLab</button>
