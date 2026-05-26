@@ -361,11 +361,12 @@ singleuser:
         c.MappingKernelManager.cull_interval = 0
         c.MappingKernelManager.cull_busy = False
         c.MappingKernelManager.cull_connected = False
+        c.SingleUserNotebookApp.hub_activity_interval = 60
 
 cull:
   enabled: true
   timeout: 300
-  every: 300
+  every: 60
   maxAge: 0
   users: false
 
