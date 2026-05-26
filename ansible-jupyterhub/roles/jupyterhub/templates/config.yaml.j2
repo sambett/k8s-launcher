@@ -8,7 +8,7 @@ hub:
   config:
     JupyterHub:
       authenticator_class: gitlab
-      shutdown_on_logout: true
+      shutdown_on_logout: false
       cookie_secure: false
       logout_redirect_url: "http://{{ jhub_gitlab_url | replace("http://","") }}/users/sign_in"
     GitLabOAuthenticator:
@@ -346,11 +346,25 @@ singleuser:
   nodeSelector:
     kubernetes.io/os: linux
   extraEnv:
+    JUPYTERHUB_SINGLEUSER_APP: "jupyter_server.serverapp.ServerApp"
     JUPYTER_ENABLE_LAB: "yes"
+  extraFiles:
+    jupyter_server_config:
+      mountPath: /etc/jupyter/jupyter_server_config.py
+      stringData: |
+        c = get_config()
+
+        # Disable automatic kernel culling inside the single-user server.
+        # The Hub-level culler remains responsible for stopping idle servers
+        # and freeing GPU allocations after the configured timeout.
+        c.MappingKernelManager.cull_idle_timeout = 0
+        c.MappingKernelManager.cull_interval = 0
+        c.MappingKernelManager.cull_busy = False
+        c.MappingKernelManager.cull_connected = False
 
 cull:
   enabled: true
-  timeout: 1200
+  timeout: 300
   every: 300
   maxAge: 0
   users: false
