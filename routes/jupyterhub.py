@@ -28,7 +28,7 @@ router = APIRouter()
 class JupyterHubConfig(BaseModel):
     nodeport:        int    = 32080
     storage_class:   str    = "longhorn-jupyterhomes"
-    user_storage:    str    = "10Gi"
+    user_storage:    str    = "5Gi"
 
 
 @router.get("/api/jupyterhub/prefill")
