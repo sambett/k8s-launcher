@@ -29,18 +29,11 @@
     <h2>JupyterHub deployment</h2>
     <p style="color:#666;font-size:13px;margin-bottom:.75rem">
       Credentials are read automatically from the GitLab tab outputs.
-      Confirm the NodePort and the per-user storage size below.
+      Confirm the per-user storage size below.
     </p>
 
     <div id="jhub-prefill-status" style="margin-bottom:1rem"></div>
 
-    <div class="field-row">
-      <label>NodePort</label>
-      <input type="number" id="jhub-nodeport" value="32080"/>
-    </div>
-    <div style="font-size:12px;color:#666;margin:-2px 0 .7rem 168px">
-      This NodePort must match the JupyterHub NodePort configured in the GitLab tab.
-    </div>
     <div class="field-row">
       <label>User storage</label>
       <input type="text" id="jhub-user-storage" value="5Gi"/>
@@ -105,10 +98,14 @@ async function loadJhubPrefill() {
   const body   = document.getElementById('prereq-jhub-body');
 
   try {
-    const r = await fetch('/api/gitlab/outputs');
-    const d = await r.json();
+    const [gitlabResp, prefillResp] = await Promise.all([
+      fetch('/api/gitlab/outputs'),
+      fetch('/api/jupyterhub/prefill')
+    ]);
+    const d = await gitlabResp.json();
+    const prefill = await prefillResp.json();
 
-    if (d.status === 'ok') {
+    if (d.status === 'ok' && prefill.status === 'ok') {
       banner.style.background   = '#e8f5e9';
       banner.style.border       = '1px solid #a5d6a7';
       banner.style.borderLeft   = '4px solid #2e7d32';
@@ -123,7 +120,7 @@ async function loadJhubPrefill() {
           ✓ GitLab at ${d.gitlab_url} · OAuth ID confirmed · Deploy token ready
         </div>
         <div style="font-size:12px;color:#666;margin-top:.45rem">
-          Keep the JupyterHub NodePort the same as the value configured in the GitLab tab.
+          JupyterHub NodePort is the same as the value configured in the GitLab tab${prefill.nodeport ? `: ${prefill.nodeport}` : ''}.
         </div>`;
     } else {
       banner.style.background   = '#fff3e0';
@@ -162,7 +159,6 @@ async function jhubConfigure() {
   const el   = document.getElementById('r-jhub-cfg');
   const storageValue = document.getElementById('jhub-user-storage').value.trim();
   const body = {
-    nodeport:      parseInt(document.getElementById('jhub-nodeport').value),
     storage_class: 'longhorn-jupyterhomes',
     user_storage:  storageValue,
   };

@@ -26,7 +26,6 @@ router = APIRouter()
 
 
 class JupyterHubConfig(BaseModel):
-    nodeport:        int    = 32080
     storage_class:   str    = "longhorn-jupyterhomes"
     user_storage:    str    = "5Gi"
 
@@ -36,6 +35,14 @@ async def jupyterhub_prefill():
     if not GITLAB_OUTPUTS_PATH.exists():
         return {"status": "not_found", "message": "Run the GitLab tab first."}
     data = json.loads(GITLAB_OUTPUTS_PATH.read_text())
+    nodeport = None
+    if GITLAB_VARS_PATH.exists():
+        for line in GITLAB_VARS_PATH.read_text().splitlines():
+            if "jupyterhub_callback_url" in line:
+                match = re.search(r':(\d+)/hub/oauth_callback', line)
+                if match:
+                    nodeport = int(match.group(1))
+                break
     return {
         "status":             "ok",
         "gitlab_url":         data.get("gitlab_url"),
@@ -43,6 +50,7 @@ async def jupyterhub_prefill():
         "registry_namespace": data.get("registry_namespace"),
         "oauth_client_id":    data.get("oauth_client_id"),
         "deploy_token_user":  data.get("registry_deploy_token_user"),
+        "nodeport":           nodeport,
     }
 
 
@@ -75,13 +83,19 @@ async def jupyterhub_configure(cfg: JupyterHubConfig):
 
     # BUG-04 fix: read worker IP from gitlab-vars.yml — must match OAuth callback
     worker_ip = cp_ip
+    nodeport = None
     if GITLAB_VARS_PATH.exists():
         for line in GITLAB_VARS_PATH.read_text().splitlines():
             if "jupyterhub_callback_url" in line:
-                m = re.search(r'http://([^:]+):', line)
-                if m:
-                    worker_ip = m.group(1)
+                match = re.search(r'http://([^:]+):(\d+)/hub/oauth_callback', line)
+                if match:
+                    worker_ip = match.group(1)
+                    nodeport = int(match.group(2))
                     break
+
+    if nodeport is None:
+        return {"status": "error",
+                "message": "GitLab NodePort not found â€” run the GitLab Configure step first."}
 
     crypt_key = secrets.token_hex(32)
     access_node_ip = worker_ip
@@ -97,7 +111,7 @@ async def jupyterhub_configure(cfg: JupyterHubConfig):
         f"jhub_registry_pull_pass:  \"{gl['registry_deploy_token_pass']}\"\n"
         f"jhub_crypt_key:            \"{crypt_key}\"\n"
         f"jhub_access_node_ip:      \"{access_node_ip}\"\n"
-        f"jhub_nodeport:             {cfg.nodeport}\n"
+        f"jhub_nodeport:             {nodeport}\n"
         f"jhub_chart_version:        \"3.3.8\"\n"
         f"jhub_namespace:            \"jhub\"\n"
         f"jhub_release_name:         \"jhub\"\n"
@@ -110,7 +124,7 @@ async def jupyterhub_configure(cfg: JupyterHubConfig):
     JUPYTERHUB_VARS_PATH.write_text(content)
     return {
         "status":         "ok",
-        "access_url":     f"http://{access_node_ip}:{cfg.nodeport}",
+        "access_url":     f"http://{access_node_ip}:{nodeport}",
     }
 
 
