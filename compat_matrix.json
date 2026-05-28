@@ -113,11 +113,13 @@
     {
       "version": "3.3.5-3.4.0-ubuntu22.04",
       "recommended": true,
-      "notes": "Stable DCGM release \u2014 compatible with NVIDIA driver 590+ and CUDA 13.x"
+      "driver_min": "525",
+      "notes": "Requires NVIDIA driver >= 525 on each GPU node. Compatible with all Ampere and Ada Lovelace GPUs."
     },
     {
       "version": "3.2.5-3.1.8-ubuntu22.04",
-      "notes": "Previous stable release"
+      "driver_min": "520",
+      "notes": "Previous stable release. Requires NVIDIA driver >= 520."
     }
   ]
 }

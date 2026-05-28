@@ -95,6 +95,20 @@ For GPU monitoring (DCGM), additionally:
 - GPU Feature Discovery (GFD) running and node labels written
 - NVIDIA Device Plugin running
 
+### DCGM driver requirements
+
+DCGM Exporter 3.3.x requires NVIDIA driver >= 525 on every GPU node.
+Nodes may run different driver versions above this floor — a single DCGM
+DaemonSet image covers all of them. The DaemonSet will fail on any node
+whose driver is below the minimum.
+
+GPU models in the DES Lab (A2, A5000, A40, L4, L40S) all support
+drivers 525+ — no model-specific exception is needed.
+
+Recommended practice: standardize all GPU nodes on the same driver
+version to simplify debugging and ensure consistent CUDA ceiling
+labeling across the cluster.
+
 The Monitoring tab displays a warning banner if the cluster is not ready.
 
 ---

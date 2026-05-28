@@ -48,7 +48,12 @@ Run these on the GPU node before registering it in the launcher.
 
 If missing:
 
-    sudo apt update && sudo apt install -y nvidia-driver-525
+Install NVIDIA driver >= 525. This is required for Ada Lovelace GPUs such as L4 and L40S.
+Recommended: install the same driver version across all GPU nodes for operational simplicity.
+
+Example using driver 550:
+
+    sudo apt update && sudo apt install -y nvidia-driver-550
     sudo reboot
     nvidia-smi
 
