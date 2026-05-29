@@ -8,7 +8,7 @@ hub:
   config:
     JupyterHub:
       authenticator_class: gitlab
-      shutdown_on_logout: false
+      shutdown_on_logout: true
       cookie_secure: false
       logout_redirect_url: "http://{{ jhub_gitlab_url | replace("http://","") }}/users/sign_in"
     GitLabOAuthenticator:
