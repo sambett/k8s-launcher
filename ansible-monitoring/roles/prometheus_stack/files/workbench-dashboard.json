@@ -19,12 +19,12 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": 34,
+  "id": 2,
   "links": [],
   "panels": [
     {
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 24,
         "x": 0,
         "y": 0
@@ -49,7 +49,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 4
+        "y": 8
       },
       "id": 10,
       "panels": [],
@@ -84,7 +84,7 @@
         "h": 4,
         "w": 3,
         "x": 0,
-        "y": 5
+        "y": 9
       },
       "id": 11,
       "options": {
@@ -157,7 +157,7 @@
         "h": 8,
         "w": 7,
         "x": 3,
-        "y": 5
+        "y": 9
       },
       "id": 12,
       "options": {
@@ -229,7 +229,7 @@
         "h": 8,
         "w": 7,
         "x": 10,
-        "y": 5
+        "y": 9
       },
       "id": 13,
       "options": {
@@ -265,6 +265,7 @@
     },
     {
       "datasource": {
+        "default": true,
         "type": "prometheus",
         "uid": "prometheus"
       },
@@ -285,15 +286,15 @@
               },
               {
                 "color": "yellow",
-                "value": 10000
+                "value": 10
               },
               {
                 "color": "red",
-                "value": 14000
+                "value": 14
               }
             ]
           },
-          "unit": "mebibytes"
+          "unit": "gbytes"
         },
         "overrides": []
       },
@@ -301,7 +302,7 @@
         "h": 8,
         "w": 7,
         "x": 17,
-        "y": 5
+        "y": 9
       },
       "id": 14,
       "options": {
@@ -327,8 +328,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "avg(DCGM_FI_DEV_FB_USED{node=~\"$node\"})",
+          "editorMode": "code",
+          "expr": "avg(DCGM_FI_DEV_FB_USED{node=~\"$node\"})/1024",
           "legendFormat": "MiB",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -337,6 +340,7 @@
     },
     {
       "datasource": {
+        "default": true,
         "type": "prometheus",
         "uid": "prometheus"
       },
@@ -355,15 +359,15 @@
               },
               {
                 "color": "yellow",
-                "value": 4000
+                "value": 4
               },
               {
                 "color": "green",
-                "value": 8000
+                "value": 8
               }
             ]
           },
-          "unit": "mebibytes"
+          "unit": "gbytes"
         },
         "overrides": []
       },
@@ -371,7 +375,7 @@
         "h": 4,
         "w": 3,
         "x": 0,
-        "y": 9
+        "y": 13
       },
       "id": 15,
       "options": {
@@ -398,8 +402,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "avg(DCGM_FI_DEV_FB_FREE{node=~\"$node\"})",
+          "editorMode": "code",
+          "expr": "avg(DCGM_FI_DEV_FB_FREE{node=~\"$node\"})/1024",
           "legendFormat": "MiB",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -412,7 +418,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 17
       },
       "id": 20,
       "panels": [],
@@ -483,7 +489,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 14
+        "y": 18
       },
       "id": 21,
       "options": {
@@ -568,7 +574,7 @@
               }
             ]
           },
-          "unit": "mebibytes"
+          "unit": "gbytes"
         },
         "overrides": []
       },
@@ -576,7 +582,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 14
+        "y": 18
       },
       "id": 22,
       "options": {
@@ -598,13 +604,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (node, modelName, gpu) (\r\n  DCGM_FI_DEV_FB_USED{node=~\"$node\"}\r\n)\r\n",
+          "expr": "max by (node, modelName, gpu) (\r\n  DCGM_FI_DEV_FB_USED{node=~\"$node\"}\r\n)/1024\r\n",
           "legendFormat": "{{node}} — {{modelName}} GPU{{gpu}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "GPU Memory Used by Model Type (MiB)",
+      "title": "GPU Memory Used by Model Type (GiB)",
       "type": "timeseries"
     },
     {
@@ -613,7 +619,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 26
       },
       "id": 30,
       "panels": [],
@@ -658,7 +664,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 27
       },
       "id": 31,
       "options": {
@@ -733,7 +739,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 27
       },
       "id": 32,
       "options": {
@@ -833,7 +839,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 34
       },
       "id": 33,
       "options": {
@@ -923,7 +929,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 34
       },
       "id": 34,
       "options": {
@@ -958,7 +964,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 42
       },
       "id": 40,
       "panels": [],
@@ -993,7 +999,7 @@
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 39
+        "y": 43
       },
       "id": 41,
       "options": {
@@ -1064,7 +1070,7 @@
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 39
+        "y": 43
       },
       "id": 42,
       "options": {
@@ -1135,7 +1141,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 39
+        "y": 43
       },
       "id": 43,
       "options": {
@@ -1202,7 +1208,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 39
+        "y": 43
       },
       "id": 44,
       "options": {
@@ -1243,7 +1249,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 46
       },
       "id": 50,
       "panels": [],
@@ -1288,7 +1294,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 47
       },
       "id": 51,
       "options": {
@@ -1363,7 +1369,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 47
       },
       "id": 52,
       "options": {
@@ -1461,7 +1467,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 50
+        "y": 54
       },
       "id": 53,
       "options": {
@@ -1551,7 +1557,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 50
+        "y": 54
       },
       "id": 54,
       "options": {
@@ -1582,6 +1588,7 @@
     },
     {
       "datasource": {
+        "default": true,
         "type": "prometheus",
         "uid": "prometheus"
       },
@@ -1633,7 +1640,7 @@
               }
             ]
           },
-          "unit": "mebibytes"
+          "unit": "gbytes"
         },
         "overrides": []
       },
@@ -1641,7 +1648,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 62
       },
       "id": 56,
       "options": {
@@ -1662,12 +1669,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "DCGM_FI_DEV_FB_USED{namespace=\"jhub\",pod=~\"jupyter-.*\"}",
+          "editorMode": "code",
+          "expr": "DCGM_FI_DEV_FB_USED{namespace=\"jhub\",pod=~\"jupyter-.*\"}/1024",
           "legendFormat": "{{pod}}",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "GPU VRAM per User (MiB)",
+      "title": "GPU VRAM per User (GiB)",
       "type": "timeseries"
     },
     {
@@ -1733,7 +1742,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 62
       },
       "id": 55,
       "options": {
@@ -1768,7 +1777,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 70
       },
       "id": 60,
       "panels": [],
@@ -1813,7 +1822,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 67
+        "y": 71
       },
       "id": 61,
       "options": {
@@ -1885,7 +1894,7 @@
         "h": 8,
         "w": 10,
         "x": 6,
-        "y": 67
+        "y": 71
       },
       "id": 62,
       "options": {
@@ -1954,7 +1963,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 67
+        "y": 71
       },
       "id": 65,
       "options": {
@@ -2022,7 +2031,7 @@
         "h": 4,
         "w": 2,
         "x": 20,
-        "y": 67
+        "y": 71
       },
       "id": 66,
       "options": {
@@ -2090,7 +2099,7 @@
         "h": 4,
         "w": 2,
         "x": 22,
-        "y": 67
+        "y": 71
       },
       "id": 67,
       "options": {
@@ -2154,7 +2163,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 71
+        "y": 75
       },
       "id": 63,
       "options": {
@@ -2218,7 +2227,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 71
+        "y": 75
       },
       "id": 64,
       "options": {
@@ -2315,7 +2324,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 79
       },
       "id": 68,
       "options": {
@@ -2405,7 +2414,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 83
+        "y": 87
       },
       "id": 69,
       "options": {
@@ -2444,7 +2453,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "1m",
+  "refresh": "5s",
   "schemaVersion": 39,
   "tags": [
     "workbench",
@@ -2457,9 +2466,13 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
         },
         "datasource": {
           "type": "prometheus",
@@ -2485,9 +2498,13 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
         },
         "datasource": {
           "type": "prometheus",
@@ -2520,6 +2537,6 @@
   "timezone": "browser",
   "title": "AI Workbench Monitor3",
   "uid": "workbench-monitor-final3",
-  "version": 6,
+  "version": 1,
   "weekStart": ""
 }
