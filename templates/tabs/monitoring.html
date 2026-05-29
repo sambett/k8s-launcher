@@ -1,27 +1,28 @@
 <div id="tab-monitoring" class="panel">
 
   <div id="prereq-monitoring" style="display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;">
-    <span id="prereq-monitoring-icon" style="font-size:20px;flex-shrink:0">⏳</span>
+    <span id="prereq-monitoring-icon" style="font-size:20px;flex-shrink:0">...</span>
     <div>
       <strong id="prereq-monitoring-title">Checking cluster status...</strong><br>
       <span id="prereq-monitoring-body">Prometheus and Grafana deploy as pods inside the cluster. A running Kubernetes cluster is required.</span><br>
       <a onclick="showTab('kubernetes',document.getElementById('step-kubernetes'))"
          style="color:#1565c0;cursor:pointer;font-weight:600;text-decoration:underline;margin-top:4px;display:inline-block">
-        Open Kubernetes tab →
+        Open Kubernetes tab ->
       </a>
     </div>
   </div>
 
-  <!-- ── kube-prometheus-stack ─────────────────────────────────────────────── -->
   <div class="card">
-    <h2>Prometheus + Grafana
-      <span id="monitoring-status-badge" class="badge b-warn"
-        style="margin-left:8px;font-weight:400">checking...</span>
+    <h2>
+      Prometheus + Grafana
+      <span id="monitoring-status-badge" class="badge b-warn" style="margin-left:8px;font-weight:400">checking...</span>
+      <span id="dcgm-status-badge" class="badge b-warn" style="margin-left:8px;font-weight:400;display:none">DCGM</span>
     </h2>
     <p class="card-hint">
-      Deploys <strong>kube-prometheus-stack</strong> via Helm — a single chart
-      that installs Prometheus, Alertmanager, and Grafana. After install,
-      Grafana is on NodePort <strong>32300</strong> and Prometheus on <strong>32301</strong>.
+      Deploys <strong>kube-prometheus-stack</strong> via Helm. Optionally adds
+      NVIDIA GPU telemetry by deploying DCGM Exporter in the same install run.
+      After install, Grafana is on NodePort <strong>32300</strong> and
+      Prometheus on <strong>32301</strong>.
     </p>
 
     <div class="field-row" style="align-items:flex-start">
@@ -37,7 +38,29 @@
       </div>
     </div>
 
-    <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
+    <div style="margin-top:.85rem">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="deploy-dcgm-checkbox" onchange="toggleDcgmOptions()">
+        <span>Also deploy GPU Metrics (DCGM Exporter)</span>
+      </label>
+    </div>
+
+    <div id="dcgm-options" style="display:none;margin-top:.85rem">
+      <div class="field-row" style="align-items:flex-start">
+        <label style="padding-top:6px">DCGM version</label>
+        <div style="flex:1">
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="dcgm-version-input"
+              placeholder="e.g. 3.3.5-3.4.0-ubuntu22.04" style="max-width:260px"/>
+            <button class="btn btn-sm btn-ghost"
+              onclick="loadDcgmVersions()">Refresh suggestions</button>
+          </div>
+          <div id="dcgm-version-suggestions" style="margin-top:.5rem"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:.9rem">
       <button class="btn btn-primary" id="btn-install-monitoring" onclick="installMonitoring()">
         Install / Upgrade
         <span style="font-weight:400;opacity:.7;margin-left:4px">(~5 min)</span>
@@ -45,131 +68,64 @@
       <span class="dot" id="dot-monitoring"></span>
       <span id="monitoring-install-status" style="font-size:12px;color:#666"></span>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>Install log</h2>
-    <div class="log" id="monitoring-install-log"></div>
+    <div style="margin-top:1rem">
+      <h2 style="margin-bottom:.6rem">Install log</h2>
+      <div class="log" id="monitoring-install-log"></div>
+    </div>
   </div>
 
   <div class="card" id="monitoring-access-card" style="display:none">
     <h2>Access</h2>
     <div class="info-box">
-      <strong>Grafana</strong> —
+      <strong>Grafana</strong> -
       <a id="grafana-url" href="#" target="_blank" style="color:#1976d2"></a><br>
       Default login: <span class="mono">admin</span> /
       <span class="mono">prom-operator</span><br><br>
-      <strong>Prometheus</strong> —
+      <strong>Prometheus</strong> -
       <a id="prometheus-url" href="#" target="_blank" style="color:#1976d2"></a>
     </div>
-  </div>
-
-  <!-- ── DCGM Exporter ─────────────────────────────────────────────────────── -->
-  <div class="card">
-    <h2>NVIDIA DCGM Exporter
-      <span id="dcgm-status-badge" class="badge b-warn"
-        style="margin-left:8px;font-weight:400">checking...</span>
-    </h2>
-    <p class="card-hint">
-      Deploys the NVIDIA DCGM Exporter as a DaemonSet on GPU nodes only.
-      Exposes GPU utilization, memory, temperature, and power metrics to Prometheus.
-      The official NVIDIA dashboard is provisioned in Grafana automatically.
-      Requires <strong>kube-prometheus-stack to be installed first</strong>.
-    </p>
-
-    <!-- Shown when Prometheus is not yet installed. Hidden once it is. -->
-    <div id="dcgm-prereq-notice" style="display:none;align-items:flex-start;gap:10px;border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;font-size:13px;line-height:1.5;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;">
-      <span style="font-size:18px;flex-shrink:0">⚠️</span>
-      <span>Install <strong>Prometheus + Grafana</strong> first using the section above before deploying DCGM.</span>
-    </div>
-
-    <div class="field-row" style="align-items:flex-start">
-      <label style="padding-top:6px">Image version</label>
-      <div style="flex:1">
-        <div style="display:flex;gap:8px;align-items:center">
-          <input type="text" id="dcgm-version-input"
-            placeholder="e.g. 3.3.5-3.4.0-ubuntu22.04" style="max-width:260px"/>
-          <button class="btn btn-sm btn-ghost"
-            onclick="loadDcgmVersions()">Refresh suggestions</button>
-        </div>
-        <div id="dcgm-version-suggestions" style="margin-top:.5rem"></div>
-      </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:12px;margin-top:.75rem">
-      <button class="btn btn-primary" id="btn-install-dcgm" onclick="installDcgm()">
-        Deploy DCGM Exporter
-        <span style="font-weight:400;opacity:.7;margin-left:4px">(~3 min)</span>
-      </button>
-      <span class="dot" id="dot-dcgm"></span>
-      <span id="dcgm-install-status" style="font-size:12px;color:#666"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>DCGM install log</h2>
-    <div class="log" id="dcgm-install-log"></div>
   </div>
 
 </div>
 
 <script>
-// ── Prometheus install guard ──────────────────────────────────────────────────
-// Tracks whether kube-prometheus-stack is installed.
-// Set by loadMonitoringStatus() after the API call resolves.
-// The DCGM button must never be enabled when this is false.
-let prometheusInstalled = false;
+let dcgmVersionsLoaded = false;
 
-// Show/hide the prereq notice and enable/disable the DCGM button based on
-// whether Prometheus is installed. Called by loadMonitoringStatus() after
-// every status check so the UI always reflects the current cluster state.
-function setDcgmGuard(installed) {
-  prometheusInstalled = installed;
-  const btn    = document.getElementById('btn-install-dcgm');
-  const notice = document.getElementById('dcgm-prereq-notice');
-  btn.disabled = !installed;
-  // flex so the icon and text sit side-by-side; none to hide entirely
-  notice.style.display = installed ? 'none' : 'flex';
+function toggleDcgmOptions() {
+  const checked = document.getElementById('deploy-dcgm-checkbox').checked;
+  const options = document.getElementById('dcgm-options');
+  options.style.display = checked ? 'block' : 'none';
+  if (checked && !dcgmVersionsLoaded) loadDcgmVersions();
 }
 
-// ── Shared action-button helper ───────────────────────────────────────────────
-// Both install streams hold the same backend lock, so both buttons must be
-// disabled/enabled together regardless of which one was clicked.
-// Call this once at stream start (true) and once at stream end (false).
-// When re-enabling (disabled=false), the DCGM button only comes back if
-// Prometheus is installed — setDcgmGuard enforces that invariant.
 function setMonitoringActionsDisabled(disabled) {
   document.getElementById('btn-install-monitoring').disabled = disabled;
-  if (disabled) {
-    document.getElementById('btn-install-dcgm').disabled = true;
-  } else {
-    // Re-enabling: restore DCGM button only if Prometheus is present
-    setDcgmGuard(prometheusInstalled);
-  }
+  document.getElementById('deploy-dcgm-checkbox').disabled = disabled;
+  document.getElementById('monitoring-version-input').disabled = disabled;
+  document.getElementById('dcgm-version-input').disabled = disabled;
 }
-
-// ── kube-prometheus-stack ────────────────────────────────────────────────────
 
 async function loadMonitoringStatus() {
   checkMonitoringPrereq();
   loadMonitoringVersions();
-  loadDcgmVersions();
   loadDcgmStatus();
   const badge = document.getElementById('monitoring-status-badge');
   try {
     const r = await fetch('/api/monitoring/status');
     const d = await r.json();
     if (d.status === 'installed') {
-      badge.className   = 'badge b-ok';
-      badge.textContent = '✓ installed ' + (d.chart || '');
+      badge.className = 'badge b-ok';
+      badge.textContent = 'installed ' + (d.chart || '');
       loadMonitoringAccess();
-      setDcgmGuard(true);
     } else {
-      badge.className   = 'badge b-warn';
+      badge.className = 'badge b-warn';
       badge.textContent = 'not installed';
-      setDcgmGuard(false);
     }
-  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; setDcgmGuard(false); }
+  } catch (e) {
+    badge.className = 'badge b-err';
+    badge.textContent = 'error';
+  }
 }
 
 async function loadMonitoringVersions() {
@@ -184,32 +140,105 @@ async function loadMonitoringVersions() {
     }
     el.innerHTML =
       `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
-        K8s in use: <strong>${d.k8s_version||'unknown'}</strong>.
-        ${d.recommended ? ' Recommended: <strong>'+d.recommended+'</strong>' : ''}
+        K8s in use: <strong>${d.k8s_version || 'unknown'}</strong>.
+        ${d.recommended ? ' Recommended: <strong>' + d.recommended + '</strong>' : ''}
        </div>
        <div style="display:flex;flex-wrap:wrap;gap:6px">
          ${d.versions.map(v =>
-           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
-              title="${v.notes||''}"
+           `<button class="btn btn-sm ${v.version === d.recommended ? 'btn-primary' : 'btn-ghost'}"
+              title="${v.notes || ''}"
               onclick="document.getElementById('monitoring-version-input').value='${v.version}'">
-              ${v.version}${v.version===d.recommended?' ★':''}
+              ${v.version}${v.version === d.recommended ? ' *' : ''}
             </button>`).join('')}
        </div>`;
-  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
+  } catch (e) {
+    el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`;
+  }
+}
+
+async function loadDcgmStatus() {
+  const badge = document.getElementById('dcgm-status-badge');
+  try {
+    const r = await fetch('/api/monitoring/dcgm/status');
+    const d = await r.json();
+    if (d.status === 'ready') {
+      badge.style.display = 'inline-flex';
+      badge.className = 'badge b-ok';
+      badge.textContent = `DCGM ${d.ready}/${d.desired}`;
+    } else if (d.status === 'degraded') {
+      badge.style.display = 'inline-flex';
+      badge.className = 'badge b-warn';
+      badge.textContent = `DCGM ${d.ready}/${d.desired}`;
+    } else if (d.status === 'no_gpu_nodes') {
+      badge.style.display = 'inline-flex';
+      badge.className = 'badge b-warn';
+      badge.textContent = 'DCGM no GPU nodes';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) {
+    badge.style.display = 'inline-flex';
+    badge.className = 'badge b-err';
+    badge.textContent = 'DCGM error';
+  }
+}
+
+async function loadDcgmVersions() {
+  const el = document.getElementById('dcgm-version-suggestions');
+  el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
+  try {
+    const r = await fetch('/api/monitoring/dcgm/versions');
+    const d = await r.json();
+    dcgmVersionsLoaded = true;
+    if (!d.versions || !d.versions.length) {
+      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
+      return;
+    }
+    el.innerHTML =
+      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
+        ${d.recommended ? 'Recommended: <strong>' + d.recommended + '</strong>' : ''}
+       </div>
+       <div style="display:flex;flex-wrap:wrap;gap:6px">
+         ${d.versions.map(v =>
+           `<button class="btn btn-sm ${v.version === d.recommended ? 'btn-primary' : 'btn-ghost'}"
+              title="${v.notes || ''}"
+              onclick="document.getElementById('dcgm-version-input').value='${v.version}'">
+              ${v.version}${v.version === d.recommended ? ' *' : ''}
+            </button>`).join('')}
+       </div>`;
+  } catch (e) {
+    el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`;
+  }
 }
 
 function installMonitoring() {
-  const version  = document.getElementById('monitoring-version-input').value.trim();
-  const logEl    = document.getElementById('monitoring-install-log');
+  const version = document.getElementById('monitoring-version-input').value.trim();
+  const deployDcgm = document.getElementById('deploy-dcgm-checkbox').checked;
+  const dcgmVersion = document.getElementById('dcgm-version-input').value.trim();
+  const logEl = document.getElementById('monitoring-install-log');
   const statusEl = document.getElementById('monitoring-install-status');
-  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
+
+  if (!version) {
+    statusEl.textContent = 'Enter a chart version first.';
+    return;
+  }
+  if (deployDcgm && !dcgmVersion) {
+    statusEl.textContent = 'Enter a DCGM version first.';
+    return;
+  }
+
+  const params = new URLSearchParams({
+    version,
+    deploy_dcgm: deployDcgm ? 'true' : 'false'
+  });
+  if (deployDcgm) params.set('dcgm_version', dcgmVersion);
 
   setMonitoringActionsDisabled(true);
-  logEl.innerHTML      = '';
-  statusEl.textContent = 'Running…';
+  logEl.innerHTML = '';
+  statusEl.textContent = deployDcgm ? 'Running monitoring + DCGM install...' : 'Running monitoring install...';
   setDot('dot-monitoring', 'running');
 
-  const es = new EventSource('/api/monitoring/install/stream?version=' + encodeURIComponent(version));
+  const es = new EventSource('/api/monitoring/install/stream?' + params.toString());
 
   es.onmessage = e => {
     if (e.data === '__DONE__') {
@@ -217,37 +246,29 @@ function installMonitoring() {
       setMonitoringActionsDisabled(false);
       setDot('dot-monitoring', 'ok');
       statusEl.textContent = 'Complete';
-      // Refresh both status badges — a base install may affect what DCGM shows.
       loadMonitoringStatus();
       loadDcgmStatus();
     } else if (e.data === '__ERROR__:LOCKED') {
-      // Stable token sent by the backend when the lock is already held.
-      // This path is only reached if the frontend disable somehow raced
-      // (e.g. two tabs open). The backend is the authoritative guard.
       es.close();
       setMonitoringActionsDisabled(false);
       setDot('dot-monitoring', 'error');
-      statusEl.textContent = 'Another install is already running — wait and try again.';
+      statusEl.textContent = 'Another install is already running - wait and try again.';
     } else if (e.data.startsWith('__ERROR__')) {
       es.close();
       setMonitoringActionsDisabled(false);
       setDot('dot-monitoring', 'error');
-      statusEl.textContent = 'Failed — see log above.';
-      makeLogLine('FAILED — ' + e.data, logEl);
+      statusEl.textContent = 'Failed - see log above.';
+      makeLogLine('FAILED - ' + e.data, logEl);
     } else {
       makeLogLine(e.data, logEl);
     }
   };
 
-  // onerror fires only for genuine connection-level failures (network drop,
-  // server restart). It will NOT fire for lock contention because the backend
-  // sends __ERROR__:LOCKED through onmessage on a normal 200 stream — there
-  // is no 409 response on this route.
   es.onerror = () => {
     es.close();
     setMonitoringActionsDisabled(false);
     setDot('dot-monitoring', 'error');
-    statusEl.textContent = 'Connection lost — is the launcher running?';
+    statusEl.textContent = 'Connection lost - is the launcher running?';
   };
 }
 
@@ -259,116 +280,17 @@ async function loadMonitoringAccess() {
       document.getElementById('monitoring-access-card').style.display = 'block';
       const ga = document.getElementById('grafana-url');
       const pa = document.getElementById('prometheus-url');
-      if (d.grafana_url)    { ga.href = d.grafana_url;    ga.textContent = d.grafana_url; }
+      if (d.grafana_url) { ga.href = d.grafana_url; ga.textContent = d.grafana_url; }
       if (d.prometheus_url) { pa.href = d.prometheus_url; pa.textContent = d.prometheus_url; }
     }
-  } catch(e) {}
+  } catch (e) {}
 }
-
-// ── DCGM Exporter ────────────────────────────────────────────────────────────
-
-async function loadDcgmStatus() {
-  const badge = document.getElementById('dcgm-status-badge');
-  try {
-    const r = await fetch('/api/monitoring/dcgm/status');
-    const d = await r.json();
-    if (d.status === 'ready') {
-      badge.className   = 'badge b-ok';
-      badge.textContent = `✓ running ${d.ready}/${d.desired}`;
-    } else if (d.status === 'degraded') {
-      badge.className   = 'badge b-warn';
-      badge.textContent = `degraded ${d.ready}/${d.desired}`;
-    } else if (d.status === 'no_gpu_nodes') {
-      // DaemonSet is deployed and healthy. Zero pods running because no node
-      // currently carries the nvidia.com/gpu.present=true label written by GFD.
-      // Pods will start automatically once GFD labels a GPU node.
-      badge.className   = 'badge b-warn';
-      badge.textContent = '⚠ deployed · no GPU nodes found';
-    } else {
-      badge.className   = 'badge b-warn';
-      badge.textContent = 'not installed';
-    }
-  } catch(e) { badge.className = 'badge b-err'; badge.textContent = 'error'; }
-}
-
-async function loadDcgmVersions() {
-  const el = document.getElementById('dcgm-version-suggestions');
-  el.innerHTML = '<span style="color:#888;font-size:12px">Loading...</span>';
-  try {
-    const r = await fetch('/api/monitoring/dcgm/versions');
-    const d = await r.json();
-    if (!d.versions || !d.versions.length) {
-      el.innerHTML = '<span style="color:#888;font-size:12px">No data in compat_matrix.json.</span>';
-      return;
-    }
-    el.innerHTML =
-      `<div style="font-size:12px;color:#666;margin-bottom:.4rem">
-        ${d.recommended ? 'Recommended: <strong>'+d.recommended+'</strong>' : ''}
-       </div>
-       <div style="display:flex;flex-wrap:wrap;gap:6px">
-         ${d.versions.map(v =>
-           `<button class="btn btn-sm ${v.version===d.recommended?'btn-primary':'btn-ghost'}"
-              title="${v.notes||''}"
-              onclick="document.getElementById('dcgm-version-input').value='${v.version}'">
-              ${v.version}${v.version===d.recommended?' ★':''}
-            </button>`).join('')}
-       </div>`;
-  } catch(e) { el.innerHTML = `<span class="badge b-err">Error: ${e}</span>`; }
-}
-
-function installDcgm() {
-  const version  = document.getElementById('dcgm-version-input').value.trim();
-  const logEl    = document.getElementById('dcgm-install-log');
-  const statusEl = document.getElementById('dcgm-install-status');
-  if (!version) { statusEl.textContent = 'Enter a version first.'; return; }
-
-  setMonitoringActionsDisabled(true);
-  logEl.innerHTML      = '';
-  statusEl.textContent = 'Running…';
-  setDot('dot-dcgm', 'running');
-
-  const es = new EventSource('/api/monitoring/dcgm/install/stream?version=' + encodeURIComponent(version));
-
-  es.onmessage = e => {
-    if (e.data === '__DONE__') {
-      es.close();
-      setMonitoringActionsDisabled(false);
-      setDot('dot-dcgm', 'ok');
-      statusEl.textContent = 'Complete';
-      // Refresh both status badges — DCGM install also upgrades the Helm chart.
-      loadDcgmStatus();
-      loadMonitoringStatus();
-    } else if (e.data === '__ERROR__:LOCKED') {
-      es.close();
-      setMonitoringActionsDisabled(false);
-      setDot('dot-dcgm', 'error');
-      statusEl.textContent = 'Another install is already running — wait and try again.';
-    } else if (e.data.startsWith('__ERROR__')) {
-      es.close();
-      setMonitoringActionsDisabled(false);
-      setDot('dot-dcgm', 'error');
-      statusEl.textContent = 'Failed — see log above.';
-      makeLogLine('FAILED — ' + e.data, logEl);
-    } else {
-      makeLogLine(e.data, logEl);
-    }
-  };
-
-  es.onerror = () => {
-    es.close();
-    setMonitoringActionsDisabled(false);
-    setDot('dot-dcgm', 'error');
-    statusEl.textContent = 'Connection lost — is the launcher running?';
-  };
-}
-
-// ── Prereq check ─────────────────────────────────────────────────────────────
 
 async function checkMonitoringPrereq() {
   const banner = document.getElementById('prereq-monitoring');
-  const icon   = document.getElementById('prereq-monitoring-icon');
-  const title  = document.getElementById('prereq-monitoring-title');
-  const body   = document.getElementById('prereq-monitoring-body');
+  const icon = document.getElementById('prereq-monitoring-icon');
+  const title = document.getElementById('prereq-monitoring-title');
+  const body = document.getElementById('prereq-monitoring-body');
   if (!banner) return;
   try {
     const r = await fetch('/api/platform/status');
@@ -376,19 +298,19 @@ async function checkMonitoringPrereq() {
     const ready = d.cluster && d.cluster.status === 'ready';
     if (ready) {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#e8f5e9;border:1px solid #a5d6a7;border-left:4px solid #2e7d32;color:#1b5e20;';
-      icon.textContent  = '✅';
+      icon.textContent = '[ok]';
       title.textContent = 'Kubernetes cluster is running';
-      body.textContent  = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready · ' : '') + 'Longhorn storage active';
+      body.textContent = (d.cluster.node_count ? d.cluster.node_count + ' node(s) ready - ' : '') + 'Longhorn storage active';
     } else {
       banner.style.cssText = 'display:flex;align-items:flex-start;gap:12px;border-radius:6px;padding:.85rem 1.1rem;margin-bottom:1.25rem;font-size:13px;line-height:1.6;background:#fff3e0;border:1px solid #f59e0b;border-left:4px solid #f59e0b;color:#92400e;';
-      icon.textContent  = '⚠️';
+      icon.textContent = '!';
       title.textContent = 'Kubernetes cluster not deployed yet';
-      body.textContent  = 'This tab requires a running cluster. Complete the Kubernetes tab first.';
+      body.textContent = 'This tab requires a running cluster. Complete the Kubernetes tab first.';
     }
-  } catch(e) {
-    icon.textContent  = '⚠️';
+  } catch (e) {
+    icon.textContent = '!';
     title.textContent = 'Could not check cluster status';
-    body.textContent  = 'Make sure the launcher backend is running.';
+    body.textContent = 'Make sure the launcher backend is running.';
   }
 }
 </script>
